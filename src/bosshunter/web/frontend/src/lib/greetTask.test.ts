@@ -17,7 +17,7 @@ function buildTask(overrides: Partial<WorkbenchTask>): WorkbenchTask {
 describe('greetPauseReasonLabel', () => {
   it('maps known pause reason kinds to friendly labels', () => {
     expect(greetPauseReasonLabel('AI Token 额度或账户余额不足 (token_quota, status=402)')).toBe('AI 额度或账户余额不足')
-    expect(greetPauseReasonLabel('AI API Key 无效或当前模型没有访问权限 (auth, status=401)')).toBe('AI 鉴权失败（API Key 无效或模型无权限）')
+    expect(greetPauseReasonLabel('AI 服务鉴权失败：服务未授权或当前模型没有访问权限 (auth, status=401)')).toBe('AI 鉴权失败（服务未授权或当前模型没有访问权限）')
     expect(greetPauseReasonLabel('AI 服务触发请求或 Token 频率限制 (rate_limit, status=429)')).toBe('AI 触发限流（请求或 Token 频率限制）')
     expect(greetPauseReasonLabel('AI 服务连接失败或超时 (network)')).toBe('AI 网络连接失败或超时')
     expect(greetPauseReasonLabel('请求内容超过当前模型的上下文限制 (context_limit)')).toBe('请求超过模型上下文限制')

@@ -1,11 +1,52 @@
 """Configuration loader for BossHunter."""
 
+import hashlib
+import hmac
 import os
+import secrets
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+# 管理员密码只存哈希（PBKDF2-HMAC-SHA256），明文密码永不落盘：
+# 打包方在 config.example.yaml 里写 admin.password，启动时迁移成哈希。
+ADMIN_PASSWORD_MIN_LENGTH = 6
+_ADMIN_PASSWORD_HASH_ITERATIONS = 200_000
+
+
+def hash_admin_password(password: str) -> str:
+    """Hash an admin password for storage (never store the plaintext)."""
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _ADMIN_PASSWORD_HASH_ITERATIONS)
+    return f"pbkdf2_sha256${_ADMIN_PASSWORD_HASH_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+
+def verify_admin_password(password: str, stored: str | None) -> bool:
+    """Check a password against a stored hash with constant-time comparison."""
+    if not password or not stored:
+        return False
+    try:
+        algorithm, iterations, salt_hex, digest_hex = stored.split("$")
+        if algorithm != "pbkdf2_sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(iterations)
+        )
+        return hmac.compare_digest(digest.hex(), digest_hex)
+    except (ValueError, TypeError):
+        return False
+
+
+def get_admin_password_hash(config: dict) -> str | None:
+    """Return the stored admin password hash, if one is configured."""
+    admin_cfg = config.get("admin") if isinstance(config, dict) else None
+    if not isinstance(admin_cfg, dict):
+        return None
+    value = admin_cfg.get("password_hash")
+    return str(value) if value else None
 
 
 # BOSS直聘城市编码映射
@@ -33,8 +74,8 @@ CITY_CODES: dict[str, str] = {
 }
 
 
-SUPPORTED_AI_PROVIDERS = {"anthropic", "openai_compatible", "ollama", "local"}
-SUPPORTED_AI_SERVICES = {"anthropic", "deepseek", "doubao", "custom", "ollama", "local"}
+SUPPORTED_AI_PROVIDERS = {"anthropic", "openai_compatible", "local"}
+SUPPORTED_AI_SERVICES = {"anthropic", "deepseek", "doubao", "zhipu", "custom", "local"}
 AI_SERVICE_PRESETS: dict[str, dict[str, str]] = {
     "anthropic": {
         "provider": "anthropic",
@@ -54,17 +95,17 @@ AI_SERVICE_PRESETS: dict[str, dict[str, str]] = {
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
         "key_env": "ARK_API_KEY",
     },
+    "zhipu": {
+        "provider": "openai_compatible",
+        "label": "智谱免费 (GLM-4.7-Flash)",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "key_env": "ZHIPU_API_KEY",
+    },
     "custom": {
         "provider": "openai_compatible",
         "label": "其他 OpenAI 兼容接口",
         "base_url": "",
         "key_env": "OPENAI_API_KEY",
-    },
-    "ollama": {
-        "provider": "ollama",
-        "label": "Ollama 本地模型",
-        "base_url": "http://127.0.0.1:11434",
-        "key_env": "",
     },
     "local": {
         "provider": "local",
@@ -179,11 +220,6 @@ DEFAULTS: dict[str, Any] = {
         "provider": "anthropic",
         "service": "anthropic",
         "model": "claude-sonnet-4-6",
-        # Ollama 本地模型：不用 API Key。默认 qwen2.5:7b——中文强、7B 单机能跑
-        # （约 5GB，CPU 也能跑只是慢）、指令跟随好，能稳定输出评分要的结构化 JSON；
-        # 14B 更好但要 9GB 以上、CPU 上太慢，llama3.1:8b 中文弱。
-        "ollama_base_url": "http://127.0.0.1:11434",
-        "ollama_model": "qwen2.5:7b",
         "thinking": "auto",
         "thinking_budget": 2048,
         "timeout_seconds": 180,
@@ -271,14 +307,59 @@ def save_config(config: dict[str, Any], config_path: Path | None = None) -> None
             value = ai_cfg.pop(field, None)
             if value is not None and str(value).strip():
                 credentials[field] = value
+        # 分服务商凭证（ai.services.<服务>.api_key / auth_token）同样只进私密文件。
+        services = ai_cfg.get("services")
+        if isinstance(services, dict):
+            service_creds: dict[str, Any] = {}
+            for svc, entry in list(services.items()):
+                if not isinstance(entry, dict):
+                    continue
+                kept: dict[str, Any] = {}
+                for field in AI_CREDENTIAL_FIELDS:
+                    value = entry.pop(field, None)
+                    if value is not None and str(value).strip():
+                        kept[field] = value
+                if kept:
+                    service_creds[svc] = kept
+                if not entry:
+                    services.pop(svc)
+            if service_creds:
+                credentials["services"] = service_creds
+            if not services:
+                ai_cfg.pop("services", None)
+
+    # 管理员密码哈希只进私密文件；明文密码当场哈希，不落盘。
+    admin_creds: dict[str, Any] = {}
+    admin_cfg = public_config.get("admin")
+    if isinstance(admin_cfg, dict):
+        password_hash = admin_cfg.pop("password_hash", None)
+        if password_hash is not None and str(password_hash).strip():
+            admin_creds["password_hash"] = password_hash
+        plain_password = admin_cfg.pop("password", None)
+        if plain_password is not None and str(plain_password).strip():
+            admin_creds["password_hash"] = hash_admin_password(str(plain_password))
+        if not admin_cfg:
+            public_config.pop("admin", None)
 
     private_path = credentials_path_for(config_path)
+    private_data: dict[str, Any] = {}
     if credentials:
-        _write_yaml_atomic(private_path, {"ai": credentials})
+        private_data["ai"] = credentials
+    if admin_creds:
+        private_data["admin"] = admin_creds
+    else:
+        # 管理员密码哈希不在本次保存里：保留私密文件里已有的，
+        # 用户端保存配置时不能把它清掉。
+        existing_private = _load_yaml_mapping(private_path)
+        existing_admin = existing_private.get("admin")
+        if isinstance(existing_admin, dict) and existing_admin.get("password_hash"):
+            private_data["admin"] = {"password_hash": existing_admin["password_hash"]}
+    if private_data:
+        _write_yaml_atomic(private_path, private_data)
 
     _write_yaml_atomic(config_path, public_config)
 
-    if not credentials:
+    if not private_data:
         try:
             private_path.unlink()
         except FileNotFoundError:
@@ -303,38 +384,83 @@ def validate_config_send_windows(config: dict[str, Any]) -> None:
 
 
 def migrate_legacy_credentials(config_path: Path | None = None) -> bool:
-    """Move credentials out of an existing config.yaml on the next startup."""
+    """Move credentials out of an existing config.yaml on the next startup.
+
+    包括 AI 凭证（legacy 字段与分服务商字段）和管理员密码：
+    ``admin.password`` 明文当场哈希进私密文件，原文从 config.yaml 删除。
+    """
     config_path = Path(config_path or "config.yaml")
     public_config = _load_yaml_mapping(config_path)
     _normalize_internship_salary_filter(public_config)
+    moved = False
+
     ai_cfg = public_config.get("ai")
-    if not isinstance(ai_cfg, dict):
+    if isinstance(ai_cfg, dict):
+        legacy_values = {field: ai_cfg.pop(field) for field in AI_CREDENTIAL_FIELDS if field in ai_cfg}
+        # 分服务商凭证（ai.services.<服务>.api_key / auth_token）同样挪进私密文件。
+        services = ai_cfg.get("services")
+        service_values: dict[str, dict[str, Any]] = {}
+        if isinstance(services, dict):
+            for svc, entry in list(services.items()):
+                if not isinstance(entry, dict):
+                    continue
+                kept = {field: entry.pop(field) for field in AI_CREDENTIAL_FIELDS if field in entry}
+                if kept:
+                    service_values[svc] = kept
+                if not entry:
+                    services.pop(svc)
+            if not services:
+                ai_cfg.pop("services", None)
+        if legacy_values or service_values:
+            moved = True
+            private_path = credentials_path_for(config_path)
+            private_config = _load_yaml_mapping(private_path)
+            private_ai = private_config.setdefault("ai", {})
+            if not isinstance(private_ai, dict):
+                private_ai = {}
+                private_config["ai"] = private_ai
+            for field, value in legacy_values.items():
+                if value is not None and str(value).strip():
+                    private_ai[field] = value
+                else:
+                    private_ai.pop(field, None)
+            if service_values:
+                private_services = private_ai.setdefault("services", {})
+                if not isinstance(private_services, dict):
+                    private_services = {}
+                    private_ai["services"] = private_services
+                for svc, kept in service_values.items():
+                    merged = dict(private_services.get(svc, {})) if isinstance(private_services.get(svc), dict) else {}
+                    for field, value in kept.items():
+                        if value is not None and str(value).strip():
+                            merged[field] = value
+                        else:
+                            merged.pop(field, None)
+                    if merged:
+                        private_services[svc] = merged
+            _write_yaml_atomic(private_path, private_config)
+
+    # 管理员密码：明文只应出现在打包方写的配置文件里，启动时哈希进私密文件。
+    admin_cfg = public_config.get("admin")
+    if isinstance(admin_cfg, dict):
+        plain_password = admin_cfg.pop("password", None)
+        if plain_password is not None and str(plain_password).strip():
+            moved = True
+            private_path = credentials_path_for(config_path)
+            private_config = _load_yaml_mapping(private_path)
+            private_admin = private_config.setdefault("admin", {})
+            if not isinstance(private_admin, dict):
+                private_admin = {}
+                private_config["admin"] = private_admin
+            private_admin["password_hash"] = hash_admin_password(str(plain_password))
+            _write_yaml_atomic(private_path, private_config)
+        if not admin_cfg:
+            public_config.pop("admin", None)
+
+    if not moved:
         return False
 
-    legacy_values = {field: ai_cfg.pop(field) for field in AI_CREDENTIAL_FIELDS if field in ai_cfg}
-    if not legacy_values:
-        return False
-
-    private_path = credentials_path_for(config_path)
-    private_config = _load_yaml_mapping(private_path)
-    private_ai = private_config.setdefault("ai", {})
-    if not isinstance(private_ai, dict):
-        private_ai = {}
-        private_config["ai"] = private_ai
-    for field, value in legacy_values.items():
-        if value is not None and str(value).strip():
-            private_ai[field] = value
-        else:
-            private_ai.pop(field, None)
-
-    if private_ai:
-        _write_yaml_atomic(private_path, private_config)
     _write_yaml_atomic(config_path, public_config)
-    if not private_ai:
-        try:
-            private_path.unlink()
-        except FileNotFoundError:
-            pass
     return True
 
 
@@ -425,7 +551,7 @@ def _validate_ai_provider(config: dict[str, Any]) -> None:
         ai_cfg["service"] = "custom"
         service = "custom"
     if service not in SUPPORTED_AI_SERVICES:
-        raise ValueError("当前版本支持 Claude、DeepSeek、豆包、自定义 OpenAI 兼容接口、Ollama 本地模型或本地规则。")
+        raise ValueError("当前版本支持 Claude、DeepSeek、豆包、智谱免费、自定义 OpenAI 兼容接口或本地规则。")
     expected_provider = AI_SERVICE_PRESETS[service]["provider"]
     if provider != expected_provider:
         ai_cfg["provider"] = expected_provider

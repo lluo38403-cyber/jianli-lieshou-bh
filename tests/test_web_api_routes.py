@@ -15,6 +15,7 @@ import yaml
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
+from bosshunter.config import migrate_legacy_credentials
 from bosshunter.db import (
     add_history,
     edit_job_greeting,
@@ -252,56 +253,36 @@ class WebApiRouteTests(unittest.TestCase):
                 close()
         return status_headers["status"], status_headers["headers"], body
 
-    def test_fixed_greeting_settings_validate_and_persist(self):
+    def _admin_login_cookie(self, base_dir: Path, password: str = "lucky-admin-1") -> str:
+        """Set the admin password in the test config and log in; return the cookie value."""
+        config_path = Path(base_dir) / "config.yaml"
+        existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        existing["admin"] = {"password": password}
+        config_path.write_text(yaml.dump(existing, allow_unicode=True), encoding="utf-8")
+        self.assertTrue(migrate_legacy_credentials(config_path))
+        status, headers, body = self._request("/api/admin/login", "POST", {"password": password})
+        self.assertTrue(status.startswith("200"), body)
+        token = headers.get("Set-Cookie", "").split(";")[0].split("=", 1)[1]
+        return f"bh_admin_session={token}"
+
+    def test_user_config_post_cannot_change_greeting_fields(self):
+        # 用户端提交招呼语字段：请求成功，但字段不生效、不落盘，改走管理员面板。
         with tempfile.TemporaryDirectory() as tmp:
             server.set_base_dir(Path(tmp))
             server._write_config({"profile": {"greeting_preference": "不要问问题"}})
-            before = server.CONFIG_PATH.read_bytes()
-            for fixed in ("", "   ", "字" * 301, 123):
-                status, _, body = self._request("/api/config", "POST", {
-                    "profile": {"ai_greeting_enabled": False, "fixed_greeting": fixed},
-                })
-                self.assertTrue(status.startswith("400"), body)
-                self.assertEqual(server.CONFIG_PATH.read_bytes(), before)
             status, _, body = self._request("/api/config", "POST", {
-                "profile": {"ai_greeting_enabled": False, "fixed_greeting": "您好，我想了解这个岗位。", "greeting_preference": "不要问问题"},
+                "profile": {"ai_greeting_enabled": False, "fixed_greeting": "您好，我想了解这个岗位。", "greeting_preference": "随便问"},
             })
             self.assertTrue(status.startswith("200"), body)
             status, _, body = self._request("/api/config")
             profile = json.loads(body)["profile"]
-            self.assertFalse(profile["ai_greeting_enabled"])
-            self.assertEqual(profile["fixed_greeting"], "您好，我想了解这个岗位。")
-            self.assertEqual(profile["greeting_preference"], "不要问问题")
-
-    def test_model_list_uses_draft_settings_and_preserves_saved_config(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
-            server.set_base_dir(Path(tmp))
-            server._write_config({"ai": {"service": "custom", "provider": "openai_compatible", "base_url": "https://saved.example/v1", "api_key": "saved-secret", "model": "saved-model"}})
-            before = server.CONFIG_PATH.read_bytes()
-            for draft_key, expected_key in [("", "saved-secret"), ("draft-secret", "draft-secret")]:
-                with patch.object(server, "list_ai_models", return_value=["model-a"]) as discover:
-                    status, _, body = self._request("/api/config/models", "POST", {"ai": {"service": "custom", "base_url": "https://draft.example/v1", "api_key": draft_key}})
-                self.assertTrue(status.startswith("200"), body)
-                self.assertEqual(json.loads(body), {"models": ["model-a"]})
-                draft = discover.call_args.args[0]["ai"]
-                self.assertEqual(draft["base_url"], "https://draft.example/v1")
-                self.assertEqual(draft["api_key"], expected_key)
-                self.assertEqual(server.CONFIG_PATH.read_bytes(), before)
-                self.assertEqual(server.load_config(server.CONFIG_PATH)["ai"]["api_key"], "saved-secret")
-            with patch.object(server, "list_ai_models", return_value=[]) as discover:
-                self._request("/api/config/models", "POST", {"ai": {"service": "deepseek", "clear_credentials": True}})
-                self.assertNotIn("api_key", discover.call_args.args[0]["ai"])
-
-    def test_model_list_rejects_bad_input_and_hides_unexpected_errors(self):
-        for payload in ({}, {"ai": []}, {"ai": {"base_url": []}}, {"ai": {"api_key": 123}}):
-            with patch.object(server, "list_ai_models") as discover:
-                status, _, _ = self._request("/api/config/models", "POST", payload)
-                self.assertTrue(status.startswith("400"))
-                discover.assert_not_called()
-        with patch.object(server, "_sanitize_config_for_write", return_value={}), patch.object(server, "list_ai_models", side_effect=RuntimeError("private-secret")):
-            status, _, body = self._request("/api/config/models", "POST", {"ai": {}})
-        self.assertTrue(status.startswith("500"))
-        self.assertNotIn("private-secret", body)
+            self.assertNotIn("ai_greeting_enabled", profile)
+            self.assertNotIn("fixed_greeting", profile)
+            self.assertNotIn("greeting_preference", profile)
+            saved = server.load_config(server.CONFIG_PATH)["profile"]
+            self.assertEqual(saved["greeting_preference"], "不要问问题")
+            # 用户提交的固定文案没写进去，留的是默认文案。
+            self.assertNotEqual(saved["fixed_greeting"], "您好，我想了解这个岗位。")
 
     def _upload_resume(self, filename: str, content: bytes, content_type: str):
         boundary = "----BossHunterResumeUpload"
@@ -878,17 +859,24 @@ class WebApiRouteTests(unittest.TestCase):
             checks = [
                 {
                     "id": "ai_credentials",
-                    "title": "AI API Key",
+                    "title": "AI 服务",
                     "status": "error",
-                    "message": "尚未填写 AI API Key",
-                    "detail": "请填写 API Key。",
+                    "message": "AI 服务未配置",
+                    "detail": "AI 服务未配置，无法生成 AI 回复或定制简历；单独监测仍可启动。",
                     "action": "config",
                 }
             ]
 
-            # Act
+            # 未授权进不去
+            status, _, body = self._request("/api/diagnostics/ai")
+            self.assertTrue(status.startswith("401"), body)
+
+            # 授权后返回结构化反馈
+            cookie = self._admin_login_cookie(base_dir)
             with patch.object(server, "check_ai_connection", return_value=checks):
-                status, headers, body = self._request("/api/diagnostics/ai")
+                status, headers, body = self._request(
+                    "/api/diagnostics/ai", environ_overrides={"HTTP_COOKIE": cookie}
+                )
 
         # Assert
         payload = json.loads(body)
@@ -896,7 +884,7 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertIn("application/json", headers["Content-Type"])
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["checks"], checks)
-        self.assertIn("尚未填写 AI API Key", payload["messages"][0])
+        self.assertIn("AI 服务未配置", payload["messages"][0])
 
     def test_web_api_activity_returns_json_without_runtime_name_error(self):
         # Arrange

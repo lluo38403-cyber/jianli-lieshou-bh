@@ -53,7 +53,7 @@ class AiStatusCliTests(unittest.TestCase):
 				{
 					"status": "pass",
 					"message": "AI 接口连接正常",
-					"detail": "Key 来源：DEEPSEEK_API_KEY。",
+					"detail": "已验证服务配置，当前模型：provider-current-model；服务地址来源：官方默认。",
 				}
 			]
 

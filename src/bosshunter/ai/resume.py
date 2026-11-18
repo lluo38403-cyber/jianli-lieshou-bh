@@ -975,8 +975,8 @@ def _render_pdf_via_cdp(html_content: str, output_path: Path) -> bool:
 
 
 def _resume_generation_source(config: dict, fallback: str = "configured_ai") -> str:
-    if get_ai_service(config) == "ollama":
-        return "ollama"
+    if get_ai_service(config) == "zhipu":
+        return "zhipu"
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
     identity = f"{ai_cfg.get('base_url', '')} {ai_cfg.get('model', '')}".lower()
     return "deepseek" if "deepseek" in identity else fallback

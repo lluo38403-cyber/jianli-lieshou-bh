@@ -16,10 +16,8 @@ from bosshunter.ai.credentials import (
 	get_ai_api_key,
 	get_ai_base_url,
 	get_ai_base_url_source,
-	get_ai_key_source,
 	get_ai_service,
-	get_ollama_base_url,
-	get_ollama_model,
+	get_service_credentials,
 )
 from bosshunter.browser.diagnostics import run_browser_diagnostics
 from bosshunter.collection.orchestrator import normalize_collection_options
@@ -46,10 +44,10 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 	ai_required = mode in {"full", "rescore"} or (
 		mode == "collect" and bool(collection_options and collection_options.get("auto_score"))
 	)
-	ai_configured = bool(get_ai_api_key(config)) or get_ai_service(config) in {"ollama", "local"}
+	ai_configured = bool(get_ai_api_key(config)) or get_ai_service(config) in {"local"}
 	if ai_required and not ai_configured:
 		# 未配置 AI 不阻塞：评分走本地规则，招呼语走固定模板。
-		checks.append(_check("ai_connection", "AI 接口连接", "pass", "未配置 AI，使用本地规则评分", "不填 AI Key 也能跑全流程；要 AI 评分/定制简历时再去“配置 → AI 设置”填写。"))
+		checks.append(_check("ai_connection", "AI 接口连接", "pass", "未配置 AI，使用本地规则评分", "未配置 AI 服务也能跑全流程，评分走本地规则。"))
 
 	if not ai_required:
 		# Pure collection must not perform an AI connectivity request. This keeps
@@ -121,110 +119,16 @@ def check_ai_connection(config: dict, required: bool = True) -> list[dict[str, s
 	return [*_check_ai_connection(config, required), *_python_runtime_checks()]
 
 
-def _check_ollama_connection(config: dict, required: bool) -> list[dict[str, str]]:
-	"""Check local Ollama reachability and model readiness without blocking.
-
-	Ollama 不可达只提示、不拦启动（和无 Key 的处理一致）：任务会回落本地规则。
-	"""
-	base_url = get_ollama_base_url(config)
-	model = get_ollama_model(config)
-	try:
-		url = httpx.URL(f"{base_url}/api/tags")
-		if url.scheme not in {"http", "https"} or not url.host:
-			raise ValueError
-	except (httpx.InvalidURL, ValueError):
-		return [
-			_check(
-				"ai_connection",
-				"Ollama 本地模型",
-				"warning",
-				"Ollama 地址无效",
-				"请在“配置 → AI 设置”里填写正确的 Ollama 地址，一般是 http://127.0.0.1:11434。",
-				"config",
-			)
-		]
-	try:
-		result = httpx.get(str(url), timeout=8, trust_env=False, follow_redirects=False)
-		result.raise_for_status()
-		payload = result.json()
-	except httpx.TimeoutException:
-		return [
-			_check(
-				"ai_connection",
-				"Ollama 本地模型",
-				"warning",
-				"Ollama 连接超时，将用本地规则评分",
-				f"Ollama（{base_url}）连接超时；请确认 Ollama 已启动，任务不会卡住。",
-				"config",
-			)
-		]
-	except httpx.HTTPStatusError as exc:
-		status = exc.response.status_code if exc.response is not None else None
-		return [
-			_check(
-				"ai_connection",
-				"Ollama 本地模型",
-				"warning",
-				f"Ollama 返回异常状态 {status}，将用本地规则评分",
-				"请确认 Ollama 地址填的是服务地址（http://127.0.0.1:11434），任务不会卡住。",
-				"config",
-			)
-		]
-	except httpx.HTTPError:
-		return [
-			_check(
-				"ai_connection",
-				"Ollama 本地模型",
-				"warning",
-				"Ollama 未连接，将用本地规则评分",
-				f"连不上 Ollama（{base_url}）；请先启动 Ollama（ollama serve），再拉取模型：ollama pull {model}。没连上时任务照常跑，只是不走 AI。",
-				"config",
-			)
-		]
-	except ValueError:
-		return [
-			_check(
-				"ai_connection",
-				"Ollama 本地模型",
-				"warning",
-				"Ollama 返回内容无法识别，将用本地规则评分",
-				"请确认 Ollama 地址填的是服务地址（http://127.0.0.1:11434），不是模型页地址。",
-				"config",
-			)
-		]
-	models = {
-		str(item.get("name") or "").strip()
-		for item in (payload.get("models") or [])
-		if isinstance(item, dict)
-	} if isinstance(payload, dict) else set()
-	if model in models:
-		return [
-			_check(
-				"ai_connection",
-				"Ollama 本地模型",
-				"pass",
-				f"Ollama 已连接，模型 {model} 就绪",
-				"评分、招呼语、定制简历都走本机模型，不用 API Key。",
-			)
-		]
-	return [
-		_check(
-			"ai_connection",
-			"Ollama 本地模型",
-			"warning",
-			f"Ollama 已连接，但模型 {model} 还没拉取",
-			f"先拉取模型：ollama pull {model}（几 GB，下载一次就行）。没拉好之前先用本地规则评分，任务不会卡住。",
-			"config",
-		)
-	]
-
-
 def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 	"""Run the AI configuration and connectivity checks."""
 	ai_cfg = config.get("ai", {}) if isinstance(config.get("ai"), dict) else {}
 	severity = "error" if required else "warning"
 	provider = str(ai_cfg.get("provider") or "anthropic")
 	service = get_ai_service(config)
+	# 智谱免费档：限并发、配置也可能还没放好，任何异常都只提示 warning，
+	# 不拦启动；任务失败时回落本地规则。
+	if service == "zhipu":
+		severity = "warning"
 	if service == "local":
 		return [
 			_check(
@@ -232,13 +136,10 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 				"AI 接口连接",
 				"pass",
 				"本地规则评分，不调用 AI",
-				"评分按本地规则算，招呼语用固定模板，定制简历发原简历；不用 Key、不用等 AI。",
+				"评分按本地规则算，招呼语用固定模板，定制简历发原简历；不用联网等 AI。",
 			)
 		]
-	if service == "ollama":
-		return _check_ollama_connection(config, required)
 	credential = get_ai_api_key(config)
-	key_source = get_ai_key_source(config)
 	base_url_value = get_ai_base_url(config)
 	base_url_source = get_ai_base_url_source(config)
 	model = str(ai_cfg.get("model") or "").strip()
@@ -246,10 +147,10 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 		return [
 			_check(
 				"ai_credentials",
-				"AI API Key",
+				"AI 服务",
 				severity,
-				"尚未填写 AI API Key",
-				"打开“配置 → AI 设置”，填写 API Key 并保存。单独监测仍可启动，但无法生成 AI 回复或定制简历。",
+				"AI 服务未配置",
+				"AI 服务未配置，无法生成 AI 回复或定制简历；单独监测仍可启动。",
 				"config",
 			)
 		]
@@ -288,8 +189,11 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 			else "https://api.anthropic.com/v1/models"
 		)
 		# 凭证块整体优先：config 任一凭证字段非空就不读 env，与 credentials 解析保持一致。
-		if ai_cfg.get("api_key") or ai_cfg.get("auth_token"):
-			auth_token = ai_cfg.get("auth_token")
+		service_creds = get_service_credentials(config, "anthropic")
+		config_api_key = service_creds.get("api_key") or ai_cfg.get("api_key")
+		config_auth_token = service_creds.get("auth_token") or ai_cfg.get("auth_token")
+		if config_api_key or config_auth_token:
+			auth_token = config_auth_token
 		else:
 			auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
 		headers = (
@@ -354,8 +258,8 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 				"ai_connection",
 				"AI 接口连接",
 				severity,
-				"API Key 验证失败",
-				"服务商拒绝了当前凭证，请核对 API Key 是否正确、有效且有权限。",
+				"AI 服务鉴权失败",
+				"服务商拒绝了请求，请联系客服检查服务配置。",
 				"config",
 			)
 		]
@@ -388,7 +292,7 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 				"AI 接口连接",
 				severity,
 				f"AI 接口返回异常状态 {result.status_code}",
-				"请检查 Base URL、API Key 和服务商状态。",
+				"请检查 Base URL 和服务商状态。",
 				"config",
 			)
 		]
@@ -398,8 +302,8 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 			"ai_connection",
 			"AI 接口连接",
 			"pass",
-			"AI 接口连接正常",
-			f"已验证凭证和服务地址，当前模型：{model}；Key 来源：{key_source or '未知'}；Base URL 来源：{base_url_source or '官方默认'}。"
+			"智谱接口连接正常" if service == "zhipu" else "AI 接口连接正常",
+			f"已验证服务配置，当前模型：{model}；服务地址来源：{base_url_source or '官方默认'}。"
 			"本次仅检测模型列表接口，未发送生成请求；评分等任务的参数兼容性需在实际调用时验证。",
 		)
 	]

@@ -707,7 +707,7 @@ class ScorerTokenResilienceTests(unittest.TestCase):
                 "bosshunter.ai.scorer._call_claude",
                 side_effect=[
                     credentials.AIRequestError("output_truncated", "AI 返回内容因输出 Token 上限被截断"),
-                    credentials.AIRequestError("auth", "AI API Key 无效或当前模型没有访问权限", 401),
+                    credentials.AIRequestError("auth", "AI 服务鉴权失败：服务未授权或当前模型没有访问权限", 401),
                 ],
             ),
             patch("bosshunter.ai.scorer.update_job_quick_score"),

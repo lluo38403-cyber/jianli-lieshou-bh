@@ -3,6 +3,7 @@ import { Sidebar } from './components/layout/Sidebar'
 import { Header } from './components/layout/Header'
 import DashboardPage from './pages/DashboardPage'
 import ConfigPage from './pages/ConfigPage'
+import AdminPage from './pages/AdminPage'
 import { OnboardingTour } from './components/onboarding/OnboardingTour'
 
 function JobsPage() {
@@ -13,25 +14,35 @@ function MonitorPage() {
   return <DashboardPage view="monitor" />
 }
 
+function MainLayout() {
+  return (
+    <div className="flex h-screen overflow-hidden bg-background text-foreground">
+      <Sidebar />
+      <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
+        <Header />
+        <main className="min-w-0 flex-1 overflow-y-auto p-3 md:p-6">
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/jobs" element={<JobsPage />} />
+            <Route path="/monitor" element={<MonitorPage />} />
+            <Route path="/config" element={<ConfigPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </main>
+      </div>
+      <OnboardingTour />
+    </div>
+  )
+}
+
 export default function App() {
   return (
     <BrowserRouter>
-      <div className="flex h-screen overflow-hidden bg-background text-foreground">
-        <Sidebar />
-        <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
-          <Header />
-          <main className="min-w-0 flex-1 overflow-y-auto p-3 md:p-6">
-            <Routes>
-              <Route path="/" element={<DashboardPage />} />
-              <Route path="/jobs" element={<JobsPage />} />
-              <Route path="/monitor" element={<MonitorPage />} />
-              <Route path="/config" element={<ConfigPage />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </main>
-        </div>
-        <OnboardingTour />
-      </div>
+      <Routes>
+        {/* 管理员面板：独立入口，不在用户界面里放链接，直接开地址进。 */}
+        <Route path="/admin" element={<AdminPage />} />
+        <Route path="*" element={<MainLayout />} />
+      </Routes>
     </BrowserRouter>
   )
 }

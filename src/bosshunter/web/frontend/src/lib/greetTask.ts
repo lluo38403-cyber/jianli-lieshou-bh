@@ -1,7 +1,7 @@
 import type { WorkbenchTask } from '@/hooks/useDashboard'
 
 const GREET_PAUSE_REASON_LABELS: Record<string, string> = {
-  auth: 'AI 鉴权失败（API Key 无效或模型无权限）',
+  auth: 'AI 鉴权失败（服务未授权或当前模型没有访问权限）',
   token_quota: 'AI 额度或账户余额不足',
   rate_limit: 'AI 触发限流（请求或 Token 频率限制）',
   context_limit: '请求超过模型上下文限制',

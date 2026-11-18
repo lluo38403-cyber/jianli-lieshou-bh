@@ -37,8 +37,6 @@ it('walks from the highlighted config entry to the real form controls', async ()
           <div data-tour="resume-upload">简历上传区域</div>
           <div data-tour="search-keywords">搜索关键词</div>
           <div data-tour="search-city">选择城市</div>
-          <button data-tour="ai-section">AI 设置</button>
-          <div data-tour="ai-fields">模型与 API Key</div>
           <SaveControl />
         </>} />
       </Routes>
@@ -54,10 +52,6 @@ it('walks from the highlighted config entry to the real form controls', async ()
   expect(screen.getByRole('dialog', { name: '交互引导' }).textContent).toContain('搜索关键词')
   fireEvent.click(screen.getByRole('button', { name: '下一步' }))
   expect(screen.getByRole('dialog', { name: '交互引导' }).textContent).toContain('搜索城市')
-  fireEvent.click(screen.getByRole('button', { name: '下一步' }))
-  expect(screen.getByRole('dialog', { name: '交互引导' }).textContent).toContain('点击“AI 设置”')
-  fireEvent.click(screen.getByRole('button', { name: 'AI 设置' }))
-  expect((await screen.findByRole('dialog', { name: '交互引导' })).textContent).toContain('模型')
   fireEvent.click(screen.getByRole('button', { name: '下一步' }))
   expect(screen.getByRole('dialog', { name: '交互引导' }).textContent).toContain('保存')
   expect((screen.getByRole('button', { name: '下一步' }) as HTMLButtonElement).disabled).toBe(true)

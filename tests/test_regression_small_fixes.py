@@ -857,12 +857,12 @@ class ConfigPageTests(unittest.TestCase):
         self.assertIn('label="BOSS 操作间隔倍率"', self.source)
         self.assertNotIn('label="BOSS 采集间隔倍数"', self.source)
 
-    def test_random_delivery_cooldown_is_below_ai_settings(self):
-        ai_index = self.source.index('title="AI 设置"')
+    def test_random_delivery_cooldown_is_in_delivery_settings_before_monitor(self):
+        # AI 设置区已从用户前端移走（改走管理员面板），投递设置仍在监控设置之前。
+        self.assertNotIn('title="AI 设置"', self.source)
         anti_monitor_index = self.source.index('title="投递设置"')
         monitor_index = self.source.index('title="监控设置"')
 
-        self.assertLess(ai_index, anti_monitor_index)
         self.assertLess(anti_monitor_index, monitor_index)
         self.assertNotIn("BOSS 页面访问相关设置同时用于采集和监测", self.source)
         self.assertIn("collection.delivery_cooldown_min_minutes", self.source)

@@ -12,7 +12,8 @@ class AiPreflightTests(unittest.TestCase):
 
 		self.assertEqual(checks[0]["id"], "ai_credentials")
 		self.assertEqual(checks[0]["status"], "error")
-		self.assertIn("填写 API Key", checks[0]["detail"])
+		self.assertIn("AI 服务未配置", checks[0]["message"])
+		self.assertIn("AI 服务未配置", checks[0]["detail"])
 
 	@patch("bosshunter.web.preflight.httpx.get")
 	def test_rejected_api_key_is_reported_without_exposing_key(self, http_get):
@@ -22,7 +23,7 @@ class AiPreflightTests(unittest.TestCase):
 		checks = check_ai_connection(config, required=True)
 
 		self.assertEqual(checks[0]["status"], "error")
-		self.assertIn("API Key 验证失败", checks[0]["message"])
+		self.assertIn("AI 服务鉴权失败", checks[0]["message"])
 		self.assertNotIn("secret-key", str(checks))
 
 	@patch("bosshunter.web.preflight.httpx.get")

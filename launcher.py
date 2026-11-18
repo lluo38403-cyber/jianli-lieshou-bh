@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -31,6 +32,20 @@ def _bundled_node() -> Path | None:
     return None
 
 
+def _ensure_config(exe_dir: Path) -> Path:
+    """首次运行：把随包的 config.example.yaml 复制为 exe 旁的 config.yaml。
+
+    打包方在 config.example.yaml 里预置的 AI 配置（含各服务商 Key）就这样
+    随包发出去；只在 config.yaml 不存在时复制一次，绝不覆盖用户已有的配置。
+    """
+    config_path = exe_dir / "config.yaml"
+    if not config_path.exists():
+        example = exe_dir / "config.example.yaml"
+        if example.is_file():
+            shutil.copyfile(example, config_path)
+    return config_path
+
+
 def main() -> None:
     exe_dir = _exe_dir()
     os.chdir(exe_dir)
@@ -38,7 +53,7 @@ def main() -> None:
     if node is not None:
         # 浏览器运行时（cdp-proxy.mjs）优先用打包自带的 Node 22+
         os.environ.setdefault("BOSSHUNTER_NODE_PATH", str(node))
-    config_path = exe_dir / "config.yaml"
+    config_path = _ensure_config(exe_dir) if getattr(sys, "frozen", False) else exe_dir / "config.yaml"
     args = sys.argv[1:] or ["web"]
     if not getattr(sys, "frozen", False):
         print("简历猎手正在启动，请稍等...")

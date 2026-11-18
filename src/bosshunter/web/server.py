@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 import math
 import mimetypes
 import random
+import secrets
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -36,11 +37,17 @@ from bosshunter.ai.credentials import AIRequestError, get_ai_api_key, list_ai_mo
 from bosshunter.ai.scorer import sanitize_score_trace
 from bosshunter.cities import CityRefreshError, get_city_map, load_city_snapshot, refresh_city_cache
 from bosshunter.config import (
+	ADMIN_PASSWORD_MIN_LENGTH,
+	AI_CREDENTIAL_FIELDS,
 	AI_SERVICE_PRESETS,
+	SUPPORTED_AI_SERVICES,
+	get_admin_password_hash,
+	hash_admin_password,
 	load_config,
 	remove_retired_collection_settings,
 	save_config,
 	validate_config_send_windows,
+	verify_admin_password,
 )
 from bosshunter.db import (
 	GREETING_ALLOWED_STATUSES,
@@ -266,36 +273,39 @@ def _serialize_job(item, *, config=None):
 	return record
 
 
-def _mask_api_key(key):
-	"""Return a display-safe API key marker."""
-	if not key:
+def _mask_secret(value: str) -> str:
+	"""Return a display-safe marker for a stored secret (admin panel only)."""
+	if not value:
 		return ""
-	if len(key) > 8:
-		return key[:4] + "***" + key[-4:]
+	if len(value) > 8:
+		return value[:4] + "***" + value[-4:]
 	return "***"
 
 
+# 用户端看不到、也改不了的字段：整个 ai 区 + 招呼语相关的 profile 字段
+# （招呼语开关/固定文案/偏好属于 AI 功能，由管理员面板管理）。
+_ADMIN_MANAGED_PROFILE_FIELDS = ("ai_greeting_enabled", "fixed_greeting", "greeting_preference")
+
+
 def _redact_config_for_response(config):
-	"""Hide secrets before returning config to the browser."""
+	"""Hide AI configuration from the user-facing config API.
+
+	用户端接口不再返回任何 AI 配置细节：整个 ``ai`` 区与管理员管的
+	招呼语字段都不返回。管理员面板走另外的接口。
+	"""
 	redacted = deepcopy(config)
-	ai_cfg = redacted.get("ai")
-	if isinstance(ai_cfg, dict):
-		key = ai_cfg.pop("api_key", None)
-		if key:
-			ai_cfg["api_key_masked"] = _mask_api_key(str(key))
-		auth_token = ai_cfg.pop("auth_token", None)
-		if auth_token:
-			ai_cfg["auth_token_masked"] = _mask_api_key(str(auth_token))
+	redacted.pop("ai", None)
+	redacted.pop("admin", None)
+	profile_cfg = redacted.get("profile")
+	if isinstance(profile_cfg, dict):
+		for field in _ADMIN_MANAGED_PROFILE_FIELDS:
+			profile_cfg.pop(field, None)
 	return redacted
 
 
 def _config_download_payload(config: dict) -> str:
 	"""Serialize a shareable config backup without credentials."""
 	redacted = _redact_config_for_response(config)
-	ai_cfg = redacted.get("ai")
-	if isinstance(ai_cfg, dict):
-		ai_cfg.pop("api_key_masked", None)
-		ai_cfg.pop("auth_token_masked", None)
 	return yaml.dump(redacted, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
 
@@ -305,48 +315,25 @@ def _write_config(config: dict) -> None:
 
 
 def _sanitize_config_for_write(data):
-	"""Remove browser-only fields and preserve existing secrets on blank posts."""
+	"""Remove browser-only fields; user submissions cannot change AI settings.
+
+	用户端提交的 ``ai`` 整个丢弃（提供方/模型/凭证一律不接受），已保存的
+	AI 配置原样保留；招呼语字段与 ``admin`` 同样只认服务端已保存的值。
+	AI 设置改走管理员面板（``/api/admin/config``）。
+	"""
 	cleaned = remove_retired_collection_settings(deepcopy(data))
-	ai_cfg = cleaned.get("ai")
-	if not isinstance(ai_cfg, dict):
-		return cleaned
-
-	ai_cfg.pop("api_key_masked", None)
-	ai_cfg.pop("has_api_key", None)
-	ai_cfg.pop("auth_token_masked", None)
-	ai_cfg.pop("has_auth_token", None)
-
-	existing_ai = load_config(CONFIG_PATH).get("ai", {})
-	service = ai_cfg.get("service") or existing_ai.get("service")
-	if service not in AI_SERVICE_PRESETS:
-		provider = ai_cfg.get("provider") or existing_ai.get("provider") or "anthropic"
-		service = "custom" if provider == "openai_compatible" else "anthropic"
-	ai_cfg["service"] = service
-	ai_cfg["provider"] = AI_SERVICE_PRESETS[service]["provider"]
-
-	clear_credentials = bool(ai_cfg.pop("clear_credentials", False))
-
-	for field in ("api_key", "auth_token"):
-		if clear_credentials:
-			posted_value = ai_cfg.get(field)
-			if posted_value is None or str(posted_value).strip() == "":
-				ai_cfg.pop(field, None)
-			continue
-		posted_value = ai_cfg.get(field)
-		existing_value = existing_ai.get(field)
-		existing_mask = _mask_api_key(str(existing_value)) if existing_value else ""
-		should_preserve = (
-			posted_value is None
-			or str(posted_value).strip() == ""
-			or (existing_mask and posted_value == existing_mask)
-		)
-
-		if should_preserve:
-			if existing_value:
-				ai_cfg[field] = existing_value
+	existing = load_config(CONFIG_PATH)
+	# AI 配置：用户端写什么都作废，以服务端已保存的为准。
+	cleaned["ai"] = deepcopy(existing.get("ai", {}))
+	cleaned.pop("admin", None)
+	profile_cfg = cleaned.get("profile")
+	if isinstance(profile_cfg, dict):
+		existing_profile = existing.get("profile", {})
+		for field in _ADMIN_MANAGED_PROFILE_FIELDS:
+			if existing_profile.get(field) is not None:
+				profile_cfg[field] = existing_profile[field]
 			else:
-				ai_cfg.pop(field, None)
-
+				profile_cfg.pop(field, None)
 	return cleaned
 
 
@@ -1510,12 +1497,262 @@ def api_workbench_preflight():
 
 @app.route("/api/diagnostics/ai")
 def api_ai_diagnostics():
+	if (denied := _require_admin()) is not None:
+		return denied
 	try:
 		checks = check_ai_connection(load_config(CONFIG_PATH), required=True)
 		messages = error_messages(checks)
 		return _json_response({"ok": not messages, "messages": messages, "checks": checks})
 	except Exception as e:
 		return _json_response({"ok": False, "messages": [str(e)]}, 500)
+
+
+# ─── Admin Panel API ────────────────────────────────────────────
+# 管理员面板（/admin）：密码保护，由 lucky 掌控。AI 配置（提供方、
+# 模型、凭证、招呼语、改简历开关）只在这里改，改完全局生效。
+# 会话令牌只放内存：服务重启后失效，需要重新登录。
+
+_ADMIN_SESSION_COOKIE = "bh_admin_session"
+_ADMIN_SESSION_TTL_SECONDS = 12 * 3600
+_ADMIN_SESSIONS: dict[str, float] = {}
+_ADMIN_SESSIONS_LOCK = Lock()
+
+
+def _admin_session_token() -> str | None:
+	token = request.get_cookie(_ADMIN_SESSION_COOKIE)
+	if not token:
+		return None
+	with _ADMIN_SESSIONS_LOCK:
+		expiry = _ADMIN_SESSIONS.get(token)
+		if expiry is None:
+			return None
+		if expiry < time.time():
+			del _ADMIN_SESSIONS[token]
+			return None
+		return token
+
+
+def _admin_authorized() -> bool:
+	return _admin_session_token() is not None
+
+
+def _require_admin():
+	"""Return a 401 response when the caller is not an authorized admin."""
+	if _admin_authorized():
+		return None
+	return _json_response({"error": "需要管理员登录"}, 401)
+
+
+def _admin_password_configured() -> bool:
+	return get_admin_password_hash(load_config(CONFIG_PATH)) is not None
+
+
+@app.route("/api/admin/status")
+def api_admin_status():
+	return _json_response({
+		"authorized": _admin_authorized(),
+		"password_configured": _admin_password_configured(),
+	})
+
+
+@app.route("/api/admin/login", method="POST")
+def api_admin_login():
+	try:
+		body = request.json or {}
+		password = body.get("password") if isinstance(body, dict) else None
+		stored = get_admin_password_hash(load_config(CONFIG_PATH))
+		if stored is None:
+			return _json_response({"error": "未设置管理员密码，请先在配置文件里设置"}, 400)
+		if not isinstance(password, str) or not verify_admin_password(password, stored):
+			return _json_response({"error": "管理员密码不正确"}, 401)
+		token = secrets.token_urlsafe(32)
+		with _ADMIN_SESSIONS_LOCK:
+			_ADMIN_SESSIONS[token] = time.time() + _ADMIN_SESSION_TTL_SECONDS
+		response.set_cookie(
+			_ADMIN_SESSION_COOKIE, token,
+			httponly=True, samesite="lax", path="/",
+			max_age=_ADMIN_SESSION_TTL_SECONDS,
+		)
+		return _json_response({"ok": True})
+	except Exception:
+		return _json_response({"error": "登录失败，请重试"}, 500)
+
+
+@app.route("/api/admin/logout", method="POST")
+def api_admin_logout():
+	token = _admin_session_token()
+	if token:
+		with _ADMIN_SESSIONS_LOCK:
+			_ADMIN_SESSIONS.pop(token, None)
+	response.delete_cookie(_ADMIN_SESSION_COOKIE, path="/")
+	return _json_response({"ok": True})
+
+
+def _admin_ai_view(config: dict) -> dict:
+	"""AI config for the admin panel: keys are masked, never raw values."""
+	ai_cfg = deepcopy(config.get("ai", {})) if isinstance(config.get("ai"), dict) else {}
+	services_out: dict[str, dict[str, str]] = {}
+	services = ai_cfg.pop("services", None)
+	if isinstance(services, dict):
+		for svc, entry in services.items():
+			if not isinstance(entry, dict):
+				continue
+			masked: dict[str, str] = {}
+			for field in AI_CREDENTIAL_FIELDS:
+				if entry.get(field):
+					masked[f"{field}_masked"] = _mask_secret(str(entry[field]))
+			if masked:
+				services_out[svc] = masked
+	for field in AI_CREDENTIAL_FIELDS:
+		if ai_cfg.get(field):
+			ai_cfg[f"{field}_masked"] = _mask_secret(str(ai_cfg[field]))
+			ai_cfg.pop(field, None)
+	if services_out:
+		ai_cfg["services"] = services_out
+	return ai_cfg
+
+
+@app.route("/api/admin/config")
+def api_admin_config_get():
+	if (denied := _require_admin()) is not None:
+		return denied
+	config = load_config(CONFIG_PATH)
+	profile_cfg = config.get("profile", {})
+	return _json_response({
+		"ai": _admin_ai_view(config),
+		"profile": {field: profile_cfg.get(field) for field in _ADMIN_MANAGED_PROFILE_FIELDS},
+	})
+
+
+def _merge_admin_ai(posted_ai: dict, saved_ai: dict) -> dict:
+	"""Merge admin-submitted AI settings over the saved config.
+
+	提供方/模型等明文直接覆盖；凭证字段只认新值（非空且与掩码不同），
+	没提交或留空的沿用已保存的。输入非法时抛 ValueError。
+	"""
+	new_ai = deepcopy(saved_ai) if isinstance(saved_ai, dict) else {}
+	service = posted_ai.get("service") or new_ai.get("service") or "anthropic"
+	if service not in AI_SERVICE_PRESETS:
+		raise ValueError("不支持的 AI 服务商")
+	new_ai["service"] = service
+	new_ai["provider"] = AI_SERVICE_PRESETS[service]["provider"]
+	# 清除已保存的凭证（管理员主动清理时用；之后再填的新 Key 仍生效）。
+	if posted_ai.get("clear_credentials"):
+		new_ai.pop("api_key", None)
+		new_ai.pop("auth_token", None)
+		new_ai.pop("services", None)
+	for field in (
+		"base_url", "model", "thinking", "thinking_budget", "timeout_seconds",
+		"scoring_max_tokens", "scoring_max_attempts", "scoring_concurrency",
+		"scoring_second_review", "greeting_max_tokens", "greeting_review_max_tokens",
+		"greeting_max_attempts", "greeting_style_suggestions", "resume_tailor_enabled",
+	):
+		if field in posted_ai:
+			new_ai[field] = posted_ai[field]
+	if new_ai.get("thinking") not in {"auto", "disabled", "enabled", "off"}:
+		raise ValueError("Thinking 模式不正确")
+	if not isinstance(new_ai.get("model", ""), str) or not isinstance(new_ai.get("base_url", ""), str):
+		raise ValueError("模型名称与 Base URL 必须是文本")
+	for field in AI_CREDENTIAL_FIELDS:
+		posted_value = posted_ai.get(field)
+		if posted_value is None or str(posted_value).strip() == "":
+			continue
+		saved_value = saved_ai.get(field) if isinstance(saved_ai, dict) else None
+		if saved_value and str(posted_value) == _mask_secret(str(saved_value)):
+			continue
+		new_ai[field] = posted_value
+	posted_services = posted_ai.get("services")
+	if isinstance(posted_services, dict):
+		saved_services = new_ai.get("services")
+		if not isinstance(saved_services, dict):
+			saved_services = {}
+			new_ai["services"] = saved_services
+		for svc, entry in posted_services.items():
+			if svc not in SUPPORTED_AI_SERVICES or not isinstance(entry, dict):
+				continue
+			saved_entry = saved_services.get(svc) if isinstance(saved_services.get(svc), dict) else {}
+			for field in AI_CREDENTIAL_FIELDS:
+				posted_value = entry.get(field)
+				if posted_value is None or str(posted_value).strip() == "":
+					continue
+				saved_value = saved_entry.get(field)
+				if saved_value and str(posted_value) == _mask_secret(str(saved_value)):
+					continue
+				saved_services.setdefault(svc, {})[field] = posted_value
+	return new_ai
+
+
+@app.route("/api/admin/config", method="POST")
+def api_admin_config_post():
+	if (denied := _require_admin()) is not None:
+		return denied
+	try:
+		from bosshunter.ai.greeter import greeting_config_error
+
+		data = request.json
+		if not isinstance(data, dict):
+			return _json_response({"error": "请求体必须是对象"}, 400)
+		config = load_config(CONFIG_PATH)
+		merged = deepcopy(config)
+		posted_ai = data.get("ai")
+		if posted_ai is not None:
+			if not isinstance(posted_ai, dict):
+				return _json_response({"error": "AI 配置必须是对象"}, 400)
+			try:
+				merged["ai"] = _merge_admin_ai(posted_ai, config.get("ai", {}))
+			except ValueError as exc:
+				return _json_response({"error": str(exc)}, 400)
+		posted_profile = data.get("profile")
+		if posted_profile is not None:
+			if not isinstance(posted_profile, dict):
+				return _json_response({"error": "个人信息必须是对象"}, 400)
+			new_profile = deepcopy(config.get("profile", {}))
+			for field in _ADMIN_MANAGED_PROFILE_FIELDS:
+				if field in posted_profile:
+					new_profile[field] = posted_profile[field]
+			merged["profile"] = new_profile
+		if error := greeting_config_error(merged):
+			return _json_response({"error": error}, 400)
+		posted_admin = data.get("admin")
+		if posted_admin is not None:
+			if not isinstance(posted_admin, dict):
+				return _json_response({"error": "管理员设置必须是对象"}, 400)
+			new_password = posted_admin.get("new_password")
+			if new_password is not None:
+				if not isinstance(new_password, str) or len(new_password) < ADMIN_PASSWORD_MIN_LENGTH:
+					return _json_response(
+						{"error": f"管理员密码至少 {ADMIN_PASSWORD_MIN_LENGTH} 位"}, 400
+					)
+				merged.setdefault("admin", {})["password_hash"] = hash_admin_password(new_password)
+		_write_config(merged)
+		return _json_response({"success": True, "message": "管理员配置已保存"})
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/admin/config/models", method="POST")
+def api_admin_config_models():
+	"""Fetch the model list with an admin draft plus saved credentials."""
+	if (denied := _require_admin()) is not None:
+		return denied
+	try:
+		data = request.json
+		if not isinstance(data, dict) or not isinstance(data.get("ai"), dict):
+			return _json_response({"error": "请提供 AI 配置"}, 400)
+		ai = data["ai"]
+		for field in ("service", "provider", "base_url", "api_key", "auth_token", "model"):
+			if field in ai and not isinstance(ai[field], str):
+				return _json_response({"error": "AI 配置字段必须是文本"}, 400)
+		config = load_config(CONFIG_PATH)
+		try:
+			draft = _merge_admin_ai(ai, config.get("ai", {}))
+		except ValueError as exc:
+			return _json_response({"error": str(exc)}, 400)
+		return _json_response({"models": list_ai_models({"ai": draft})})
+	except AIRequestError as exc:
+		return _json_response({"error": exc.user_message}, 400)
+	except Exception:
+		return _json_response({"error": "获取模型列表失败，请检查 AI 配置后重试"}, 500)
 
 
 def _scoring_options_from_body(body: dict) -> dict:
@@ -2589,30 +2826,15 @@ def api_config_post():
 		return _json_response({"error": str(e)}, 500)
 
 
-@app.route("/api/config/models", method="POST")
-def api_config_models():
-	"""Use draft AI settings and saved credentials without persisting the draft."""
-	try:
-		data = request.json
-		if not isinstance(data, dict) or not isinstance(data.get("ai"), dict):
-			return _json_response({"error": "请提供 AI 配置"}, 400)
-		ai = data["ai"]
-		for field in ("service", "provider", "base_url", "api_key", "auth_token", "ollama_base_url", "ollama_model"):
-			if field in ai and not isinstance(ai[field], str):
-				return _json_response({"error": "AI 配置字段必须是文本"}, 400)
-		config = _sanitize_config_for_write({"ai": ai})
-		return _json_response({"models": list_ai_models(config)})
-	except AIRequestError as exc:
-		return _json_response({"error": exc.user_message}, 400)
-	except Exception:
-		return _json_response({"error": "获取模型列表失败，请检查 AI 配置后重试"}, 500)
-
-
 @app.route("/api/config/schema")
 def api_config_schema():
 	try:
 		with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
 			schema = json.load(f)
+		# 用户端不返回 AI 配置结构（提供方、字段说明属于 AI 配置细节）。
+		schema["sections"] = [
+			section for section in schema.get("sections", []) if section.get("key") != "ai"
+		]
 		return _json_response(schema)
 	except Exception as e:
 		return _json_response({"error": str(e)}, 500)

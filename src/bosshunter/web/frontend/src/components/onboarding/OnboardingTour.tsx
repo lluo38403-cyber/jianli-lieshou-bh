@@ -11,8 +11,6 @@ const steps: TourStep[] = [
   { route: '/config', target: 'resume-upload', title: '上传简历', body: '在高亮区域点击或拖入简历。已有简历可以直接进入下一步。', click: false },
   { route: '/config', target: 'search-keywords', title: '填写搜索关键词', body: '在已启用平台的搜索关键词中输入目标岗位，按回车确认。若平台都未启用，先打开一个平台开关。', click: false },
   { route: '/config', target: 'search-city', title: '选择搜索城市', body: '搜索并选中希望求职的城市。若平台都未启用，先打开一个平台开关。', click: false, placement: 'above' },
-  { route: '/config', target: 'ai-section', title: '打开 AI 设置', body: '点击“AI 设置”，找到服务商、模型和 API Key。', click: true },
-  { route: '/config', target: 'ai-fields', title: '连接 AI', body: '选择服务商并填写下方的模型与 API Key；如果已通过环境变量配置，可保留 Key 输入框为空。', click: false, placement: 'above' },
   { route: '/config', target: 'config-save', title: '保存配置', body: '有修改时点击高亮的“保存”。按钮恢复禁用后，表示当前没有待保存修改。', click: false, waitForSave: true, scroll: false },
   { route: '/config', target: 'nav-workbench', title: '返回工作台', body: '点击左侧“工作台”，继续检查本地运行环境。', click: true },
   { route: '/', target: 'chrome-guide', title: '连接 Chrome', body: '点击高亮的说明链接，按文档开启远程调试并登录招聘平台。完成后回到这里。', click: false },

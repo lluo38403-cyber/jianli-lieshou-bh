@@ -8,58 +8,10 @@ import { TagsInput } from '@/components/ui/tags-input'
 import { CityMultiSelect, type CityOption } from '@/components/config/CityMultiSelect'
 import { ResumeUploadSection } from '@/components/config/ResumeUploadSection'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
-import { Save, RotateCcw, Loader2 } from 'lucide-react'
-import { useState, useEffect, useRef } from 'react'
+import { Save, RotateCcw } from 'lucide-react'
+import { useState, useEffect } from 'react'
 import { PLATFORM_LABELS, PLATFORM_SHORT_LABELS } from '@/lib/platforms'
 
-const AI_SERVICES = {
-  anthropic: {
-    label: 'Claude / Anthropic',
-    provider: 'anthropic',
-    baseUrl: '',
-    defaultModel: 'claude-sonnet-4-6',
-    keyEnv: 'ANTHROPIC_API_KEY',
-  },
-  deepseek: {
-    label: 'DeepSeek',
-    provider: 'openai_compatible',
-    baseUrl: 'https://api.deepseek.com',
-    defaultModel: '',
-    keyEnv: 'DEEPSEEK_API_KEY',
-  },
-  doubao: {
-    label: '豆包 / 火山方舟',
-    provider: 'openai_compatible',
-    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-    defaultModel: '',
-    keyEnv: 'ARK_API_KEY',
-  },
-  custom: {
-    label: '其他 OpenAI 兼容接口',
-    provider: 'openai_compatible',
-    baseUrl: '',
-    defaultModel: '',
-    keyEnv: 'OPENAI_API_KEY',
-  },
-  ollama: {
-    label: 'Ollama 本地模型',
-    provider: 'ollama',
-    baseUrl: '',
-    defaultModel: '',
-    keyEnv: '',
-    ollamaBaseUrl: 'http://127.0.0.1:11434',
-    ollamaModel: 'qwen2.5:7b',
-  },
-  local: {
-    label: '本地规则（不用 AI）',
-    provider: 'local',
-    baseUrl: '',
-    defaultModel: '',
-    keyEnv: '',
-  },
-} as const
-
-type AiService = keyof typeof AI_SERVICES
 type PlatformId = 'boss' | 'zhilian' | '51job' | 'liepin'
 
 const BOSS_FILTER_OPTIONS = {
@@ -71,48 +23,13 @@ const BOSS_FILTER_OPTIONS = {
 } as const
 
 export default function ConfigPage() {
-  const { config, schema, loading, saving, dirty, error, message, updateConfig, saveConfig, resetConfig } = useConfig()
-  const [aiTest, setAiTest] = useState<{ testing: boolean; ok?: boolean; message?: string }>({ testing: false })
-  const [modelList, setModelList] = useState<{ loading: boolean; models: string[]; message?: string; error?: boolean }>({ loading: false, models: [] })
-  const modelRequest = useRef<AbortController | null>(null)
+  const { config, loading, saving, dirty, error, message, updateConfig, saveConfig, resetConfig } = useConfig()
   const [cityOptions, setCityOptions] = useState<CityOption[]>([])
   const [zhilianCityOptions, setZhilianCityOptions] = useState<CityOption[]>([])
   const [job51CityOptions, setJob51CityOptions] = useState<CityOption[]>([])
   const [liepinCityOptions, setLiepinCityOptions] = useState<CityOption[]>([])
   const [cityRefreshing, setCityRefreshing] = useState(false)
   const [cityMessage, setCityMessage] = useState('')
-
-  useEffect(() => {
-    setModelList({ loading: false, models: [] })
-    return () => modelRequest.current?.abort()
-  }, [config?.ai?.service, config?.ai?.provider, config?.ai?.base_url, config?.ai?.api_key, config?.ai?.api_key_masked, config?.ai?.auth_token_masked, config?.ai?.clear_credentials, config?.ai?.ollama_base_url, config?.ai?.ollama_model])
-
-  const handleFetchModels = async () => {
-    modelRequest.current?.abort()
-    const controller = new AbortController()
-    modelRequest.current = controller
-    setModelList({ loading: true, models: [] })
-    try {
-      const res = await fetch('/api/config/models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ai: config?.ai || {} }),
-        signal: controller.signal,
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || '获取模型列表失败')
-      if (!Array.isArray(data.models) || !data.models.every((model: unknown) => typeof model === 'string')) {
-        throw new Error('模型列表格式不正确，可手动填写模型 ID')
-      }
-      if (!controller.signal.aborted) setModelList({
-        loading: false,
-        models: data.models,
-        message: data.models.length ? `已获取 ${data.models.length} 个模型，请选择或继续手动填写。` : '服务商未返回可用模型，可手动填写模型 ID。',
-      })
-    } catch (error) {
-      if (!controller.signal.aborted) setModelList({ loading: false, models: [], error: true, message: error instanceof Error ? error.message : '获取模型列表失败，请重试' })
-    }
-  }
 
   useEffect(() => {
     fetch('/api/cities', { cache: 'no-store' })
@@ -141,49 +58,6 @@ export default function ConfigPage() {
       })
       .catch(() => {})
   }, [])
-
-  const handleAiTest = async () => {
-    if (dirty) {
-      setAiTest({ testing: false, ok: false, message: '请先保存当前配置，再测试 AI 连接。' })
-      return
-    }
-    setAiTest({ testing: true })
-    try {
-      const res = await fetch('/api/diagnostics/ai', { cache: 'no-store' })
-      const data = await res.json()
-      const check = Array.isArray(data.checks) ? data.checks[0] : null
-      setAiTest({
-        testing: false,
-        ok: Boolean(res.ok && data.ok),
-        message: check ? `${check.message}：${check.detail}` : (data.messages?.[0] || 'AI 接口未返回检测结果'),
-      })
-    } catch {
-      setAiTest({ testing: false, ok: false, message: '无法连接本地检测接口，请确认 BossHunter 后端正在运行。' })
-    }
-  }
-
-  const handleAiServiceChange = (service: AiService) => {
-    const currentService = (config?.ai?.service || (config?.ai?.provider === 'openai_compatible' ? 'custom' : 'anthropic')) as AiService
-    if (service === currentService) return
-    if (
-      (config?.ai?.api_key || config?.ai?.api_key_masked || config?.ai?.auth_token_masked)
-      && !window.confirm('切换 AI 服务商会清除当前保存的 AI 凭证，是否继续？')
-    ) {
-      return
-    }
-    const preset = AI_SERVICES[service]
-    updateConfig('ai.service', service)
-    updateConfig('ai.provider', preset.provider)
-    updateConfig('ai.base_url', preset.baseUrl)
-    updateConfig('ai.model', preset.defaultModel)
-    if ('ollamaBaseUrl' in preset) updateConfig('ai.ollama_base_url', preset.ollamaBaseUrl)
-    if ('ollamaModel' in preset) updateConfig('ai.ollama_model', preset.ollamaModel)
-    updateConfig('ai.api_key', '')
-    updateConfig('ai.api_key_masked', '')
-    updateConfig('ai.auth_token_masked', '')
-    updateConfig('ai.clear_credentials', true)
-    setAiTest({ testing: false })
-  }
 
   const handleCityRefresh = async () => {
     setCityRefreshing(true)
@@ -292,7 +166,6 @@ export default function ConfigPage() {
   const bossTheoreticalExceedsLimit = bossTheoreticalPages > bossDailySearchLimit
   const guidePlatform = (['boss', 'zhilian', '51job', 'liepin'] as PlatformId[])
     .find(platform => config.platforms?.[platform]?.enabled ?? platform === 'boss')
-  const aiService = (config.ai?.service || (config.ai?.provider === 'openai_compatible' ? 'custom' : 'anthropic')) as AiService
 
   return (
     <div className="h-full overflow-y-auto space-y-4 pr-4">
@@ -341,42 +214,6 @@ export default function ConfigPage() {
                 </Select>
               </Field>
             </div>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <label className="text-xs text-foreground">AI 生成招呼语</label>
-                <p className="mt-1 text-xs text-muted">关闭后使用你填写的固定文案，全自动投递时直接发送。</p>
-              </div>
-              <Switch
-                aria-label="AI 生成招呼语"
-                checked={config.profile?.ai_greeting_enabled ?? true}
-                onChange={value => updateConfig('profile.ai_greeting_enabled', value)}
-              />
-            </div>
-            {(config.profile?.ai_greeting_enabled ?? true) === false && (
-              <Field label="固定招呼语">
-                <textarea
-                  aria-label="固定招呼语"
-                  value={config.profile?.fixed_greeting || ''}
-                  onChange={e => updateConfig('profile.fixed_greeting', e.target.value)}
-                  placeholder="填写你希望使用的招呼语"
-                  rows={3}
-                  maxLength={300}
-                  className="w-full resize-y rounded-md border border-card-border bg-surface px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
-                />
-                <p className="mt-1 text-xs text-muted">保存后，新生成时原样使用，不调用 AI。已有文案保留，可逐条编辑。</p>
-              </Field>
-            )}
-            {(config.profile?.ai_greeting_enabled ?? true) && <Field label="招呼语偏好">
-              <textarea
-                value={config.profile?.greeting_preference || ''}
-                onChange={e => updateConfig('profile.greeting_preference', e.target.value)}
-                placeholder="例如：语气简洁；不要主动询问薪资；不要提能否出差"
-                rows={3}
-                maxLength={500}
-                className="w-full resize-y rounded-md border border-card-border bg-surface px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted focus:border-primary"
-              />
-              <p className="mt-1 text-xs text-muted">仅补充语气和内容偏好，不能覆盖真实简历与安全规则。</p>
-            </Field>}
             <Field label="排除关键词">
               <TagsInput value={config.profile?.deal_breakers || []} onChange={v => updateConfig('profile.deal_breakers', v)} placeholder="如：外包、996" />
             </Field>
@@ -622,177 +459,6 @@ export default function ConfigPage() {
           </div>
         </SectionCard>
 
-        {/* AI Section */}
-        <SectionCard title="AI 设置">
-          <div className="space-y-4">
-            <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
-              不填也能用：未配置 AI 时评分走本地规则，招呼语用固定模板；选 Ollama 本地模型不用 Key 也能真评分；HR 自动回复和按岗位定制简历需要 AI（或 Ollama）。
-            </p>
-            <Field label="提供商" dataTour="ai-fields">
-              <Select
-                aria-label="提供商"
-                value={config.ai?.service || (config.ai?.provider === 'openai_compatible' ? 'custom' : 'anthropic')}
-                onChange={e => handleAiServiceChange(e.target.value as AiService)}
-              >
-                {Object.entries(AI_SERVICES).map(([value, preset]) => (
-                  <option key={value} value={value}>{preset.label}</option>
-                ))}
-              </Select>
-              <p className="mt-1 text-xs text-muted">
-                {aiService === 'ollama'
-                  ? '不用 API Key：连本机 Ollama 就能用，评分、招呼语、定制简历都走本地模型。'
-                  : aiService === 'local'
-                    ? '不用 API Key，也不用联网等 AI：评分走本地规则，招呼语用固定模板。'
-                    : <>BossHunter 会自动配置协议和服务地址；也可安全复用环境变量 {AI_SERVICES[aiService].keyEnv}，不会在前端显示其内容。</>}
-              </p>
-            </Field>
-            {aiService === 'ollama' && (
-              <>
-                <Field label="Ollama 地址">
-                  <Input aria-label="Ollama 地址" value={config.ai?.ollama_base_url || ''} onChange={e => {
-                    updateConfig('ai.ollama_base_url', e.target.value)
-                    setAiTest({ testing: false })
-                  }} placeholder="http://127.0.0.1:11434" />
-                  <p className="mt-1 text-xs text-muted">本机 Ollama 的服务地址，一般不用改。</p>
-                </Field>
-                <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
-                  Ollama 不打进安装包：需要在 Windows 电脑上另装 Ollama（官网 ollama.com，免费），装好后在命令行拉一个模型：ollama pull qwen2.5:7b（几 GB，下载一次就行）。装好、拉好模型，本软件连上本机 Ollama 就能真评分、真写招呼语、真改简历，不用 API Key。Ollama 没开或模型没拉好时，会自动回落本地规则，不会卡住。
-                </p>
-              </>
-            )}
-            {aiService === 'local' && (
-              <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
-                本地规则：不调用任何 AI。评分按关键词、薪资、城市、学历这些规则算，招呼语用固定模板，定制简历发原简历。不用 Key，也不用联网等 AI。
-              </p>
-            )}
-            {aiService !== 'local' && (
-              <Field label={aiService === 'ollama' ? 'Ollama 模型' : '模型名称'}>
-              <div className="flex flex-wrap gap-2">
-                <Input aria-label={aiService === 'ollama' ? 'Ollama 模型' : '模型名称'} className="min-w-0 flex-1 basis-40" value={aiService === 'ollama' ? (config.ai?.ollama_model || '') : (config.ai?.model || '')} onChange={e => {
-                  updateConfig(aiService === 'ollama' ? 'ai.ollama_model' : 'ai.model', e.target.value)
-                  setAiTest({ testing: false })
-                }} placeholder={aiService === 'ollama' ? '如 qwen2.5:7b' : '填写服务商当前支持的模型 ID'} />
-                <Button type="button" variant="secondary" disabled={modelList.loading} onClick={handleFetchModels}>
-                  {modelList.loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-                  {modelList.loading ? '获取中…' : '获取模型列表'}
-                </Button>
-              </div>
-              {modelList.models.length > 0 && (
-                <Select aria-label="可用模型" className="mt-2 pr-8 appearance-auto" value={modelList.models.includes(aiService === 'ollama' ? (config.ai?.ollama_model || '') : (config.ai?.model || '')) ? (aiService === 'ollama' ? (config.ai?.ollama_model || '') : (config.ai?.model || '')) : ''} onChange={e => {
-                  updateConfig(aiService === 'ollama' ? 'ai.ollama_model' : 'ai.model', e.target.value)
-                  setAiTest({ testing: false })
-                }}>
-                  <option value="" disabled>请选择模型</option>
-                  {modelList.models.map(model => <option key={model} value={model}>{model}</option>)}
-                </Select>
-              )}
-              <p role="status" className={`mt-1 text-xs ${modelList.error ? 'text-danger' : 'text-muted'}`}>
-                {modelList.message || (aiService === 'ollama' ? '按当前 Ollama 地址获取，无需先保存配置。' : '按当前 Base URL 和 API Key 获取，无需先保存配置。')}
-              </p>
-            </Field>
-            )}
-            {aiService !== 'ollama' && aiService !== 'local' && (
-              <>
-            <Field label="API Key">
-              <Input type="password" value={config.ai?.api_key || ''} onChange={e => {
-                updateConfig('ai.api_key', e.target.value)
-                setAiTest({ testing: false })
-              }} placeholder={config.ai?.api_key_masked || '也可通过环境变量设置'} />
-              <p className="mt-1 text-xs text-muted">填写后优先生效；留空时才读取环境变量。</p>
-            </Field>
-            <Field label="Base URL">
-              <Input value={config.ai?.base_url || ''} onChange={e => {
-                updateConfig('ai.base_url', e.target.value)
-                setAiTest({ testing: false })
-              }} placeholder="留空使用默认" />
-              <p className="mt-1 text-xs text-muted">填写后优先生效；留空时使用环境变量或服务商默认地址。</p>
-            </Field>
-              </>
-            )}
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="Thinking 模式">
-                <Select
-                  value={config.ai?.thinking || 'auto'}
-                  onChange={e => updateConfig('ai.thinking', e.target.value)}
-                >
-                  <option value="auto">自动兼容（推荐）</option>
-                  <option value="disabled">强制关闭</option>
-                  <option value="enabled">强制开启</option>
-                  <option value="off">不发送参数</option>
-                </Select>
-                <p className="mt-1 text-xs text-muted">自动模式优先获取纯文本；接口不支持 thinking 参数时会安全回退。</p>
-              </Field>
-              <Field label="Thinking 预算 Token">
-                <Input
-                  type="number"
-                  value={config.ai?.thinking_budget || 2048}
-                  onChange={e => updateConfig('ai.thinking_budget', Number(e.target.value))}
-                  min={1024}
-                  max={32768}
-                  disabled={(config.ai?.thinking || 'auto') !== 'enabled'}
-                />
-              </Field>
-            </div>
-            <Field label="AI 请求超时 (秒)">
-              <Input
-                type="number"
-                value={config.ai?.timeout_seconds || 180}
-                onChange={e => updateConfig('ai.timeout_seconds', Number(e.target.value))}
-                min={5}
-                max={600}
-              />
-            </Field>
-            <Field label="AI 评分并发数">
-              <Select
-                value={String(config.ai?.scoring_concurrency || 1)}
-                onChange={e => updateConfig('ai.scoring_concurrency', Number(e.target.value))}
-              >
-                {[1, 2, 3].map(value => <option key={value} value={value}>{value}</option>)}
-              </Select>
-              <p className="mt-1 text-xs text-muted">默认 1；提高并发会增加 API 限流风险。</p>
-            </Field>
-            <div className="flex items-center justify-between rounded-lg border border-card-border bg-surface p-3">
-              <div>
-                <label className="text-xs font-bold text-foreground">临界评分二次复核</label>
-                <p className="mt-1 text-xs text-muted">默认关闭；开启后会增加 AI 调用次数。</p>
-              </div>
-              <Switch checked={config.ai?.scoring_second_review ?? false} onChange={v => updateConfig('ai.scoring_second_review', v)} />
-            </div>
-            {(config.profile?.ai_greeting_enabled ?? true) && <div className="rounded-2xl border border-primary/20 bg-surface-muted p-4">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <label className="text-sm font-black text-foreground">招呼语质量提醒</label>
-                  <p className="mt-1 text-xs leading-5 text-muted">可选检查一次，只提供建议，不拒绝或自动改写文案。默认关闭。</p>
-                </div>
-                <Switch
-                  aria-label="招呼语质量提醒"
-                  checked={config.ai?.greeting_style_suggestions ?? false}
-                  onChange={value => updateConfig('ai.greeting_style_suggestions', value)}
-                />
-              </div>
-            </div>}
-            <div className="rounded-2xl border border-card-border bg-surface p-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-black text-foreground">AI 连接检测</div>
-                  <p className="mt-1 text-xs text-muted">{aiService === 'ollama' ? '检测本机 Ollama 是否连通、模型是否已拉取；不消耗对话 Token。' : aiService === 'local' ? '本地规则不调用 AI，点一下也会直接通过。' : '不会消耗对话 Token；检测已保存的 Key、Base URL 和服务可用性。'}</p>
-                </div>
-                <Button variant="secondary" size="sm" onClick={handleAiTest} disabled={aiTest.testing}>
-                  {aiTest.testing ? '检测中...' : '测试连接'}
-                </Button>
-              </div>
-              {aiTest.message && (
-                <p className={`mt-2 rounded-lg px-3 py-2 text-xs ${
-                  aiTest.ok ? 'bg-success-soft text-success' : 'bg-danger-soft text-danger'
-                }`}>
-                  {aiTest.message}
-                </p>
-              )}
-            </div>
-          </div>
-        </SectionCard>
-
-        {/* Anti-monitoring Section */}
         <SectionCard title="投递设置">
           <div className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
@@ -950,7 +616,7 @@ function SectionCard({ title, children }: {
   // 全部平铺：不折叠、不隐藏，选项一次看全。
   return (
     <Card>
-      <div data-tour={title === 'AI 设置' ? 'ai-section' : undefined} className="p-4 pb-0">
+      <div className="p-4 pb-0">
         <span className="text-sm font-black text-foreground">{title}</span>
       </div>
       <div className="px-4 pb-4 pt-3">{children}</div>

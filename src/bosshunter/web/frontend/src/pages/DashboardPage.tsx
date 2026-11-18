@@ -132,7 +132,7 @@ function taskErrorFeedback(error: string) {
   ) {
     return {
       title: 'AI 接口认证失败',
-      detail: '请到“配置 → AI 设置”检查 API Key、Base URL 和模型名称，保存后点击“测试连接”。',
+      detail: 'AI 服务暂时不可用，请稍后重试；如持续失败请联系管理员检查服务配置。',
     }
   }
   if (

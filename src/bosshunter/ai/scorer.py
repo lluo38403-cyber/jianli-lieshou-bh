@@ -8,7 +8,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from bosshunter.ai.credentials import AIRequestError, call_ai_text, get_ai_api_key, get_ai_service
+from bosshunter.ai.credentials import AIRequestError, ai_failure_falls_back, call_ai_text, get_ai_api_key, get_ai_service, get_ai_service_label
 from bosshunter.ai.prefilter import _parse_salary_range_k, quick_score
 from bosshunter.cancellation import OperationCancelled, run_cancellable
 from bosshunter.collection.text import clean_job_description
@@ -171,8 +171,8 @@ def _load_resume(config: dict) -> str:
 
 def _call_claude(prompt: str, config: dict, max_tokens: int | None = None) -> str | None:
     """Call Claude API and return response text."""
-    if get_ai_service(config) not in {"ollama", "local"} and not get_ai_api_key(config):
-        console.print("[red]未设置当前 AI 服务所需的 API Key 环境变量或本地凭据[/red]")
+    if get_ai_service(config) not in {"local"} and not get_ai_api_key(config):
+        console.print("[red]未配置当前 AI 服务，改用本地规则评分[/red]")
         return None
     ai_cfg = config.get("ai", {}) if isinstance(config.get("ai"), dict) else {}
     token_limit = max_tokens if max_tokens is not None else ai_cfg.get("scoring_max_tokens", 8192)
@@ -762,21 +762,22 @@ def _score_job_with_ai(
                     reviewed=False,
                 )
             )
-        if first is None and get_ai_service(config) == "ollama":
-            # Ollama 连不上、模型缺失或返回空：回落本地规则评分，不暂停整批。
+        if first is None and ai_failure_falls_back(config):
+            # 免费档限流/调用失败或返回空：回落本地规则评分，不暂停整批。
             from bosshunter.ai.prefilter import rule_score
 
-            detail = outcome.pause_reason or outcome.failure_detail or "Ollama 未返回评分"
+            label = get_ai_service_label(config)
+            detail = outcome.pause_reason or outcome.failure_detail or f"{label}未返回评分"
             _notify(
                 config,
-                f"{job['company']}｜{job['title']} 的 Ollama 评分不可用（{detail}），已改用本地规则评分。",
+                f"{job['company']}｜{job['title']} 的{label}评分不可用（{detail}），已改用本地规则评分。",
             )
             score, reason = rule_score(job, config)
             return ScoreOutcome(
                 result=ScoreResult(
                     score=score,
                     raw_score=score,
-                    reason=f"规则评分（Ollama 不可用）：{reason}",
+                    reason=f"规则评分（{label}不可用）：{reason}",
                     components={"规则评分": score},
                     caps=(),
                     summary_reason=reason,
@@ -798,8 +799,8 @@ def _score_job_with_ai(
     try:
         response = _call_claude(_build_review_prompt(job, resume, first, config), config)
     except AIRequestError as exc:
-        if get_ai_service(config) == "ollama":
-            _notify(config, f"{job['company']}｜{job['title']} 二次复核未完成（Ollama 不可用），保留第一次评分。")
+        if ai_failure_falls_back(config):
+            _notify(config, f"{job['company']}｜{job['title']} 二次复核未完成（{get_ai_service_label(config)}不可用），保留第一次评分。")
             return outcome
         if exc.kind in {"token_quota", "rate_limit", "auth", "network", "request_failed"}:
             return ScoreOutcome(result=first, pause_reason=str(exc))

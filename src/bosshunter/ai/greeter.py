@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from bosshunter.ai.credentials import AIRequestError, call_ai_text, get_ai_service
+from bosshunter.ai.credentials import AIRequestError, ai_failure_falls_back, call_ai_text, get_ai_service, get_ai_service_label
 from bosshunter.cancellation import OperationCancelled, run_cancellable
 from bosshunter.collection.text import clean_job_description
 from bosshunter.db import (
@@ -619,7 +619,7 @@ def _generate_with_token_retry(
         raise
 
 
-# Ollama 不可用 / 本地规则时的招呼语兜底：与配置默认值里的固定模板一致。
+# AI 不可用 / 本地规则时的招呼语兜底：与配置默认值里的固定模板一致。
 DEFAULT_FIXED_GREETING = "您好，我对贵公司的这个岗位很感兴趣，简历已附上，期待与您进一步沟通，谢谢！"
 
 
@@ -816,21 +816,21 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
                     cancelled = True
                     break
                 except AIRequestError as exc:
-                    if get_ai_service(config) == "ollama":
-                        # Ollama 不可用：回落固定招呼语，不暂停整批。
+                    if ai_failure_falls_back(config):
+                        # 免费档限流/调用失败：回落固定招呼语，不暂停整批。
                         _notify(
                             config,
-                            f"{job['company']}｜{job['title']} 的 Ollama 调用失败（{exc.user_message}），已改用固定招呼语。",
+                            f"{job['company']}｜{job['title']} 的{get_ai_service_label(config)}调用失败（{exc.user_message}），已改用固定招呼语。",
                         )
                         greeting = fixed_greeting
                     else:
                         pause_reason = str(exc)
                         break
 
-                if not greeting and ai_enabled and get_ai_service(config) == "ollama":
+                if not greeting and ai_enabled and ai_failure_falls_back(config):
                     _notify(
                         config,
-                        f"{job['company']}｜{job['title']} 的 Ollama 未返回完整招呼语，已改用固定招呼语。",
+                        f"{job['company']}｜{job['title']} 的{get_ai_service_label(config)}未返回完整招呼语，已改用固定招呼语。",
                     )
                     greeting = fixed_greeting
 
