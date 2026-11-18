@@ -38,7 +38,7 @@ jobs:
       - name: 烟测 exe 版本
         run: dist\简历猎手\简历猎手.exe --version
       - name: 烟测面板（复制一份跑，不污染产物）
-        shell: powershell
+        shell: pwsh
         run: |
           Copy-Item -Recurse dist\简历猎手 $env:RUNNER_TEMP\smoke
           $proc = Start-Process -FilePath "$env:RUNNER_TEMP\smoke\简历猎手.exe" -ArgumentList "web","--no-open" -PassThru
