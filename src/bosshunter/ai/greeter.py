@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from bosshunter.ai.credentials import AIRequestError, call_anthropic_text
+from bosshunter.ai.credentials import AIRequestError, call_ai_text, get_ai_service
 from bosshunter.cancellation import OperationCancelled, run_cancellable
 from bosshunter.collection.text import clean_job_description
 from bosshunter.db import (
@@ -156,7 +156,7 @@ def _call_claude(
     except (TypeError, ValueError):
         token_limit = default_tokens
     return run_cancellable(
-        lambda: call_anthropic_text(
+        lambda: call_ai_text(
             prompt,
             config,
             token_limit,
@@ -619,6 +619,10 @@ def _generate_with_token_retry(
         raise
 
 
+# Ollama 不可用 / 本地规则时的招呼语兜底：与配置默认值里的固定模板一致。
+DEFAULT_FIXED_GREETING = "您好，我对贵公司的这个岗位很感兴趣，简历已附上，期待与您进一步沟通，谢谢！"
+
+
 def greeting_config_error(config: dict) -> str:
     profile = config.get("profile", {})
     enabled = profile.get("ai_greeting_enabled", True)
@@ -650,8 +654,8 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
         }
         _notify(config, error, error=True)
         return 0
-    ai_enabled = config.get("profile", {}).get("ai_greeting_enabled", True)
-    fixed_greeting = config.get("profile", {}).get("fixed_greeting", "").strip()
+    ai_enabled = config.get("profile", {}).get("ai_greeting_enabled", True) and get_ai_service(config) != "local"
+    fixed_greeting = config.get("profile", {}).get("fixed_greeting", "").strip() or DEFAULT_FIXED_GREETING
     db = get_db(db_path)
     if job_ids is None:
         jobs = get_jobs_by_status(db, "approved")
@@ -812,8 +816,23 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
                     cancelled = True
                     break
                 except AIRequestError as exc:
-                    pause_reason = str(exc)
-                    break
+                    if get_ai_service(config) == "ollama":
+                        # Ollama 不可用：回落固定招呼语，不暂停整批。
+                        _notify(
+                            config,
+                            f"{job['company']}｜{job['title']} 的 Ollama 调用失败（{exc.user_message}），已改用固定招呼语。",
+                        )
+                        greeting = fixed_greeting
+                    else:
+                        pause_reason = str(exc)
+                        break
+
+                if not greeting and ai_enabled and get_ai_service(config) == "ollama":
+                    _notify(
+                        config,
+                        f"{job['company']}｜{job['title']} 的 Ollama 未返回完整招呼语，已改用固定招呼语。",
+                    )
+                    greeting = fixed_greeting
 
                 original_issues = []
                 if greeting and ai_enabled:

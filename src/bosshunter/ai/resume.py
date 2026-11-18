@@ -10,7 +10,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from bosshunter.ai.credentials import call_anthropic_text
+from bosshunter.ai.credentials import call_ai_text, get_ai_service
 from bosshunter.browser import close_tab, evaluate, new_tab, print_pdf, screenshot, wait_for_load
 from bosshunter.cancellation import OperationCancelled, run_cancellable, stop_requested
 from bosshunter.db import get_db
@@ -644,7 +644,7 @@ def _call_claude(prompt: str, config: dict) -> str | None:
         ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
         max_tokens = int(ai_cfg.get("resume_max_tokens") or 8000)
         return run_cancellable(
-            lambda: call_anthropic_text(prompt, config, max_tokens),
+            lambda: call_ai_text(prompt, config, max_tokens),
             config,
         )
     except OperationCancelled:
@@ -975,6 +975,8 @@ def _render_pdf_via_cdp(html_content: str, output_path: Path) -> bool:
 
 
 def _resume_generation_source(config: dict, fallback: str = "configured_ai") -> str:
+    if get_ai_service(config) == "ollama":
+        return "ollama"
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
     identity = f"{ai_cfg.get('base_url', '')} {ai_cfg.get('model', '')}".lower()
     return "deepseek" if "deepseek" in identity else fallback

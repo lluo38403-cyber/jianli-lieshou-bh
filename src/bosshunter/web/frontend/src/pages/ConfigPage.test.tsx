@@ -129,3 +129,72 @@ it('points the guide at the platform switch when no search platform is enabled',
   expect(document.querySelector('[data-tour="search-keywords"]')?.contains(bossSwitch)).toBe(true)
   expect(document.querySelector('[data-tour="search-city"]')?.contains(bossSwitch)).toBe(true)
 })
+
+function stubConfigFetch(saved: () => Record<string, any>, onSave?: (next: Record<string, any>) => void) {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    let body: unknown = {}
+    if (url === '/api/config') {
+      if (init?.method === 'POST') {
+        const next = JSON.parse(String(init.body))
+        onSave?.(next)
+        body = { success: true }
+      } else body = saved()
+    }
+    if (url.startsWith('/api/cities')) body = { cities: [] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  })
+}
+
+it('shows Ollama address and model fields without API Key when Ollama is selected', async () => {
+  const saved = { ai: { service: 'ollama', provider: 'ollama', ollama_base_url: 'http://127.0.0.1:11434', ollama_model: 'qwen2.5:7b' } }
+  vi.stubGlobal('fetch', stubConfigFetch(() => saved))
+  render(<ConfigPage />)
+  await screen.findByText('AI 设置')
+  expect((screen.getByRole('textbox', { name: 'Ollama 地址' }) as HTMLInputElement).value).toBe('http://127.0.0.1:11434')
+  expect((screen.getByRole('textbox', { name: 'Ollama 模型' }) as HTMLInputElement).value).toBe('qwen2.5:7b')
+  expect(screen.queryByText('API Key')).toBeNull()
+  expect(screen.getByText(/Ollama 不打进安装包/)).toBeTruthy()
+})
+
+it('switching provider to Ollama saves Ollama defaults and hides API Key', async () => {
+  let saved: Record<string, any> = { ai: { service: 'anthropic', provider: 'anthropic', model: 'claude-sonnet-4-6' } }
+  vi.stubGlobal('fetch', stubConfigFetch(() => saved, next => { saved = next }))
+  render(<ConfigPage />)
+  await screen.findByText('AI 设置')
+  fireEvent.change(screen.getByLabelText('提供商'), { target: { value: 'ollama' } })
+  expect(screen.getByRole('textbox', { name: 'Ollama 地址' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  await screen.findByText('配置已保存')
+  expect(saved.ai.service).toBe('ollama')
+  expect(saved.ai.provider).toBe('ollama')
+  expect(saved.ai.ollama_base_url).toBe('http://127.0.0.1:11434')
+  expect(saved.ai.ollama_model).toBe('qwen2.5:7b')
+  expect(screen.queryByText('API Key')).toBeNull()
+})
+
+it('hides key and model fields when local rules provider is selected', async () => {
+  const saved = { ai: { service: 'local', provider: 'local' } }
+  vi.stubGlobal('fetch', stubConfigFetch(() => saved))
+  render(<ConfigPage />)
+  await screen.findByText('AI 设置')
+  expect(screen.queryByText('API Key')).toBeNull()
+  expect(screen.queryByText('模型名称')).toBeNull()
+  expect(screen.getByText(/本地规则：不调用任何 AI/)).toBeTruthy()
+})
+
+it('shows Ollama readiness from the test-connection button', async () => {
+  const saved = { ai: { service: 'ollama', provider: 'ollama', ollama_base_url: 'http://127.0.0.1:11434', ollama_model: 'qwen2.5:7b' } }
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    let body: unknown = {}
+    if (url === '/api/config') body = saved
+    if (url.startsWith('/api/cities')) body = { cities: [] }
+    if (url === '/api/diagnostics/ai') body = { ok: true, checks: [{ message: 'Ollama 已连接，模型 qwen2.5:7b 就绪', detail: '评分、招呼语、定制简历都走本机模型，不用 API Key。' }] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<ConfigPage />)
+  await screen.findByText('AI 设置')
+  fireEvent.click(screen.getByRole('button', { name: '测试连接' }))
+  expect(await screen.findByText(/Ollama 已连接，模型 qwen2.5:7b 就绪/)).toBeTruthy()
+})

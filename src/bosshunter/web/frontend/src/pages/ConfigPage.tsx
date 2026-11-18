@@ -41,6 +41,22 @@ const AI_SERVICES = {
     defaultModel: '',
     keyEnv: 'OPENAI_API_KEY',
   },
+  ollama: {
+    label: 'Ollama 本地模型',
+    provider: 'ollama',
+    baseUrl: '',
+    defaultModel: '',
+    keyEnv: '',
+    ollamaBaseUrl: 'http://127.0.0.1:11434',
+    ollamaModel: 'qwen2.5:7b',
+  },
+  local: {
+    label: '本地规则（不用 AI）',
+    provider: 'local',
+    baseUrl: '',
+    defaultModel: '',
+    keyEnv: '',
+  },
 } as const
 
 type AiService = keyof typeof AI_SERVICES
@@ -69,7 +85,7 @@ export default function ConfigPage() {
   useEffect(() => {
     setModelList({ loading: false, models: [] })
     return () => modelRequest.current?.abort()
-  }, [config?.ai?.service, config?.ai?.provider, config?.ai?.base_url, config?.ai?.api_key, config?.ai?.api_key_masked, config?.ai?.auth_token_masked, config?.ai?.clear_credentials])
+  }, [config?.ai?.service, config?.ai?.provider, config?.ai?.base_url, config?.ai?.api_key, config?.ai?.api_key_masked, config?.ai?.auth_token_masked, config?.ai?.clear_credentials, config?.ai?.ollama_base_url, config?.ai?.ollama_model])
 
   const handleFetchModels = async () => {
     modelRequest.current?.abort()
@@ -160,6 +176,8 @@ export default function ConfigPage() {
     updateConfig('ai.provider', preset.provider)
     updateConfig('ai.base_url', preset.baseUrl)
     updateConfig('ai.model', preset.defaultModel)
+    if ('ollamaBaseUrl' in preset) updateConfig('ai.ollama_base_url', preset.ollamaBaseUrl)
+    if ('ollamaModel' in preset) updateConfig('ai.ollama_model', preset.ollamaModel)
     updateConfig('ai.api_key', '')
     updateConfig('ai.api_key_masked', '')
     updateConfig('ai.auth_token_masked', '')
@@ -274,6 +292,7 @@ export default function ConfigPage() {
   const bossTheoreticalExceedsLimit = bossTheoreticalPages > bossDailySearchLimit
   const guidePlatform = (['boss', 'zhilian', '51job', 'liepin'] as PlatformId[])
     .find(platform => config.platforms?.[platform]?.enabled ?? platform === 'boss')
+  const aiService = (config.ai?.service || (config.ai?.provider === 'openai_compatible' ? 'custom' : 'anthropic')) as AiService
 
   return (
     <div className="h-full overflow-y-auto space-y-4 pr-4">
@@ -607,10 +626,11 @@ export default function ConfigPage() {
         <SectionCard title="AI 设置">
           <div className="space-y-4">
             <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
-              不填也能用：未配置 AI 时评分走本地规则，招呼语用固定模板；HR 自动回复和按岗位定制简历需要 AI。
+              不填也能用：未配置 AI 时评分走本地规则，招呼语用固定模板；选 Ollama 本地模型不用 Key 也能真评分；HR 自动回复和按岗位定制简历需要 AI（或 Ollama）。
             </p>
             <Field label="提供商" dataTour="ai-fields">
               <Select
+                aria-label="提供商"
                 value={config.ai?.service || (config.ai?.provider === 'openai_compatible' ? 'custom' : 'anthropic')}
                 onChange={e => handleAiServiceChange(e.target.value as AiService)}
               >
@@ -619,25 +639,47 @@ export default function ConfigPage() {
                 ))}
               </Select>
               <p className="mt-1 text-xs text-muted">
-                BossHunter 会自动配置协议和服务地址；也可安全复用环境变量 {
-                  AI_SERVICES[(config.ai?.service || (config.ai?.provider === 'openai_compatible' ? 'custom' : 'anthropic')) as AiService].keyEnv
-                }，不会在前端显示其内容。
+                {aiService === 'ollama'
+                  ? '不用 API Key：连本机 Ollama 就能用，评分、招呼语、定制简历都走本地模型。'
+                  : aiService === 'local'
+                    ? '不用 API Key，也不用联网等 AI：评分走本地规则，招呼语用固定模板。'
+                    : <>BossHunter 会自动配置协议和服务地址；也可安全复用环境变量 {AI_SERVICES[aiService].keyEnv}，不会在前端显示其内容。</>}
               </p>
             </Field>
-            <Field label="模型名称">
+            {aiService === 'ollama' && (
+              <>
+                <Field label="Ollama 地址">
+                  <Input aria-label="Ollama 地址" value={config.ai?.ollama_base_url || ''} onChange={e => {
+                    updateConfig('ai.ollama_base_url', e.target.value)
+                    setAiTest({ testing: false })
+                  }} placeholder="http://127.0.0.1:11434" />
+                  <p className="mt-1 text-xs text-muted">本机 Ollama 的服务地址，一般不用改。</p>
+                </Field>
+                <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
+                  Ollama 不打进安装包：需要在 Windows 电脑上另装 Ollama（官网 ollama.com，免费），装好后在命令行拉一个模型：ollama pull qwen2.5:7b（几 GB，下载一次就行）。装好、拉好模型，本软件连上本机 Ollama 就能真评分、真写招呼语、真改简历，不用 API Key。Ollama 没开或模型没拉好时，会自动回落本地规则，不会卡住。
+                </p>
+              </>
+            )}
+            {aiService === 'local' && (
+              <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
+                本地规则：不调用任何 AI。评分按关键词、薪资、城市、学历这些规则算，招呼语用固定模板，定制简历发原简历。不用 Key，也不用联网等 AI。
+              </p>
+            )}
+            {aiService !== 'local' && (
+              <Field label={aiService === 'ollama' ? 'Ollama 模型' : '模型名称'}>
               <div className="flex flex-wrap gap-2">
-                <Input aria-label="模型名称" className="min-w-0 flex-1 basis-40" value={config.ai?.model || ''} onChange={e => {
-                  updateConfig('ai.model', e.target.value)
+                <Input aria-label={aiService === 'ollama' ? 'Ollama 模型' : '模型名称'} className="min-w-0 flex-1 basis-40" value={aiService === 'ollama' ? (config.ai?.ollama_model || '') : (config.ai?.model || '')} onChange={e => {
+                  updateConfig(aiService === 'ollama' ? 'ai.ollama_model' : 'ai.model', e.target.value)
                   setAiTest({ testing: false })
-                }} placeholder="填写服务商当前支持的模型 ID" />
+                }} placeholder={aiService === 'ollama' ? '如 qwen2.5:7b' : '填写服务商当前支持的模型 ID'} />
                 <Button type="button" variant="secondary" disabled={modelList.loading} onClick={handleFetchModels}>
                   {modelList.loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
                   {modelList.loading ? '获取中…' : '获取模型列表'}
                 </Button>
               </div>
               {modelList.models.length > 0 && (
-                <Select aria-label="可用模型" className="mt-2 pr-8 appearance-auto" value={modelList.models.includes(config.ai?.model) ? config.ai.model : ''} onChange={e => {
-                  updateConfig('ai.model', e.target.value)
+                <Select aria-label="可用模型" className="mt-2 pr-8 appearance-auto" value={modelList.models.includes(aiService === 'ollama' ? (config.ai?.ollama_model || '') : (config.ai?.model || '')) ? (aiService === 'ollama' ? (config.ai?.ollama_model || '') : (config.ai?.model || '')) : ''} onChange={e => {
+                  updateConfig(aiService === 'ollama' ? 'ai.ollama_model' : 'ai.model', e.target.value)
                   setAiTest({ testing: false })
                 }}>
                   <option value="" disabled>请选择模型</option>
@@ -645,9 +687,12 @@ export default function ConfigPage() {
                 </Select>
               )}
               <p role="status" className={`mt-1 text-xs ${modelList.error ? 'text-danger' : 'text-muted'}`}>
-                {modelList.message || '按当前 Base URL 和 API Key 获取，无需先保存配置。'}
+                {modelList.message || (aiService === 'ollama' ? '按当前 Ollama 地址获取，无需先保存配置。' : '按当前 Base URL 和 API Key 获取，无需先保存配置。')}
               </p>
             </Field>
+            )}
+            {aiService !== 'ollama' && aiService !== 'local' && (
+              <>
             <Field label="API Key">
               <Input type="password" value={config.ai?.api_key || ''} onChange={e => {
                 updateConfig('ai.api_key', e.target.value)
@@ -662,6 +707,8 @@ export default function ConfigPage() {
               }} placeholder="留空使用默认" />
               <p className="mt-1 text-xs text-muted">填写后优先生效；留空时使用环境变量或服务商默认地址。</p>
             </Field>
+              </>
+            )}
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="Thinking 模式">
                 <Select
@@ -728,7 +775,7 @@ export default function ConfigPage() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="text-sm font-black text-foreground">AI 连接检测</div>
-                  <p className="mt-1 text-xs text-muted">不会消耗对话 Token；检测已保存的 Key、Base URL 和服务可用性。</p>
+                  <p className="mt-1 text-xs text-muted">{aiService === 'ollama' ? '检测本机 Ollama 是否连通、模型是否已拉取；不消耗对话 Token。' : aiService === 'local' ? '本地规则不调用 AI，点一下也会直接通过。' : '不会消耗对话 Token；检测已保存的 Key、Base URL 和服务可用性。'}</p>
                 </div>
                 <Button variant="secondary" size="sm" onClick={handleAiTest} disabled={aiTest.testing}>
                   {aiTest.testing ? '检测中...' : '测试连接'}

@@ -2597,7 +2597,7 @@ def api_config_models():
 		if not isinstance(data, dict) or not isinstance(data.get("ai"), dict):
 			return _json_response({"error": "请提供 AI 配置"}, 400)
 		ai = data["ai"]
-		for field in ("service", "provider", "base_url", "api_key", "auth_token"):
+		for field in ("service", "provider", "base_url", "api_key", "auth_token", "ollama_base_url", "ollama_model"):
 			if field in ai and not isinstance(ai[field], str):
 				return _json_response({"error": "AI 配置字段必须是文本"}, 400)
 		config = _sanitize_config_for_write({"ai": ai})

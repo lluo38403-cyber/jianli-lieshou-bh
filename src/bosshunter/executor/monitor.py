@@ -6,7 +6,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from bosshunter.ai.credentials import call_anthropic_text
+from bosshunter.ai.credentials import call_ai_text, get_ai_service
 from bosshunter.browser import new_tab, close_tab, evaluate, click, wait_for_load, get_page_info
 from bosshunter.cancellation import (
     OperationCancelled,
@@ -312,7 +312,7 @@ def _call_claude(prompt: str, config: dict) -> str | None:
     """Call Claude API and return response text."""
     try:
         return run_cancellable(
-            lambda: call_anthropic_text(prompt, config, 500),
+            lambda: call_ai_text(prompt, config, 500),
             config,
         )
     except OperationCancelled:
@@ -1480,6 +1480,19 @@ def _open_scanned_conversation(
     return target_id
 
 
+def _fallback_resume_path(config: dict) -> Path | None:
+    """Return the original resume when the local AI path fails, else None.
+
+    Ollama 没开、模型没拉好或返回空时，定制简历生成失败不应把岗位记为
+    失败——直接用原简历继续走 HR 回复流程。云端服务商失败时不回落，
+    保持原有“记 resume_failed、人工处理”的行为。
+    """
+    if get_ai_service(config) not in {"ollama", "local"}:
+        return None
+    base_resume = Path(config.get("profile", {}).get("resume_path", "./resume.md"))
+    return base_resume if base_resume.exists() else None
+
+
 def _handle_conversation(job: dict, config: dict, conversation: dict | None = None) -> str:
     """Handle a single conversation that has an HR reply.
 
@@ -1607,6 +1620,16 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
                 resume_path = None
                 resume_failure_reason = f"生成过程发生异常：{exc}"
                 console.print(f"[red]    定制简历生成异常：{exc}[/red]")
+            if not resume_path:
+                # Ollama/本地规则路径失败：改用原简历，不把岗位记为失败。
+                fallback = _fallback_resume_path(config)
+                if fallback is not None:
+                    resume_path = fallback
+                    resume_label = "原简历（Ollama 定制失败，已回落）"
+                    console.print(
+                        f"[yellow]    ! Ollama 定制简历失败（{resume_failure_reason or '无返回'}），已改用原简历[/yellow]"
+                    )
+                    resume_failure_reason = ""
         else:
             resume_label = "原简历"
             base_resume = Path(config.get("profile", {}).get("resume_path", "./resume.md"))

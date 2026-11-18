@@ -12,6 +12,11 @@ from bosshunter.config import AI_SERVICE_PRESETS
 _MODEL_RESOLVE_CACHE: dict[tuple[str, str, str], str] = {}
 _THINKING_MODES = {"auto", "disabled", "enabled", "off"}
 
+# Ollama 本地模型默认配置：qwen2.5:7b——中文强、7B 单机能跑（约 5GB，
+# CPU 也能跑只是慢）、指令跟随好，能稳定输出评分要的结构化 JSON。
+OLLAMA_DEFAULT_BASE_URL = "http://127.0.0.1:11434"
+OLLAMA_DEFAULT_MODEL = "qwen2.5:7b"
+
 
 def _ambient_proxy_vars() -> bool:
     """Return true when process-level proxy settings could affect AI calls."""
@@ -318,6 +323,9 @@ def get_ai_api_key(config: dict) -> str | None:
     """Resolve a standard API key from config first, then env, without exposing its value."""
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
     service = get_ai_service(config)
+    if service in {"ollama", "local"}:
+        # 本地路径不用 Key：Ollama 走本机 HTTP，本地规则不调任何 AI。
+        return None
     if service == "deepseek":
         return (
             ai_cfg.get("api_key")
@@ -353,6 +361,8 @@ def get_ai_key_source(config: dict) -> str | None:
         "doubao": ("ARK_API_KEY", "OPENAI_API_KEY"),
         "custom": ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"),
         "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
+        "ollama": (),
+        "local": (),
     }[service]
     for env_name in candidates:
         if os.environ.get(env_name):
@@ -364,6 +374,13 @@ def get_ai_base_url(config: dict) -> str | None:
     """Resolve the service-specific API base URL from config first, then env, then preset."""
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
     service = get_ai_service(config)
+    if service == "ollama":
+        return (
+            ai_cfg.get("ollama_base_url")
+            or AI_SERVICE_PRESETS["ollama"]["base_url"]
+        )
+    if service == "local":
+        return None
     if service == "deepseek":
         return (
             ai_cfg.get("base_url")
@@ -390,7 +407,7 @@ def get_ai_base_url(config: dict) -> str | None:
 def get_ai_base_url_source(config: dict) -> str | None:
     """Return only the base URL source name, consistent with get_ai_base_url resolution."""
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
-    if ai_cfg.get("base_url"):
+    if ai_cfg.get("base_url") or ai_cfg.get("ollama_base_url"):
         return "本地配置"
     service = get_ai_service(config)
     env_names = {
@@ -398,7 +415,9 @@ def get_ai_base_url_source(config: dict) -> str | None:
         "doubao": ("ARK_BASE_URL", "OPENAI_BASE_URL"),
         "custom": ("OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"),
         "anthropic": ("ANTHROPIC_BASE_URL",),
-    }[service]
+        "ollama": (),
+        "local": (),
+    }.get(service, ())
     for env_name in env_names:
         if os.environ.get(env_name):
             return env_name
@@ -407,8 +426,57 @@ def get_ai_base_url_source(config: dict) -> str | None:
     return None
 
 
+def get_ollama_base_url(config: dict) -> str:
+    """Return the Ollama server root (no /v1 suffix), defaulting to localhost."""
+    ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
+    url = (
+        str(ai_cfg.get("ollama_base_url") or "").strip()
+        or AI_SERVICE_PRESETS.get("ollama", {}).get("base_url", "")
+        or OLLAMA_DEFAULT_BASE_URL
+    )
+    return url.rstrip("/")
+
+
+def get_ollama_model(config: dict) -> str:
+    """Return the configured Ollama model ID, defaulting to qwen2.5:7b."""
+    ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
+    return str(ai_cfg.get("ollama_model") or "").strip() or OLLAMA_DEFAULT_MODEL
+
+
+def list_ollama_models(config: dict) -> list[str]:
+    """List locally pulled Ollama models via the native tags endpoint (no key)."""
+    base = get_ollama_base_url(config)
+    try:
+        url = httpx.URL(f"{base}/api/tags")
+        if url.scheme not in {"http", "https"} or not url.host or url.userinfo or url.query or url.fragment:
+            raise ValueError
+    except (httpx.InvalidURL, ValueError):
+        raise AIRequestError("invalid_url", "请填写有效的 Ollama 地址（http:// 或 https://，不含查询参数）") from None
+    try:
+        result = httpx.get(str(url), timeout=15, trust_env=False, follow_redirects=False)
+        result.raise_for_status()
+        payload = result.json()
+    except ValueError:
+        raise AIRequestError("invalid_response", "Ollama 未返回有效的模型列表，请检查地址或确认 Ollama 已启动") from None
+    except httpx.RequestError:
+        raise AIRequestError("network", f"无法连接本地 Ollama（{base}），请确认 Ollama 已启动") from None
+    except httpx.HTTPStatusError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            raise AIRequestError("unsupported", "该地址不是 Ollama 服务，请检查 Ollama 地址") from None
+        raise normalize_ai_error(exc, exc.response) from None
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+        raise AIRequestError("invalid_response", "Ollama 返回的模型列表格式不正确")
+    return sorted(
+        str(item.get("name") or "").strip()
+        for item in payload["models"]
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    )
+
+
 def list_ai_models(config: dict) -> list[str]:
     """Fetch model IDs without sending prompts or exposing provider error bodies."""
+    if get_ai_service(config) == "ollama":
+        return list_ollama_models(config)
     anthropic = get_ai_service(config) == "anthropic"
     base = (get_ai_base_url(config) or ("https://api.anthropic.com" if anthropic else "")).strip().rstrip("/")
     try:
@@ -677,6 +745,120 @@ def call_openai_compatible_text(
     # 同 call_anthropic_text：OpenAI 兼容路径此前在这里静默 return None，
     # 截断后空 choices、thinking-only 响应全部无声失败（issue #102）。
     raise AIRequestError("empty_response", "AI 服务没有返回文本内容，可能只返回了思考过程")
+
+
+def call_ollama_text(
+    prompt: str,
+    config: dict,
+    max_tokens: int,
+    *,
+    timeout: float | None = None,
+    purpose: str | None = None,
+) -> str | None:
+    """Call a local Ollama model via its OpenAI-compatible endpoint (no API key).
+
+    Raises AIRequestError for connection problems, a missing model, truncation
+    or an empty reply, so callers can fall back to rule scoring / the fixed
+    greeting / the original resume instead of stalling the workflow.
+    """
+    base_url = get_ollama_base_url(config)
+    model = get_ollama_model(config)
+    try:
+        url = httpx.URL(f"{base_url}/v1/chat/completions")
+        if url.scheme not in {"http", "https"} or not url.host:
+            raise ValueError
+    except (httpx.InvalidURL, ValueError):
+        raise AIRequestError("invalid_url", "Ollama 地址无效，请填写 http:// 或 https:// 开头的本机地址") from None
+
+    ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
+    configured_timeout = ai_cfg.get("ollama_timeout_seconds")
+    if configured_timeout is not None:
+        request_timeout = _coerce_timeout(configured_timeout)
+    else:
+        try:
+            passed_timeout = float(timeout) if timeout is not None else 0.0
+        except (TypeError, ValueError):
+            passed_timeout = 0.0
+        # 本地 7B 模型在 CPU 上出字慢：至少留 300 秒，别让云端默认超时截断它。
+        request_timeout = _coerce_timeout(max(passed_timeout, 300.0))
+
+    try:
+        token_limit = max(128, min(int(max_tokens or 8192), 65536))
+    except (TypeError, ValueError):
+        token_limit = 8192
+    try:
+        response = httpx.post(
+            str(url),
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": token_limit,
+                "temperature": 0.2,
+                "stream": False,
+            },
+            timeout=request_timeout,
+            trust_env=False,
+        )
+        response.raise_for_status()
+        payload_data = response.json()
+    except httpx.RequestError:
+        raise AIRequestError(
+            "network",
+            f"无法连接本地 Ollama（{base_url}），请确认 Ollama 已启动",
+        ) from None
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 404:
+            raise AIRequestError(
+                "model_not_found",
+                f"Ollama 里没有模型 {model}，请先拉取：ollama pull {model}",
+                status,
+            ) from None
+        raise normalize_ai_error(exc, exc.response) from None
+    except ValueError:
+        raise AIRequestError("invalid_response", "Ollama 返回内容无法解析") from None
+
+    choices = payload_data.get("choices", []) if isinstance(payload_data, dict) else []
+    if not choices:
+        if isinstance(payload_data, dict):
+            direct_text = _extract_text_content(payload_data.get("output_text"))
+            if direct_text:
+                return direct_text
+        raise AIRequestError("empty_response", "Ollama 没有返回文本内容")
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    if choice.get("finish_reason") in {"length", "max_tokens"}:
+        raise AIRequestError("output_truncated", "Ollama 返回内容因输出 Token 上限被截断")
+    message = choice.get("message", {})
+    content = message.get("content") if isinstance(message, dict) else None
+    text = _extract_text_content(content)
+    if not text:
+        text = _extract_text_content(choice.get("text"))
+    if not text:
+        raise AIRequestError("empty_response", "Ollama 没有返回文本内容")
+    return text
+
+
+def call_ai_text(
+    prompt: str,
+    config: dict,
+    max_tokens: int,
+    *,
+    timeout: float | None = None,
+    purpose: str | None = None,
+) -> str | None:
+    """Route one text-completion call to the configured AI provider.
+
+    - ollama: local model, no API key (call_ollama_text).
+    - local: no AI at all; return None so callers use rule scoring /
+      the fixed greeting / the original resume.
+    - anything else: the existing Anthropic / OpenAI-compatible path.
+    """
+    service = get_ai_service(config)
+    if service == "local":
+        return None
+    if service == "ollama":
+        return call_ollama_text(prompt, config, max_tokens, timeout=timeout, purpose=purpose)
+    return call_anthropic_text(prompt, config, max_tokens, timeout=timeout, purpose=purpose)
 
 
 def get_openai_compatible_model(config: dict) -> str:

@@ -33,8 +33,8 @@ CITY_CODES: dict[str, str] = {
 }
 
 
-SUPPORTED_AI_PROVIDERS = {"anthropic", "openai_compatible"}
-SUPPORTED_AI_SERVICES = {"anthropic", "deepseek", "doubao", "custom"}
+SUPPORTED_AI_PROVIDERS = {"anthropic", "openai_compatible", "ollama", "local"}
+SUPPORTED_AI_SERVICES = {"anthropic", "deepseek", "doubao", "custom", "ollama", "local"}
 AI_SERVICE_PRESETS: dict[str, dict[str, str]] = {
     "anthropic": {
         "provider": "anthropic",
@@ -59,6 +59,18 @@ AI_SERVICE_PRESETS: dict[str, dict[str, str]] = {
         "label": "其他 OpenAI 兼容接口",
         "base_url": "",
         "key_env": "OPENAI_API_KEY",
+    },
+    "ollama": {
+        "provider": "ollama",
+        "label": "Ollama 本地模型",
+        "base_url": "http://127.0.0.1:11434",
+        "key_env": "",
+    },
+    "local": {
+        "provider": "local",
+        "label": "本地规则（不用 AI）",
+        "base_url": "",
+        "key_env": "",
     },
 }
 
@@ -167,6 +179,11 @@ DEFAULTS: dict[str, Any] = {
         "provider": "anthropic",
         "service": "anthropic",
         "model": "claude-sonnet-4-6",
+        # Ollama 本地模型：不用 API Key。默认 qwen2.5:7b——中文强、7B 单机能跑
+        # （约 5GB，CPU 也能跑只是慢）、指令跟随好，能稳定输出评分要的结构化 JSON；
+        # 14B 更好但要 9GB 以上、CPU 上太慢，llama3.1:8b 中文弱。
+        "ollama_base_url": "http://127.0.0.1:11434",
+        "ollama_model": "qwen2.5:7b",
         "thinking": "auto",
         "thinking_budget": 2048,
         "timeout_seconds": 180,
@@ -408,7 +425,7 @@ def _validate_ai_provider(config: dict[str, Any]) -> None:
         ai_cfg["service"] = "custom"
         service = "custom"
     if service not in SUPPORTED_AI_SERVICES:
-        raise ValueError("当前版本支持 Claude、DeepSeek、豆包或自定义 OpenAI 兼容接口。")
+        raise ValueError("当前版本支持 Claude、DeepSeek、豆包、自定义 OpenAI 兼容接口、Ollama 本地模型或本地规则。")
     expected_provider = AI_SERVICE_PRESETS[service]["provider"]
     if provider != expected_provider:
         ai_cfg["provider"] = expected_provider
