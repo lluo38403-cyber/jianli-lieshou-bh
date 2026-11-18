@@ -78,7 +78,7 @@ class AiPreflightTests(unittest.TestCase):
 		self.assertIn("运行环境", checks[0]["message"])
 		self.assertIn("Python", checks[0]["detail"])
 		self.assertIn("HTTPX", checks[0]["detail"])
-		self.assertIn("BossHunter", checks[0]["detail"])
+		self.assertIn("简历猎手", checks[0]["detail"])
 		self.assertNotIn(api_key, str(checks))
 		self.assertNotIn(base_url, str(checks))
 

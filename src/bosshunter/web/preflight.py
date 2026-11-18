@@ -279,7 +279,7 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 				"AI 运行环境",
 				severity,
 				"AI 请求尚未发出：本地 Python/HTTPX 运行环境异常",
-				f"当前 Python {sys.version.split()[0]}、HTTPX {httpx.__version__}、BossHunter {__version__}；"
+				f"当前 Python {sys.version.split()[0]}、HTTPX {httpx.__version__}、简历猎手 {__version__}；"
 				"请使用稳定版 Python 3.11、3.12 或 3.13，并重新创建虚拟环境。",
 			)
 		]

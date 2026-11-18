@@ -205,7 +205,7 @@ const statItems = [
 const taskMetricItems = [
   { key: 'collect_seen', label: '这轮看了多少' },
   { key: 'collect_new', label: '这轮新找到' },
-  { key: 'collect_duplicate', label: '重复的的' },
+  { key: 'collect_duplicate', label: '重复的' },
   { key: 'collect_filtered', label: '筛掉的' },
   { key: 'collect_parse_failed', label: '没看懂的' },
   { key: 'collect_save_failed', label: '没存上的' },

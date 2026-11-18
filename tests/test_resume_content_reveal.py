@@ -82,7 +82,7 @@ class ResumeContentRevealSourceTests(unittest.TestCase):
 		)
 		self.assertIn("resumeLoadErrorMessage", self.upload_section)
 		self.assertIn("shouldSyncResumePath", self.upload_section)
-		self.assertIn("删除简历失败", self.upload_section)
+		self.assertIn("简历没删掉", self.upload_section)
 		self.assertIn("data === null", self.upload_section)
 
 	def test_dual_preview_defaults_hidden_with_independent_toggles(self):
@@ -107,19 +107,19 @@ class ResumeContentRevealSourceTests(unittest.TestCase):
 		"""Abnormal UI paths must route through afterResumeLoadFailure / explicit copy."""
 		self.assertIn("setPanelMessages((prev) => afterResumeLoadFailure(prev, message))", self.upload_section)
 		self.assertIn(
-			"setPanelMessages((prev) => afterResumeLoadFailure(prev, data.error || '简历上传失败'))",
+			"setPanelMessages((prev) => afterResumeLoadFailure(prev, data.error || '简历没传上去'))",
 			self.upload_section,
 		)
 		self.assertIn(
-			"setPanelMessages((prev) => afterResumeLoadFailure(prev, '网络错误，简历上传失败'))",
+			"setPanelMessages((prev) => afterResumeLoadFailure(prev, '网络不好，简历没传上去'))",
 			self.upload_section,
 		)
 		self.assertIn(
-			"setPanelMessages((prev) => afterResumeLoadFailure(prev, '网络错误，无法读取简历'))",
+			"setPanelMessages((prev) => afterResumeLoadFailure(prev, '网络不好，简历没读出来'))",
 			self.upload_section,
 		)
-		self.assertIn("删除简历失败", self.upload_section)
-		self.assertIn("网络错误，删除简历失败", self.upload_section)
+		self.assertIn("简历没删掉", self.upload_section)
+		self.assertIn("网络不好，简历没删掉", self.upload_section)
 		self.assertIn("!res.ok || !data.success", self.upload_section)
 		self.assertIn("!res.ok || !data?.success", self.upload_section)
 		fail_branch = self.upload_section.split("const message = resumeLoadErrorMessage")[1].split(

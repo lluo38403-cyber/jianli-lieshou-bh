@@ -57,12 +57,11 @@ class VersionMetadataTests(unittest.TestCase):
             / "Sidebar.tsx"
         ).read_text(encoding="utf-8")
 
-        version = "2.4.0"
+        # 简历猎手自有版本号（v2 改版定为 1.0.0，不再沿用上游 BossHunter 的 2.4.0）。
+        version = "1.0.0"
         frontend = ROOT / "src" / "bosshunter" / "web" / "frontend"
         package = json.loads((frontend / "package.json").read_text(encoding="utf-8"))
         lock = json.loads((frontend / "package-lock.json").read_text(encoding="utf-8"))
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
         self.assertIn(f'version = "{version}"', pyproject)
         self.assertEqual(bosshunter.__version__, version)
@@ -70,11 +69,11 @@ class VersionMetadataTests(unittest.TestCase):
         self.assertEqual(package["version"], version)
         self.assertEqual(lock["version"], version)
         self.assertEqual(lock["packages"][""]["version"], version)
-        self.assertIn(f"v{version} · 本地控制台", sidebar_source)
-        self.assertIn(f"BossHunter v{version}</h1>", readme)
-        self.assertIn(f"version-v{version}-", readme)
-        self.assertIn(f"## v{version}\n", changelog)
+        # v2 改版已把品牌与版本号从界面上拿掉：侧边栏不得再出现旧品牌与旧版本号。
+        self.assertNotIn("BossHunter", sidebar_source)
+        self.assertNotIn("v2.4.0", sidebar_source)
         self.assertNotIn("v1.1.0", sidebar_source)
+        # 注意：README.md / CHANGELOG.md 是保留的上游历史文档，不再作为本产品的发版口径，版本测试不对其断言。
 
 
 class ConfigExampleTests(unittest.TestCase):
@@ -454,7 +453,7 @@ class DashboardPageTests(unittest.TestCase):
     def test_dashboard_exposes_manual_refresh_button(self):
         self.assertIn("RefreshCw", self.source)
         self.assertIn("onClick={refresh}", self.source)
-        self.assertIn("refreshing ? '刷新中' : '刷新'", self.source)
+        self.assertIn("refreshing ? '刷新中' : '刷新一下'", self.source)
         self.assertIn("最后刷新：", self.source)
         self.assertIn("refreshing && 'animate-spin'", self.source)
 
@@ -463,11 +462,11 @@ class DashboardPageTests(unittest.TestCase):
 
     def test_dashboard_falls_back_to_concrete_task_status(self):
         self.assertNotIn("return '等待后端返回阶段'", self.source)
-        self.assertIn("`${task.label}正在启动`", self.source)
-        self.assertIn("`${task.label}正在停止`", self.source)
-        self.assertIn("`${task.label}已完成`", self.source)
-        self.assertIn("`${task.label}已停止`", self.source)
-        self.assertIn("`${task.label}运行失败`", self.source)
+        self.assertIn("`${task.label}正在开始`", self.source)
+        self.assertIn("`${task.label}正在停下`", self.source)
+        self.assertIn("`${task.label}已经做完了`", self.source)
+        self.assertIn("`${task.label}已经停了`", self.source)
+        self.assertIn("`${task.label}这次没跑成`", self.source)
         self.assertIn("currentTaskStage(visibleTask)", self.source)
 
     def test_dashboard_can_stop_after_start_response_arrives(self):
@@ -499,25 +498,25 @@ class DashboardPageTests(unittest.TestCase):
         self.assertIn("filteredTodayJobs", self.source)
         self.assertIn("setSelected(filteredTodayJobs.map(job => job.id))", self.source)
         self.assertIn("visibleJobIds.has(id)", self.source)
-        self.assertIn("没有符合当前条件的岗位", self.source)
+        self.assertIn("今天暂时没有能投的岗位，先去找找新的吧。", self.source)
 
     def test_workbench_stats_distinguish_today_total_and_current_pending(self):
         self.assertIn("type StatsScope = 'today' | 'total'", self.source)
-        self.assertIn("今日数据", self.source)
-        self.assertIn("累计数据", self.source)
+        self.assertIn("看今天", self.source)
+        self.assertIn("看全部", self.source)
         self.assertIn("workbench.funnel_today", self.source)
         self.assertIn("workbench.pending_confirmation.length", self.source)
-        self.assertIn("今日新增岗位", self.source)
-        self.assertIn("当前待投递", self.source)
-        self.assertIn("今日已投递", self.source)
+        self.assertIn("今天新找到的岗位", self.source)
+        self.assertIn("等着投的岗位", self.source)
+        self.assertIn("今天已投出的简历", self.source)
 
     def test_workbench_task_status_shows_current_run_metrics(self):
-        self.assertIn("本轮扫描", self.source)
-        self.assertIn("本轮新增", self.source)
-        self.assertIn("重复岗位", self.source)
-        self.assertIn("AI通过", self.source)
-        self.assertIn("AI过滤", self.source)
-        self.assertIn("AI失败", self.source)
+        self.assertIn("这轮看了多少", self.source)
+        self.assertIn("这轮新找到", self.source)
+        self.assertIn("重复的", self.source)
+        self.assertIn("打分通过的", self.source)
+        self.assertIn("打分筛掉的", self.source)
+        self.assertIn("打分失败的", self.source)
 
     def test_shared_job_filter_bar_exposes_confirmed_controls(self):
         filter_source = (
@@ -532,16 +531,16 @@ class DashboardPageTests(unittest.TestCase):
             / "JobFilterBar.tsx"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("搜索职位、公司、JD 或评分理由", filter_source)
-        self.assertIn("最低评分", filter_source)
-        self.assertIn("最低薪资", filter_source)
-        self.assertIn("最高薪资", filter_source)
-        self.assertIn("全部状态", filter_source)
+        self.assertIn("搜岗位、公司，或者打分理由", filter_source)
+        self.assertIn("最低分", filter_source)
+        self.assertIn("最低工资（千）", filter_source)
+        self.assertIn("最高工资（千）", filter_source)
+        self.assertIn("什么状态都行", filter_source)
         self.assertNotIn("招聘者活跃度", filter_source)
-        self.assertIn("采集时间：全部", filter_source)
+        self.assertIn("什么时候发布的：全部", filter_source)
         self.assertIn("近 3 天", filter_source)
         self.assertIn("近 7 天", filter_source)
-        self.assertIn("筛选结果", filter_source)
+        self.assertIn("找到 {resultCount} 个 / 一共 {totalCount} 个", filter_source)
         self.assertIn("重置筛选", filter_source)
         self.assertIn("2xl:grid-cols-4", filter_source)
         self.assertNotIn("xl:grid-cols-8", filter_source)
@@ -576,8 +575,8 @@ class DashboardPageTests(unittest.TestCase):
         self.assertIn("created_within", search_hook_source)
         self.assertIn("onPageChange", jobs_table_source)
         self.assertIn("pageSize", jobs_table_source)
-        self.assertIn("招聘者活跃", jobs_table_source)
-        self.assertIn("活跃度未知", jobs_table_source)
+        self.assertIn("HR 活跃吗", jobs_table_source)
+        self.assertIn("不知道 HR 活跃不活跃", jobs_table_source)
         self.assertIn("dateStr.replace(' ', 'T')", jobs_table_source)
         self.assertIn("`${dateStr.replace(' ', 'T')}Z`", jobs_table_source)
 
@@ -587,13 +586,13 @@ class DashboardPageTests(unittest.TestCase):
         # Act / Assert
         self.assertIn("rejectSelectedJobs", self.source)
         self.assertIn("/api/workbench/reject", self.source)
-        self.assertIn("放弃已选", self.source)
+        self.assertIn("不要选中的", self.source)
         self.assertIn("确定放弃这", self.source)
         self.assertIn("setSelected(prev => prev.filter", self.source)
 
     def test_each_pending_job_card_has_a_reject_action(self):
         self.assertIn("onReject={() => rejectSelectedJobs([job.id])}", self.source)
-        self.assertIn("放弃岗位", self.source)
+        self.assertIn("不要这个岗位", self.source)
 
     def test_dashboard_sends_ready_greetings_without_second_confirmation(self):
         # Arrange: DashboardPage source is loaded in setUp.
@@ -617,7 +616,7 @@ class DashboardPageTests(unittest.TestCase):
             self.source,
         )
         self.assertIn("rejectSelectedJobs(pendingGreetingJobs.map(job => job.id))", self.source)
-        pending_section = self.source[self.source.index("待发送招呼语"):]
+        pending_section = self.source[self.source.index("还没发的打招呼"):]
         self.assertIn("rejectSelectedJobs([job.id])", pending_section)
         self.assertIn(">放弃</Button>", pending_section)
 
@@ -628,8 +627,8 @@ class DashboardPageTests(unittest.TestCase):
         self.assertNotIn("blockedFullTask", self.source)
         self.assertNotIn("send-errors-blocked-full-flow", self.source)
         self.assertNotIn("全流程卡在打招呼环节", self.source)
-        self.assertIn("放弃已失效岗位", self.source)
-        self.assertIn("放弃全部", self.source)
+        self.assertIn("都不要了", self.source)
+        self.assertIn("打招呼的话已经写好了，就是没发出去。可以再试一次，或者不要了。", self.source)
         self.assertIn("sendReadyGreetings(workbench.send_errors.map(job => job.id))", self.source)
         self.assertNotIn("confirmDeliver(workbench.send_errors.map(job => job.id))", self.source)
 
@@ -645,7 +644,7 @@ class DashboardPageTests(unittest.TestCase):
     def test_monitor_cards_link_to_the_corresponding_chat_conversation(self):
         self.assertIn("openMonitorConversation", self.source)
         self.assertIn("/open-chat", self.source)
-        self.assertIn("打开聊天对话", self.source)
+        self.assertIn("打开和 HR 的聊天", self.source)
         self.assertIn("已在 BOSS 中定位到对应聊天对话。", self.source)
         self.assertNotIn("https://www.zhipin.com/web/geek/chat?jobId=${encodeURIComponent(item.job_id)}", self.source)
 
@@ -661,12 +660,12 @@ class DashboardPageTests(unittest.TestCase):
         self.assertIn("grid-cols-[28px_minmax(0,1fr)]", self.source)
         self.assertNotIn("{message.time || item.created_at}", self.source)
         self.assertNotIn("监测记录时间", self.source)
-        self.assertIn("AI 建议回复（尚未回答）", self.source)
-        self.assertIn("已回复：定制简历已发送，本轮聊天记录保留在上方。", self.source)
+        self.assertIn("建议这样回（还没发）", self.source)
+        self.assertIn("定制简历已经发过去了，聊天记录在上面。", self.source)
 
     def test_monitor_replied_tab_keeps_each_outbound_round(self):
         self.assertIn("const repliedRecords = history.filter(isOutboundReplyRecord)", self.source)
-        self.assertIn("暂无近 7 天已回复对话。", self.source)
+        self.assertIn("最近 7 天还没有回复过谁。", self.source)
         self.assertIn("parseHistoryDetail(item).schema.startsWith('replied.')", self.source)
         self.assertIn("item.action === 'auto_replied'", self.source)
         self.assertIn("item.action === 'resume_sent'", self.source)
@@ -677,10 +676,10 @@ class DashboardPageTests(unittest.TestCase):
         self.assertIn("isDetectedReplyResolved", self.source)
         self.assertIn("detectedReplies", self.source)
         self.assertIn("detectedReplyPreview", self.source)
-        self.assertIn("已检测到 HR 新消息，等待继续读取完整对话并生成处理结果。", self.source)
+        self.assertIn("HR 刚回了新消息，正在看完整对话，马上给你建议。", self.source)
         self.assertIn("prepareDetectedReply", self.source)
         self.assertIn("/prepare-reply", self.source)
-        self.assertIn("读取并生成建议", self.source)
+        self.assertIn("看看 HR 说了啥", self.source)
         self.assertNotIn("disabled={!canReply}", self.source)
 
     def test_monitor_resolution_parser_shows_manual_reply_and_hr_question(self):
@@ -708,8 +707,8 @@ class DashboardPageTests(unittest.TestCase):
         self.assertIn("resumeFailures", self.source)
         self.assertIn("pendingItems", self.source)
         self.assertIn("displayedHistory", self.source)
-        self.assertIn("定制简历生成失败，尚无可下载文件", self.source)
-        self.assertIn("系统失败原因", self.source)
+        self.assertIn("定制简历这次没做出来，还没有能下载的文件，你手动处理一下，或者等会儿再试。", self.source)
+        self.assertIn("没弄成的原因", self.source)
         self.assertIn("parsed.systemReason", self.source)
         self.assertIn("Boolean(item.resolved || item.resume_path)", self.source)
         self.assertNotIn("hrText || item.detail || getActionLabel(item.action)", self.source)
@@ -754,13 +753,12 @@ class SidebarTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
     def test_sidebar_star_link_places_github_icon_left_and_centers_star_label(self):
-        # Act / Assert
-        self.assertIn("relative flex items-center", self.source)
-        self.assertIn('aria-label="BossHunter GitHub"', self.source)
-        self.assertIn("md:absolute md:left-3", self.source)
-        self.assertIn("mx-auto hidden items-center justify-center gap-2 md:flex", self.source)
-        self.assertIn("text-xl", self.source)
-        self.assertIn("text-star", self.source)
+        # v2 改版已删 GitHub 外链与 Star 提示：侧边栏不得再出现 GitHub 相关内容。
+        self.assertNotIn("GitHub", self.source)
+        self.assertNotIn("github.com", self.source)
+        self.assertNotIn("Star", self.source)
+        self.assertNotIn("text-star", self.source)
+        self.assertIn("简历猎手", self.source)
 
     def test_sidebar_fetches_unresolved_reply_count(self):
         # Act / Assert
@@ -786,7 +784,7 @@ class HeaderTests(unittest.TestCase):
     def test_header_version_metadata_right_side_omits_duplicate_console_label(self):
         # Act / Assert
         self.assertNotIn("v2.1 · 本地控制台", self.source)
-        self.assertIn("本地服务运行中", self.source)
+        self.assertIn("正在本地运行", self.source)
 
 
 class ConfigPageTests(unittest.TestCase):
@@ -820,20 +818,20 @@ class ConfigPageTests(unittest.TestCase):
 
     def test_allow_internship_switch_appears_below_deal_breakers(self):
         # Act
-        deal_breakers_index = self.source.index("排除关键词")
-        allow_internship_index = self.source.index("接受实习/管培岗位")
+        deal_breakers_index = self.source.index("这些词的岗位不要")
+        allow_internship_index = self.source.index("实习、管培生的岗位也要")
 
         # Assert
         self.assertGreater(allow_internship_index, deal_breakers_index)
         self.assertIn("profile.allow_internship", self.source)
 
     def test_config_page_exposes_jd_deal_breakers(self):
-        self.assertIn("JD 排除关键词", self.source)
+        self.assertIn("岗位介绍里有这些词也不要", self.source)
         self.assertIn("profile.jd_deal_breakers", self.source)
-        self.assertIn("完整 JD 含这些词时会在 AI 评分前跳过", self.source)
+        self.assertIn("岗位介绍里有这些词，打分之前就直接跳过。", self.source)
 
     def test_config_page_exposes_salary_filter_controls(self):
-        self.assertIn("薪资上限放宽倍数", self.source)
+        self.assertIn("工资高一点也能接受", self.source)
         self.assertIn("profile.salary_ceil_ratio", self.source)
         self.assertIn("过滤面议/无法解析薪资", self.source)
         self.assertIn("profile.filter_unparsed_salary", self.source)
@@ -843,25 +841,25 @@ class ConfigPageTests(unittest.TestCase):
         self.assertIn("error", self.hook_source)
         self.assertIn("!configRes.ok", self.hook_source)
         self.assertIn("!schemaRes.ok", self.hook_source)
-        self.assertIn("配置加载失败", self.source)
-        self.assertIn("请确认后端服务已启动", self.source)
+        self.assertIn("设置没打开", self.source)
+        self.assertIn("请确认简历猎手还在运行，然后刷新页面再试。", self.source)
         self.assertIn("error", self.source)
 
     def test_follow_up_switch_defaults_to_off_when_config_field_is_missing(self):
         self.assertIn("config.follow_up?.enabled ?? false", self.source)
 
     def test_config_page_merges_boss_safety_and_throttle_settings(self):
-        self.assertEqual(self.source.count('title="投递设置"'), 1)
+        self.assertEqual(self.source.count('title="每天投多少、怎么投"'), 1)
         self.assertNotIn('title="BOSS 直聘采集安全"', self.source)
         self.assertNotIn('title="反检测设置"', self.source)
-        self.assertIn('label="BOSS 操作间隔倍率"', self.source)
+        self.assertIn('label="动作快慢（越大越慢）"', self.source)
         self.assertNotIn('label="BOSS 采集间隔倍数"', self.source)
 
     def test_random_delivery_cooldown_is_in_delivery_settings_before_monitor(self):
         # AI 设置区已从用户前端移走（改走管理员面板），投递设置仍在监控设置之前。
         self.assertNotIn('title="AI 设置"', self.source)
-        anti_monitor_index = self.source.index('title="投递设置"')
-        monitor_index = self.source.index('title="监控设置"')
+        anti_monitor_index = self.source.index('title="每天投多少、怎么投"')
+        monitor_index = self.source.index('title="多久看一次 HR 回复"')
 
         self.assertLess(anti_monitor_index, monitor_index)
         self.assertNotIn("BOSS 页面访问相关设置同时用于采集和监测", self.source)
@@ -871,11 +869,11 @@ class ConfigPageTests(unittest.TestCase):
 
     def test_minimum_and_maximum_fields_share_compact_range_controls(self):
         for label in (
-            "期望薪资范围（K）",
-            "BOSS 风险暂停范围（分钟）",
-            "BOSS 采集后投递冷却范围（分钟）",
-            "发送间隔范围（秒）",
-            "模拟浏览时长范围（秒）",
+            "我想要的工资（千元）",
+            "出问题先歇几分钟",
+            "找完先歇几分钟再投",
+            "每投一个隔几秒",
+            "假装看几秒",
         ):
             self.assertIn(f'label="{label}"', self.source)
 
@@ -892,8 +890,8 @@ class ConfigPageTests(unittest.TestCase):
             self.assertNotIn(f'label="{retired_label}"', self.source)
 
     def test_boss_page_limit_estimate_is_directly_below_max_pages(self):
-        max_pages_field = self.source.index('<Field label="最大页数">')
-        estimate = self.source.index('理论最多 {bossTheoreticalPages} 页', max_pages_field)
+        max_pages_field = self.source.index('<Field label="最多翻几页">')
+        estimate = self.source.index('最多要翻 {bossTheoreticalPages} 页', max_pages_field)
         field_end = self.source.index('</Field>', max_pages_field)
 
         self.assertLess(estimate, field_end)
