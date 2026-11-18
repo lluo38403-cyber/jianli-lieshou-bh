@@ -37,12 +37,22 @@ def _ensure_config(exe_dir: Path) -> Path:
 
     打包方在 config.example.yaml 里预置的 AI 配置（含各服务商 Key）就这样
     随包发出去；只在 config.yaml 不存在时复制一次，绝不覆盖用户已有的配置。
+
+    注意：打包 spec 里 config.example.yaml 是 datas ("config.example.yaml", ".")，
+    one-dir 模式下它被打进 _MEIPASS（即 _internal/），不在 exe 旁边，所以
+    frozen 时先在 _MEIPASS 里找，找不到再回落到 exe_dir。
     """
     config_path = exe_dir / "config.yaml"
     if not config_path.exists():
-        example = exe_dir / "config.example.yaml"
-        if example.is_file():
-            shutil.copyfile(example, config_path)
+        candidates = []
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            candidates.append(Path(meipass) / "config.example.yaml")
+        candidates.append(exe_dir / "config.example.yaml")
+        for example in candidates:
+            if example.is_file():
+                shutil.copyfile(example, config_path)
+                break
     return config_path
 
 
