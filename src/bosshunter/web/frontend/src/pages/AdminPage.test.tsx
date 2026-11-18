@@ -43,7 +43,7 @@ function stubAdminFetch(overrides: {
     else if (url === '/api/admin/config') body = adminConfig
     else if (url === '/api/admin/config/models') body = { models: ['glm-4.7-flash', 'glm-4-flash-250414'] }
     else if (url === '/api/admin/login') {
-      const parsed = JSON.parse(String(init.body))
+      const parsed = JSON.parse(String(init?.body))
       overrides.onLogin?.(parsed)
       if (parsed.password === 'lucky-admin-1') body = { ok: true }
       else { statusCode = 401; body = { error: '管理员密码不正确' } }
