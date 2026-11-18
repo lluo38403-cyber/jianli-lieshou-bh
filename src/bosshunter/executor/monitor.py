@@ -2,6 +2,7 @@
 
 import time
 import json
+from pathlib import Path
 
 from rich.console import Console
 
@@ -17,7 +18,7 @@ from bosshunter.db import (
     get_db, get_jobs_by_status,
     update_job_status, add_history, add_risk_event, set_platform_safety_lock,
 )
-from bosshunter.throttle import RequestThrottle, SendWindowChecker
+from bosshunter.throttle import RequestThrottle
 from bosshunter.platform_safety import (
     PlatformAccessGuard,
     PlatformSafetyStop,
@@ -872,10 +873,8 @@ def _generate_auto_reply(messages: list[dict], job: dict, config: dict) -> str |
 
 def _send_message_in_chat(target_id: str, message: str, config: dict | None = None) -> bool:
     """Send a text message in the current open chat via Vue handleSubmit."""
-    if config is not None:
-        windows = config.get("throttle", {}).get("send_windows", ["09:00-16:00"])
-        if stop_requested(config) or not SendWindowChecker(windows).is_active():
-            return False
+    if config is not None and stop_requested(config):
+        return False
     js_send = f"""
     (() => {{
         const input = document.querySelector('#chat-input');
@@ -1579,39 +1578,52 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
     # Check if HR is asking for resume
     resume_request_from_card = _has_resume_request_card(messages)
     if _detect_resume_request(messages):
-        console.print("[cyan]    HR要求简历，生成定制化简历...[/cyan]")
+        console.print("[cyan]    HR要求简历，准备简历...[/cyan]")
 
         db = get_db()
         already_generated_resume = _has_generated_resume_for_job(db, job["id"])
         db.close()
         if already_generated_resume:
-            console.print("[dim]    定制简历已生成过，跳过重复生成和重复记录[/dim]")
+            console.print("[dim]    简历已准备过，跳过重复生成和重复记录[/dim]")
             close_tab(target_id)
             return "skipped_existing_resume"
 
-        # Generate tailored resume, then hand off to user for manual sending
-        from bosshunter.ai.resume import generate_tailored_resume, get_last_resume_failure_reason
-
+        # 自动优化（按岗位改简历）默认关闭：直接用原简历，不按岗位改。
+        # 只有用户在配置里打开 resume_tailor_enabled 才会走定制生成。
+        tailor_enabled = bool((config.get("ai", {}) or {}).get("resume_tailor_enabled", False))
         resume_failure_reason = ""
-        try:
-            resume_path = generate_tailored_resume(job["id"], config)
-            if not resume_path:
-                resume_failure_reason = get_last_resume_failure_reason(job["id"])
-        except OperationCancelled:
-            close_tab(target_id)
-            return "stopped"
-        except Exception as exc:
-            resume_path = None
-            resume_failure_reason = f"生成过程发生异常：{exc}"
-            console.print(f"[red]    定制简历生成异常：{exc}[/red]")
+        if tailor_enabled:
+            from bosshunter.ai.resume import generate_tailored_resume, get_last_resume_failure_reason
+
+            resume_label = "定制简历"
+            try:
+                resume_path = generate_tailored_resume(job["id"], config)
+                if not resume_path:
+                    resume_failure_reason = get_last_resume_failure_reason(job["id"])
+            except OperationCancelled:
+                close_tab(target_id)
+                return "stopped"
+            except Exception as exc:
+                resume_path = None
+                resume_failure_reason = f"生成过程发生异常：{exc}"
+                console.print(f"[red]    定制简历生成异常：{exc}[/red]")
+        else:
+            resume_label = "原简历"
+            base_resume = Path(config.get("profile", {}).get("resume_path", "./resume.md"))
+            if base_resume.exists():
+                resume_path = base_resume
+                console.print(f"[bold green]    ✓ 原简历就绪: {resume_path}（自动优化已关闭，直接发原简历）[/bold green]")
+            else:
+                resume_path = None
+                resume_failure_reason = "未找到原简历，请先在配置里上传简历"
         if stop_requested(config):
             close_tab(target_id)
             return "stopped"
         if resume_path:
-            console.print(f"[bold green]    ✓ 定制简历已生成: {resume_path}[/bold green]")
+            console.print(f"[bold green]    ✓ {resume_label}已就绪: {resume_path}[/bold green]")
             console.print(f"[bold yellow]    ⚠ 请手动发送上述简历给 {job['company']} HR[/bold yellow]")
         else:
-            console.print("[yellow]    ! 定制简历生成失败，请手动处理[/yellow]")
+            console.print(f"[yellow]    ! {resume_label}未就绪，请手动处理[/yellow]")
 
         # Auto-send a portfolio link only when automatic replies are explicitly
         # enabled. Manual-confirmation mode must stay free of outbound messages.
@@ -1661,13 +1673,13 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
         if resume_request_from_card:
             history_detail = _build_reply_detail(
                 messages,
-                f"附件简历卡片请求已识别，未自动发送在线简历，定制PDF待手动发送: {resume_path}",
+                f"附件简历卡片请求已识别，未自动发送在线简历，{resume_label}待手动发送: {resume_path}",
                 "needs_resume.v1",
             )
         else:
             history_detail = _build_reply_detail(
                 messages,
-                f"{portfolio_status}，定制PDF待手动发送: {resume_path}",
+                f"{portfolio_status}，{resume_label}待手动发送: {resume_path}",
                 "needs_resume.v1",
             )
 
@@ -2093,12 +2105,6 @@ def monitor_and_send_resumes(config: dict) -> dict:
     if stop_event and stop_event.is_set():
         return {"skipped": 0, "pending": 0, "replied": 0, "needs_resume": 0, "rejected": 0, "failed": 0}
 
-    # Time window check (09:00-16:00)
-    window_checker = SendWindowChecker(throttle_config.get("send_windows", ["09:00-16:00"]))
-    if not window_checker.is_active():
-        console.print("[yellow]当前不在配置的发送时间窗口内[/yellow]")
-        return {"skipped": 0, "pending": 0, "replied": 0, "needs_resume": 0, "rejected": 0, "failed": 0}
-
     operation_multiplier = get_boss_operation_interval_multiplier(config)
     throttle = RequestThrottle(
         _positive_interval_seconds(throttle_config.get("interval_min"), 60) * operation_multiplier,
@@ -2120,6 +2126,7 @@ def monitor_and_send_resumes(config: dict) -> dict:
         "needs_resume": 0,
         "rejected": 0,
         "failed": 0,
+        "platform_inbox": {},
     }
 
     # Step 1: Check for HR replies — MUST run first
@@ -2203,6 +2210,45 @@ def monitor_and_send_resumes(config: dict) -> dict:
         console.print(f"  二次跟进: {follow_up_count}")
         summary["follow_up"] = follow_up_count
 
+    # Step 4: 其他平台消息中心巡查（智联 / 前程无忧 / 猎聘）
+    # BOSS 走上面的聊天监听；这三个平台没有统一聊天页，只统计未读并取回
+    # 最新消息摘要，不代回、不代发，由用户去平台里查看。
+    if not (stop_event and stop_event.is_set()) and not summary.get("stop_reason"):
+        console.print("\n[bold cyan]═══ 第三步：巡查其他平台消息 ═══[/bold cyan]")
+        try:
+            from bosshunter.executor.platform_delivery import check_inbox
+
+            db = get_db()
+            rows = db.execute(
+                "SELECT DISTINCT source_platform FROM jobs "
+                "WHERE source_platform IN ('zhilian', '51job', 'liepin') "
+                "AND status IN ('sent', 'needs_resume') AND deleted_at IS NULL"
+            ).fetchall()
+            db.close()
+            for row in rows:
+                platform = str(row[0] or "")
+                inbox = check_inbox(platform, config)
+                summary["platform_inbox"][platform] = inbox
+                if inbox.get("error"):
+                    console.print(f"  [yellow]{platform} 消息巡查失败：{inbox['error']}[/yellow]")
+                elif inbox.get("unread"):
+                    console.print(f"  [bold yellow]{platform} 有 {inbox['unread']} 条未读消息，请在平台里查看[/bold yellow]")
+                    db = get_db()
+                    job_row = db.execute(
+                        "SELECT id FROM jobs WHERE source_platform = ? "
+                        "AND status IN ('sent', 'needs_resume') AND deleted_at IS NULL "
+                        "ORDER BY updated_at DESC LIMIT 1",
+                        (platform,),
+                    ).fetchone()
+                    if job_row:
+                        add_history(db, job_row[0], "inbox_unread", f"{platform} 消息中心有 {inbox['unread']} 条未读，请在平台里查看")
+                    db.close()
+                else:
+                    console.print(f"  [dim]{platform} 本轮无未读消息[/dim]")
+        except Exception as exc:
+            summary["platform_inbox_error"] = str(exc)
+            console.print(f"[yellow]  其他平台消息巡查异常：{exc}[/yellow]")
+
     return summary
 
 
@@ -2215,7 +2261,7 @@ def process_detected_reply(job_id: str, config: dict) -> dict:
         "max_conversations_per_cycle": 1,
     }
     safe_config["follow_up"] = {**config.get("follow_up", {}), "enabled": False}
-    safe_config["throttle"] = {**config.get("throttle", {}), "send_windows": []}
+    safe_config["throttle"] = dict(config.get("throttle", {}))
     safe_config["_monitor_job_ids"] = [str(job_id)]
     safe_config["_monitor_reuse_chat_tab"] = True
     safe_config["_monitor_runtime_state"] = {}

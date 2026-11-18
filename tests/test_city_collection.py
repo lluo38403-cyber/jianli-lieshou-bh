@@ -13,8 +13,8 @@ from bosshunter.collection.platforms.boss import BossCollector, JS_DETECT_COLLEC
 from bosshunter.collection.registry import CollectorRegistry
 from bosshunter.collection_run_store import get_collection_run
 from bosshunter.db import get_db, get_active_platform_safety_lock
-from test_boss_search_regressions import SearchBrowser, card
-from test_city_yield import Clock
+from tests.test_boss_search_regressions import SearchBrowser, card
+from tests.test_city_yield import Clock
 
 
 def collector(browser, conn=None, **extra):

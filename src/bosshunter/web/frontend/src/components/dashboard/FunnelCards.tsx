@@ -9,7 +9,7 @@ const funnelSteps = [
   { key: '采集总数', color: 'text-info', bg: 'bg-info-soft' },
   { key: '初筛通过', color: 'text-cyan', bg: 'bg-cyan-soft' },
   { key: 'AI评分', color: 'text-success', bg: 'bg-success-soft' },
-  { key: '人工确认', color: 'text-warning', bg: 'bg-warning-soft' },
+  { key: '自动确认', color: 'text-warning', bg: 'bg-warning-soft' },
 ]
 
 export function FunnelCards({ data }: FunnelCardsProps) {

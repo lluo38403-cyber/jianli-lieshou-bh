@@ -7,9 +7,8 @@ import { Slider } from '@/components/ui/slider'
 import { TagsInput } from '@/components/ui/tags-input'
 import { CityMultiSelect, type CityOption } from '@/components/config/CityMultiSelect'
 import { ResumeUploadSection } from '@/components/config/ResumeUploadSection'
-import { SendWindowsInput, sendWindowsError } from '@/components/config/SendWindowsInput'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
-import { Save, RotateCcw, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
+import { Save, RotateCcw, Loader2 } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import { PLATFORM_LABELS, PLATFORM_SHORT_LABELS } from '@/lib/platforms'
 
@@ -57,13 +56,6 @@ const BOSS_FILTER_OPTIONS = {
 
 export default function ConfigPage() {
   const { config, schema, loading, saving, dirty, error, message, updateConfig, saveConfig, resetConfig } = useConfig()
-  const windowError = config ? sendWindowsError(config.throttle?.send_windows ?? ['09:00-16:00']) : null
-  const requestedSection = new URLSearchParams(window.location.search).get('section')
-  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => ({
-    profile: true,
-    search: true,
-    ...(requestedSection ? { [requestedSection]: true } : {}),
-  }))
   const [aiTest, setAiTest] = useState<{ testing: boolean; ok?: boolean; message?: string }>({ testing: false })
   const [modelList, setModelList] = useState<{ loading: boolean; models: string[]; message?: string; error?: boolean }>({ loading: false, models: [] })
   const modelRequest = useRef<AbortController | null>(null)
@@ -133,10 +125,6 @@ export default function ConfigPage() {
       })
       .catch(() => {})
   }, [])
-
-  const toggleSection = (key: string) => {
-    setExpandedSections(prev => ({ ...prev, [key]: !prev[key] }))
-  }
 
   const handleAiTest = async () => {
     if (dirty) {
@@ -301,14 +289,12 @@ export default function ConfigPage() {
           </div>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={resetConfig}><RotateCcw className="w-3 h-3 mr-1" />重置</Button>
-            <Button data-tour="config-save" size="sm" onClick={saveConfig} disabled={saving || !dirty || !!windowError}><Save className="w-3 h-3 mr-1" />{saving ? '保存中...' : '保存'}</Button>
+            <Button data-tour="config-save" size="sm" onClick={saveConfig} disabled={saving || !dirty}><Save className="w-3 h-3 mr-1" />{saving ? '保存中...' : '保存'}</Button>
           </div>
         </div>
 
-        {windowError && <p className="text-xs text-danger">发送时间窗口有误，请展开「反监测设置」修正后保存：{windowError}</p>}
-
         {/* Profile Section */}
-        <SectionCard title="个人信息" sectionKey="profile" expanded={expandedSections} toggle={toggleSection}>
+        <SectionCard title="个人信息">
           <div className="space-y-4">
             <div data-tour="resume-upload">
               <ResumeUploadSection
@@ -339,7 +325,7 @@ export default function ConfigPage() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <label className="text-xs text-foreground">AI 生成招呼语</label>
-                <p className="mt-1 text-xs text-muted">关闭后使用你填写的固定文案，发送仍需确认。</p>
+                <p className="mt-1 text-xs text-muted">关闭后使用你填写的固定文案，全自动投递时直接发送。</p>
               </div>
               <Switch
                 aria-label="AI 生成招呼语"
@@ -372,32 +358,6 @@ export default function ConfigPage() {
               />
               <p className="mt-1 text-xs text-muted">仅补充语气和内容偏好，不能覆盖真实简历与安全规则。</p>
             </Field>}
-            <NumberRangeField
-              label="期望薪资范围（K）"
-              minValue={config.profile?.salary_min ?? 0}
-              maxValue={config.profile?.salary_max ?? 0}
-              onMinChange={value => updateConfig('profile.salary_min', value)}
-              onMaxChange={value => updateConfig('profile.salary_max', value)}
-              min={0}
-              max={200}
-            />
-            <Field label={`薪资上限放宽倍数：${config.profile?.salary_ceil_ratio ?? 1.5}`}>
-              <Slider
-                value={config.profile?.salary_ceil_ratio ?? 1.5}
-                onChange={value => updateConfig('profile.salary_ceil_ratio', value)}
-                min={1}
-                max={5}
-                step={0.1}
-              />
-              <p className="mt-1 text-xs text-muted">按岗位薪资区间下限判断；下限超过最高薪资 × 放宽倍数时会在 AI 评分前跳过。</p>
-            </Field>
-            <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
-              <div>
-                <label className="text-xs text-foreground">过滤面议/无法解析薪资</label>
-                <p className="mt-1 text-xs text-muted">{config.profile?.allow_internship ? '已接受实习，自动关闭此过滤，避免日薪岗位被误排除。' : '关闭后这类岗位会保留给 AI 综合判断。'}</p>
-              </div>
-              <Switch aria-label="过滤面议/无法解析薪资" checked={config.profile?.allow_internship ? false : (config.profile?.filter_unparsed_salary ?? true)} disabled={config.profile?.allow_internship === true} onChange={v => updateConfig('profile.filter_unparsed_salary', v)} />
-            </div>
             <Field label="排除关键词">
               <TagsInput value={config.profile?.deal_breakers || []} onChange={v => updateConfig('profile.deal_breakers', v)} placeholder="如：外包、996" />
             </Field>
@@ -420,10 +380,10 @@ export default function ConfigPage() {
         </SectionCard>
 
         {/* Search Section */}
-        <SectionCard title="搜索设置" sectionKey="search" expanded={expandedSections} toggle={toggleSection}>
+        <SectionCard title="搜索设置">
           <div className="space-y-4">
             <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
-              智联、前程无忧和猎聘只自动采集、评分和生成招呼语；岗位池会提供原平台链接，你完成投递后可手动标记“已发送”。BossHunter 不会替你在这些平台发送、回复或监听。
+              四个平台都会自动投递：BOSS 直聘发招呼语沟通，智联、前程无忧、猎聘在岗位详情页点投递；HR 回复由监测统一巡查。取消勾选即停用该平台。
             </p>
             {(['boss', 'zhilian', '51job', 'liepin'] as PlatformId[]).map(platform => {
               const search = platformSearch(platform)
@@ -554,8 +514,85 @@ export default function ConfigPage() {
           </div>
         </SectionCard>
 
+        {/* Filter Section */}
+        <SectionCard title="筛选设置">
+          <div className="space-y-4">
+            <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
+              四项筛选在评分前生效：不合要求的岗位直接跳过，不进入评分和投递。
+            </p>
+            <Field label="求职类型">
+              <div className="flex flex-wrap gap-1.5">
+                {(['全职', '兼职', '实习'] as const).map(option => {
+                  const selected: string[] = Array.isArray(config.profile?.job_types) ? config.profile.job_types : []
+                  return (
+                    <button
+                      key={option}
+                      type="button"
+                      onClick={() => {
+                        const next = selected.includes(option)
+                          ? selected.filter(item => item !== option)
+                          : [...selected, option]
+                        updateConfig('profile.job_types', next)
+                      }}
+                      className={`rounded-full border px-2.5 py-1 text-xs font-bold ${selected.includes(option) ? 'border-primary bg-secondary text-primary' : 'border-card-border bg-card text-muted hover:border-primary/40'}`}
+                    >{option}</button>
+                  )
+                })}
+              </div>
+              <p className="mt-1 text-xs text-muted">只投选中的类型；类型识别不出的岗位不拦截。全部取消等于不限。</p>
+            </Field>
+            <Field label="城市">
+              <CityMultiSelect
+                options={cityOptions}
+                value={config.profile?.target_cities || []}
+                onChange={value => updatePlatformCities('boss', value)}
+                onRefresh={handleCityRefresh}
+                refreshing={cityRefreshing}
+                message={cityMessage}
+              />
+              <p className="mt-1 text-xs text-muted">同时作为 BOSS 的搜索城市；智联、前程无忧、猎聘的搜索城市在上方各平台里单独设置。</p>
+            </Field>
+            <NumberRangeField
+              label="期望薪资范围（K）"
+              minValue={config.profile?.salary_min ?? 0}
+              maxValue={config.profile?.salary_max ?? 0}
+              onMinChange={value => updateConfig('profile.salary_min', value)}
+              onMaxChange={value => updateConfig('profile.salary_max', value)}
+              min={0}
+              max={200}
+            />
+            <Field label={`薪资上限放宽倍数：${config.profile?.salary_ceil_ratio ?? 1.5}`}>
+              <Slider
+                value={config.profile?.salary_ceil_ratio ?? 1.5}
+                onChange={value => updateConfig('profile.salary_ceil_ratio', value)}
+                min={1}
+                max={5}
+                step={0.1}
+              />
+              <p className="mt-1 text-xs text-muted">按岗位薪资区间下限判断；下限超过最高薪资 × 放宽倍数时会在 AI 评分前跳过。最低和最高都填 0 表示不限。</p>
+            </Field>
+            <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
+              <div>
+                <label className="text-xs text-foreground">过滤面议/无法解析薪资</label>
+                <p className="mt-1 text-xs text-muted">{config.profile?.allow_internship ? '已接受实习，自动关闭此过滤，避免日薪岗位被误排除。' : '关闭后这类岗位会保留给 AI 综合判断。'}</p>
+              </div>
+              <Switch aria-label="过滤面议/无法解析薪资" checked={config.profile?.allow_internship ? false : (config.profile?.filter_unparsed_salary ?? true)} disabled={config.profile?.allow_internship === true} onChange={v => updateConfig('profile.filter_unparsed_salary', v)} />
+            </div>
+            <Field label="发布岗位时长">
+              <Select value={String(config.profile?.posted_days ?? 7)} onChange={e => updateConfig('profile.posted_days', Number(e.target.value))}>
+                <option value="0">不限</option>
+                <option value="3">3 天内</option>
+                <option value="7">7 天内</option>
+                <option value="14">14 天内</option>
+                <option value="30">30 天内</option>
+              </Select>
+              <p className="mt-1 text-xs text-muted">按首次发现岗位的时间算，超过天数的岗位不投递；平台不提供发布时间，所以用首次发现时间代替。</p>
+            </Field>
+          </div>
+        </SectionCard>
+
         {/* Scoring Section */}
-        <SectionCard title="评分设置" sectionKey="scoring" expanded={expandedSections} toggle={toggleSection}>
+        <SectionCard title="评分设置">
           <div className="space-y-4">
             <Field label={`通过阈值: ${config.scoring?.threshold || 60}`}>
               <Slider value={config.scoring?.threshold || 60} onChange={v => updateConfig('scoring.threshold', v)} min={0} max={100} />
@@ -567,8 +604,11 @@ export default function ConfigPage() {
         </SectionCard>
 
         {/* AI Section */}
-        <SectionCard title="AI 设置" sectionKey="ai" expanded={expandedSections} toggle={toggleSection}>
+        <SectionCard title="AI 设置">
           <div className="space-y-4">
+            <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
+              不填也能用：未配置 AI 时评分走本地规则，招呼语用固定模板；HR 自动回复和按岗位定制简历需要 AI。
+            </p>
             <Field label="提供商" dataTour="ai-fields">
               <Select
                 value={config.ai?.service || (config.ai?.provider === 'openai_compatible' ? 'custom' : 'anthropic')}
@@ -706,7 +746,7 @@ export default function ConfigPage() {
         </SectionCard>
 
         {/* Anti-monitoring Section */}
-        <SectionCard title="反监测设置" sectionKey="collection" expanded={expandedSections} toggle={toggleSection}>
+        <SectionCard title="投递设置">
           <div className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="BOSS 单日搜索页上限">
@@ -754,7 +794,8 @@ export default function ConfigPage() {
             </Field>
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="每日发送上限">
-                <Input type="number" value={config.throttle?.daily_limit || 30} onChange={e => updateConfig('throttle.daily_limit', Number(e.target.value))} />
+                <Input type="number" value={config.throttle?.daily_limit || 120} onChange={e => updateConfig('throttle.daily_limit', Number(e.target.value))} />
+                <p className="mt-1 text-xs text-muted">每天最多自动投递 120 个，达到上限自动停止，第二天继续。</p>
               </Field>
               <NumberRangeField
                 label="发送间隔范围（秒）"
@@ -769,7 +810,7 @@ export default function ConfigPage() {
             <div className="grid items-end gap-4 md:grid-cols-2">
               <div className="flex h-9 items-center justify-between rounded-md border border-card-border bg-surface px-3">
                 <label className="text-xs text-foreground">发送前模拟浏览</label>
-                <Switch checked={config.throttle?.browse_before_greet ?? true} onChange={v => updateConfig('throttle.browse_before_greet', v)} />
+                <Switch checked={config.throttle?.browse_before_greet ?? true} onChange={v => updateConfig('throttle.browse_before_greet', v)} aria-label="发送前模拟浏览" />
               </div>
               <NumberRangeField
                 label="模拟浏览时长范围（秒）"
@@ -782,20 +823,19 @@ export default function ConfigPage() {
                 disabled={!(config.throttle?.browse_before_greet ?? true)}
               />
             </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="发送时间窗口">
-                <SendWindowsInput value={config.throttle?.send_windows ?? ['09:00-16:00']} onChange={v => updateConfig('throttle.send_windows', v)} />
-                <p className="mt-1 text-xs text-muted">当天最后一个窗口结束时自动停止。</p>
-              </Field>
-              <Field label="随机休息概率">
-                <Input type="number" value={config.throttle?.day_off_probability || 0.05} onChange={e => updateConfig('throttle.day_off_probability', Number(e.target.value))} step={0.01} min={0} max={1} />
-              </Field>
+            <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
+              <div>
+                <label className="text-xs text-foreground">静默模式</label>
+                <p className="mt-1 text-xs text-muted">开启后 BOSS 只打开沟通会话，不发自定义招呼语；智联、前程无忧、猎聘正常投递。</p>
+              </div>
+              <Switch checked={config.throttle?.silent_mode ?? false} onChange={v => updateConfig('throttle.silent_mode', v)} aria-label="静默模式" />
             </div>
+            <p className="text-xs text-muted">没有投递时间窗口：任何时间都能投递，全靠每日上限和匹配度门槛守住节奏。</p>
           </div>
         </SectionCard>
 
         {/* Monitor Section */}
-        <SectionCard title="监控设置" sectionKey="monitor" expanded={expandedSections} toggle={toggleSection}>
+        <SectionCard title="监控设置">
           <div className="space-y-4">
             <Field label="检查间隔 (分钟)">
               <Input type="number" value={config.monitor?.interval || 30} onChange={e => updateConfig('monitor.interval', Number(e.target.value))} min={1} max={120} />
@@ -828,7 +868,7 @@ export default function ConfigPage() {
         </SectionCard>
 
         {/* Follow-up Section */}
-        <SectionCard title="跟进设置" sectionKey="follow_up" expanded={expandedSections} toggle={toggleSection}>
+        <SectionCard title="跟进设置">
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <label className="text-xs text-foreground">启用自动跟进</label>
@@ -845,7 +885,7 @@ export default function ConfigPage() {
         </SectionCard>
 
         {/* Dedup Section */}
-        <SectionCard title="去重设置" sectionKey="dedup" expanded={expandedSections} toggle={toggleSection}>
+        <SectionCard title="去重设置">
           <div className="space-y-4">
             <Field label="历史记录文件路径">
               <Input value={config.dedup?.history_file || ''} onChange={e => updateConfig('dedup.history_file', e.target.value)} />
@@ -857,21 +897,16 @@ export default function ConfigPage() {
 }
 
 // Helper components
-function SectionCard({ title, sectionKey, expanded, toggle, children }: {
-  title: string; sectionKey: string; expanded: Record<string, boolean>; toggle: (k: string) => void; children: React.ReactNode
+function SectionCard({ title, children }: {
+  title: string; children: React.ReactNode
 }) {
-  const isExpanded = expanded[sectionKey] ?? false
+  // 全部平铺：不折叠、不隐藏，选项一次看全。
   return (
     <Card>
-      <button
-        data-tour={sectionKey === 'ai' ? 'ai-section' : undefined}
-        className="w-full flex items-center justify-between p-4 transition-colors hover:bg-surface"
-        onClick={() => toggle(sectionKey)}
-      >
+      <div data-tour={title === 'AI 设置' ? 'ai-section' : undefined} className="p-4 pb-0">
         <span className="text-sm font-black text-foreground">{title}</span>
-        {isExpanded ? <ChevronDown className="w-4 h-4 text-foreground" /> : <ChevronRight className="w-4 h-4 text-foreground" />}
-      </button>
-      {isExpanded && <div className="px-4 pb-4">{children}</div>}
+      </div>
+      <div className="px-4 pb-4 pt-3">{children}</div>
     </Card>
   )
 }

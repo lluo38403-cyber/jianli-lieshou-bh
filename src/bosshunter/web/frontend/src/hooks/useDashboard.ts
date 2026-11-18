@@ -176,7 +176,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null)
-  const refreshControllerRef = useRef<AbortController | null>(null)
+  const refreshingRef = useRef<AbortController | null>(null)
   const greetingRevisionRef = useRef(0)
 
   const updateGreetingJob = useCallback((updated: Job) => {
@@ -190,9 +190,9 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
   }, [])
 
   const fetchAll = useCallback(async () => {
-    if (refreshControllerRef.current) return
+    if (refreshingRef.current) return
     const controller = new AbortController()
-    refreshControllerRef.current = controller
+    refreshingRef.current = controller
     const timeout = window.setTimeout(() => controller.abort(), 15000)
     const greetingRevision = greetingRevisionRef.current
     setRefreshing(true)
@@ -212,7 +212,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
         historyRes ? historyRes.json() : Promise.resolve(undefined),
       ])
 
-      if (controller.signal.aborted || refreshControllerRef.current !== controller) return
+      if (controller.signal.aborted || refreshingRef.current !== controller) return
 
       // An older poll must not replace the greeting returned by a successful save.
       if (workbenchData !== undefined && greetingRevision === greetingRevisionRef.current) setWorkbench(workbenchData)
@@ -220,13 +220,13 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
       setLastRefreshedAt(new Date())
       setError('')
     } catch (err) {
-      if (refreshControllerRef.current !== controller) return
+      if (refreshingRef.current !== controller) return
       console.error('Failed to fetch dashboard data:', err)
       setError(controller.signal.aborted ? '进度刷新超时，将自动重试。' : '无法读取本地控制台数据，将自动重试。')
     } finally {
       window.clearTimeout(timeout)
-      if (refreshControllerRef.current === controller) {
-        refreshControllerRef.current = null
+      if (refreshingRef.current === controller) {
+        refreshingRef.current = null
         setRefreshing(false)
         setLoading(false)
       }
@@ -288,8 +288,8 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
       window.clearInterval(interval)
-      refreshControllerRef.current?.abort()
-      refreshControllerRef.current = null
+      refreshingRef.current?.abort()
+      refreshingRef.current = null
       window.removeEventListener('focus', refreshWhenVisible)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }

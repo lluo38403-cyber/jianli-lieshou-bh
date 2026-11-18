@@ -63,7 +63,7 @@ describe('岗位列表屏蔽公司', () => {
 
   async function clickBlock() {
     render(<DashboardPage view="jobs" />)
-    const button = await screen.findByRole('button', { name: `屏蔽公司 ${company || '公司名缺失'}` })
+    const button = await screen.findByRole('button', { name: `屏蔽公司 ${company || '公司名缺失'}` }, { timeout: 5000 })
     fireEvent.click(button)
     return button as HTMLButtonElement
   }

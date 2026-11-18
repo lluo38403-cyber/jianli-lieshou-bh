@@ -44,6 +44,7 @@ from bosshunter.config import (
 )
 from bosshunter.db import (
 	GREETING_ALLOWED_STATUSES,
+	auto_approve_pending,
 	REJECT_ALLOWED_STATUSES,
 	JobDeletionConflictError,
 	JobManualSentConflictError,
@@ -364,8 +365,8 @@ def _preflight_messages(mode: str, config: dict, options: dict | None = None) ->
 			resume_path = config.get("profile", {}).get("resume_path", "")
 			if not resume_path or not Path(str(resume_path)).exists():
 				messages.append("自动评分前请先在配置页上传 .md、.docx 或 .pdf 简历。")
-			if not get_ai_api_key(config):
-				messages.append("选择自动评分后，请先配置当前 AI 服务的 API Key。")
+			# 未配置 AI 也不拦：评分走本地规则兜底（见 collect_preflight_checks
+			# 的 ai_connection 检查，状态为 pass 并提示“使用本地规则评分”）。
 			return messages
 
 	profile = config.get("profile", {})
@@ -386,8 +387,8 @@ def _preflight_messages(mode: str, config: dict, options: dict | None = None) ->
 		from bosshunter.ai.greeter import greeting_config_error
 		if error := greeting_config_error(config):
 			messages.append(error)
-	if mode in {"full", "rescore"} and not get_ai_api_key(config):
-		messages.append("请先在配置页填写当前 AI 服务的 API Key，或设置对应的标准环境变量。")
+	# 未配置 AI 也不拦：评分走本地规则兜底；AI 缺失只在预检里提示为 pass，
+	# 不作为启动门槛（collect_preflight_checks 的 ai_connection 检查）。
 
 	return messages
 
@@ -690,9 +691,7 @@ def _execute_monitor(task: WorkbenchTask, config: dict, *, initial_cooldown: boo
 
 
 def _execute_full(task: WorkbenchTask, config: dict) -> None:
-	# Codex 审计 P1：ready 草稿只代表"生成过文案"，不代表"确认过投递"。
-	# 积压续发必须推迟到人工确认门通过之后执行（见 confirmation_event 之后），
-	# 启动阶段绝不能把未确认草稿当作已确认积压自动发送。
+	# 全自动模式：积压的待发送岗位与本轮达标岗位都自动确认投递，不等人工确认。
 	db = _get_web_db()
 	try:
 		deferred_job_ids = [str(job["id"]) for job in get_jobs_ready_to_send(db)]
@@ -718,58 +717,22 @@ def _execute_full(task: WorkbenchTask, config: dict) -> None:
 	if task.stop_requested.is_set():
 		return
 
+	# 采集后：本轮达标岗位自动确认投递。
 	db = _get_web_db()
 	try:
 		threshold = int(config.get("scoring", {}).get("threshold", 60))
-		pending_confirmation = [
-			job for job in get_jobs_pending_confirmation(db)
-			if int(job.get("score") or 0) >= threshold
-		]
+		auto_approved_ids = auto_approve_pending(db, threshold)
 	finally:
 		db.close()
-	if not pending_confirmation:
-		task.context["waiting_confirmation"] = False
-		task.context["confirmation_complete"] = True
-		if deferred_job_ids:
-			_log(
-				task,
-				f"检测到 {len(deferred_job_ids)} 个「待发送招呼语」积压：未经人工确认不会自动发送，"
-				"请在「待发送招呼语」区逐项确认后使用「直接发送」。",
-			)
-		_log(task, "没有待确认岗位，流程结束")
-		return
-
-	confirmation_event = Event()
-	task.context["confirmation_event"] = confirmation_event
-	task.context["waiting_confirmation"] = True
-	if task.context.get("delivery_requested"):
-		confirmation_event.set()
-	_log(task, "等待前端确认投递")
-	while not task.stop_requested.is_set() and not confirmation_event.wait(0.5):
-		pass
-	if task.stop_requested.is_set():
-		return
-
-	# 人工确认只覆盖本次显式勾选的岗位：积压草稿不在确认范围内，绝不连带发送
-	# （Codex 复审 P1：确认 B 不能连带发送未确认的积压 A）。
-	# 积压需在「待发送招呼语」区通过「直接发送」（带确认弹窗）人工处理；
-	# 投递冷却保持在第一批实际投递之前执行（Codex 复审 P2）。
-	if deferred_job_ids:
-		_log(
-			task,
-			f"检测到 {len(deferred_job_ids)} 个「待发送招呼语」积压不在本次确认范围，未发送；"
-			"请在「待发送招呼语」区使用「直接发送」处理。",
-		)
-
-	job_ids = [str(job_id) for job_id in task.context.get("confirmed_job_ids", []) if str(job_id)]
 	task.context["waiting_confirmation"] = False
 	task.context["confirmation_complete"] = True
 	task.context["delivery_requested"] = False
+	job_ids = list(dict.fromkeys([*deferred_job_ids, *auto_approved_ids]))
 	if not job_ids:
-		_log(task, "未收到前端确认岗位，流程结束")
+		_log(task, "没有待确认岗位，流程结束")
 		return
 
-	_log(task, f"前端已确认 {len(job_ids)} 个岗位，继续投递")
+	_log(task, f"全自动已确认 {len(job_ids)} 个岗位，继续投递")
 	if _wait_for_collection_delivery_cooldown(task, config):
 		return
 	# The user may adjust the daily limit or other send settings while reviewing
@@ -951,15 +914,15 @@ def _execute_deliver_batch(task: WorkbenchTask, config: dict) -> None:
 			return
 		if selected_job_ids and ready_count < len(selected_job_ids):
 			missing_count = len(selected_job_ids) - ready_count
-			# 生成失败的岗位保留为待生成且无招呼语文本，本就不会进入发送；其余岗位继续走
-			# 现有人工确认、发送窗口与风控规则（#101 回归：不再因部分失败放弃整个批次）。
+			# 生成失败的岗位保留为待生成且无招呼语文本，BOSS 岗位本就不会进入发送；其余岗位继续走
+			# 现有确认、守卫与风控规则（#101 回归：不再因部分失败放弃整个批次）。
 			_log(
 				task,
 				f"{missing_count} 个岗位未生成招呼语，已保留为待生成，请在 BOSS 中手动填写；"
 				"其余岗位继续进入发送流程。",
 			)
 	_log(task, "发送招呼语")
-	# The workbench must obey the same send window and day-off guard as the CLI.
+	# 投递时间窗口与随机休息日已取消：任何时间都可投递。
 	# ``force`` remains an explicit CLI-only override and is never implied by a
 	# browser button click. Both generation and delivery pin the runtime database
 	# so a non-CWD base dir can never split reads/writes across two SQLite files.
@@ -1777,15 +1740,7 @@ def api_workbench_task_start():
 					raise ValueError("持续采集不能用于完整流程")
 			except ValueError as exc:
 				return _json_response({"error": str(exc)}, 400)
-			collection_only = [
-				platform for platform in collection_options["platform_order"]
-				if not platform_supports(platform, "deliver")
-			]
-			if collection_only:
-				return _json_response({
-					"error": "智联和前程无忧当前只支持单独采集，不能进入发送全流程",
-					"collection_only_platforms": collection_only,
-				}, 400)
+			# 四个平台都支持投递（capabilities），不再有仅采集平台。
 			collection_options["auto_score"] = True
 		messages = _preflight_messages(mode, base_config, collection_options)
 		if messages:
@@ -1873,10 +1828,6 @@ def api_workbench_deliver():
 		if not job_ids:
 			return _json_response({"error": "请选择要投递的岗位"}, 400)
 		direct_send = bool(body.get("direct_send"))
-		if not direct_send:
-			from bosshunter.ai.greeter import greeting_config_error
-			if error := greeting_config_error(load_config(CONFIG_PATH)):
-				return _json_response({"error": error}, 400)
 		with job_mutation_lock:
 			validation_db = _get_web_db()
 			try:
@@ -1897,6 +1848,11 @@ def api_workbench_deliver():
 			invalid_ids = [job_id for job_id in job_ids if job_id not in active_ids]
 			if invalid_ids:
 				return _json_response({"error": "所选岗位不存在或已进入回收站", "invalid_ids": invalid_ids}, 409)
+			# 招呼语配置只拦 BOSS 岗位：智联 / 前程无忧 / 猎聘走详情页投递，不需要招呼语。
+			if not direct_send and any(str(row["source_platform"] or "boss") == "boss" for row in platform_rows):
+				from bosshunter.ai.greeter import greeting_config_error
+				if error := greeting_config_error(load_config(CONFIG_PATH)):
+					return _json_response({"error": error}, 400)
 			unsupported = [
 				str(row["id"])
 				for row in platform_rows
@@ -1930,6 +1886,7 @@ def api_workbench_deliver():
 				str(row["id"])
 				for row in platform_rows
 				if direct_send
+				and str(row["source_platform"] or "boss") == "boss"
 				and str(row["status"] or "") in allowed_statuses
 				and not str(row["greeting"] or "").strip()
 			}
@@ -1950,7 +1907,7 @@ def api_workbench_deliver():
 				elif missing_greeting_ids and not already_sent_ids and not not_ready_ids:
 					error = "所选岗位尚未生成招呼语，不能直接发送"
 				elif not_ready_ids and not already_sent_ids and not missing_greeting_ids:
-					error = "所选岗位尚未完成评分筛选或人工确认，暂不能投递"
+					error = "所选岗位尚未完成评分筛选或确认，暂不能投递"
 				else:
 					error = "所选岗位包含尚未准备好、缺少招呼语或已经投递的岗位，暂不能投递"
 				return _json_response({
@@ -2737,7 +2694,7 @@ def api_agent_tools():
 				"name": "bosshunter_start_workflow",
 				"method": "POST",
 				"path": "/api/agent/tasks",
-				"description": "启动 collect、monitor 或 full 工作流。full 仍会在投递前暂停等待人工确认。",
+				"description": "启动 collect、monitor 或 full 工作流。full 会自动确认并投递达标岗位，无需人工确认。",
 				"confirmation": "confirm: true",
 			},
 			{
@@ -3002,15 +2959,7 @@ def api_agent_task_start():
 				# Pure collection remains available without a configured model service.
 				options["auto_score"] = False
 			else:
-				collection_only = [
-					platform for platform in options["platform_order"]
-					if not platform_supports(platform, "deliver")
-				]
-				if collection_only:
-					return _json_response({
-						"error": "智联、前程无忧和猎聘只能单独采集，不能进入投递全流程",
-						"collection_only_platforms": collection_only,
-					}, 400)
+				# 四个平台都支持投递（capabilities），不再有仅采集平台。
 				options["auto_score"] = True
 		checks = collect_preflight_checks(mode, config, options)
 		messages = [*_preflight_messages(mode, config, options), *error_messages(checks)]
@@ -3025,7 +2974,7 @@ def api_agent_task_start():
 			"checks": checks,
 			"policy": {
 				"auto_score": False if mode == "collect" else True if mode == "full" else None,
-				"delivery": "full 工作流会在发送前暂停，必须经现有人工确认流程继续",
+				"delivery": "full 工作流会自动确认并发送达标岗位，无需人工确认",
 			},
 		})
 	except (AgentRequestError, ValueError) as exc:

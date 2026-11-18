@@ -80,6 +80,27 @@ def normalize_collection_options(config: dict[str, Any], raw_options: dict[str, 
     zhilian_search = configured_platforms.get("zhilian", {}).get("search", {}) if isinstance(configured_platforms.get("zhilian"), dict) else {}
     job51_search = configured_platforms.get("51job", {}).get("search", {}) if isinstance(configured_platforms.get("51job"), dict) else {}
     liepin_search = configured_platforms.get("liepin", {}).get("search", {}) if isinstance(configured_platforms.get("liepin"), dict) else {}
+    # 其余三平台没有自己的关键词/城市时，回退到 BOSS（已含全局搜索）：
+    # 关键词与城市名可以共用；城市编码绝不跨平台——validate 时各平台
+    # 用自己的城市快照解析城市名，缺码会报清晰错误。
+    _fallback_keywords = boss_search.get("keywords")
+    _fallback_cities = (
+        boss_search.get("cities")
+        or (config.get("profile") or {}).get("target_cities")
+        or ["北京"]
+    )
+
+    def _with_search_fallback(search: dict) -> dict:
+        merged = dict(search) if isinstance(search, dict) else {}
+        if not merged.get("keywords") and _fallback_keywords:
+            merged["keywords"] = _fallback_keywords
+        if not merged.get("cities") and _fallback_cities:
+            merged["cities"] = _fallback_cities
+        return merged
+
+    zhilian_search = _with_search_fallback(zhilian_search)
+    job51_search = _with_search_fallback(job51_search)
+    liepin_search = _with_search_fallback(liepin_search)
 
     platforms: dict[str, Any] = {}
     for platform, fallback in (("boss", boss_search), ("zhilian", zhilian_search), ("51job", job51_search), ("liepin", liepin_search)):

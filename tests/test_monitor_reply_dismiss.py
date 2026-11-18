@@ -383,7 +383,10 @@ class MonitorReplyDismissTests(unittest.TestCase):
                  ) as generate_resume:
                 action = monitor._handle_conversation(
                     _job("job-short-resume-intent") | {"status": "sent"},
-                    {"profile": {"portfolio_url": "https://example.com/resume"}},
+                    {
+                        "profile": {"portfolio_url": "https://example.com/resume"},
+                        "ai": {"resume_tailor_enabled": True},
+                    },
                 )
 
             verify_db = get_db(db_path)
@@ -436,7 +439,10 @@ class MonitorReplyDismissTests(unittest.TestCase):
                  patch("bosshunter.ai.resume.generate_tailored_resume", return_value=None):
                 action = monitor._handle_conversation(
                     _job("job-resume-failed") | {"status": "sent"},
-                    {"profile": {"portfolio_url": "https://example.com/resume"}},
+                    {
+                        "profile": {"portfolio_url": "https://example.com/resume"},
+                        "ai": {"resume_tailor_enabled": True},
+                    },
                 )
 
             verify_db = get_db(db_path)
@@ -494,7 +500,10 @@ class MonitorReplyDismissTests(unittest.TestCase):
                  ):
                 action = monitor._handle_conversation(
                     _job("job-resume-reason") | {"status": "sent"},
-                    {"profile": {"portfolio_url": "https://example.com/resume"}},
+                    {
+                        "profile": {"portfolio_url": "https://example.com/resume"},
+                        "ai": {"resume_tailor_enabled": True},
+                    },
                 )
 
             verify_db = get_db(db_path)

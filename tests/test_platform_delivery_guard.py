@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase, mock
 
-from bosshunter.db import get_db, insert_job
+from bosshunter.db import get_db, insert_job, update_job_status
 from bosshunter.web import server
 
 
@@ -40,7 +40,7 @@ class PlatformDeliveryGuardTests(TestCase):
         ).decode("utf-8")
         return result["status"], json.loads(payload)
 
-    def test_collection_only_platforms_reject_delivery_and_resume_routes(self):
+    def test_all_platforms_accept_delivery_and_resume_routes(self):
         for platform, job_id, url in (
             ("zhilian", "zhilian:zl-1", "https://www.zhaopin.com/jobdetail/zl-1.htm"),
             ("51job", "51job:job-1", "https://jobs.51job.com/shanghai/job-1.html"),
@@ -58,6 +58,7 @@ class PlatformDeliveryGuardTests(TestCase):
                         "source_platform": platform,
                         "source_job_id": job_id.split(":", 1)[1],
                     })
+                    update_job_status(db, job_id, "ready")
                 finally:
                     db.close()
                 server.set_base_dir(base_dir)
@@ -69,6 +70,6 @@ class PlatformDeliveryGuardTests(TestCase):
                     )
                 resume_status, resume_payload = self._request(f"/api/jobs/{job_id}/mark-resume-sent")
 
-                self.assertTrue(deliver_status.startswith("403"), deliver_payload)
-                self.assertTrue(resume_status.startswith("403"), resume_payload)
-                start.assert_not_called()
+                self.assertTrue(deliver_status.startswith("200"), deliver_payload)
+                self.assertTrue(resume_status.startswith("200"), resume_payload)
+                start.assert_called_once()

@@ -1,7 +1,9 @@
 """Pre-filter module - hard filtering before LLM evaluation."""
 
 import re
-from bosshunter.employment import internship_rejection
+from datetime import datetime, timezone
+
+from bosshunter.employment import classify_employment, internship_rejection
 
 from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
 
@@ -43,7 +45,132 @@ def quick_score(job: dict, config: dict) -> tuple[int, str]:
     if not profile.get("allow_internship", False) and _contains_internship_signal(job):
         return 0, "实习/管培岗位"
 
+    employment_block = _employment_type_block_reason(job, profile)
+    if employment_block:
+        return 0, employment_block
+
+    posted_block = _posted_days_block_reason(job, profile)
+    if posted_block:
+        return 0, posted_block
+
     return salary_filter_result(str(job.get("salary") or ""), profile)
+
+
+_EMPLOYMENT_TYPE_LABELS = {"internship": "实习", "full_time": "全职", "part_time": "兼职"}
+
+
+def _employment_type_block_reason(job: dict, profile: dict) -> str | None:
+    """求职类型筛选：只拦截类型明确且不在已选类型里的岗位，类型未知的不拦。"""
+    selected = profile.get("job_types")
+    if not isinstance(selected, list) or not selected:
+        return None
+    kind = classify_employment(job)
+    label = _EMPLOYMENT_TYPE_LABELS.get(kind)
+    if label and label not in {str(item).strip() for item in selected}:
+        return f"求职类型不符合：{label}不在已选类型中"
+    return None
+
+
+def _posted_days_block_reason(job: dict, profile: dict) -> str | None:
+    """发布时长筛选：按首次发现时间（created_at）算，超过 N 天的拦截；0=不限。
+
+    收集器不采平台标注的发布时间，所以这里用首次发现时间代替；
+    采集时刻（created_at 缺失）不拦截。
+    """
+    try:
+        days = int(profile.get("posted_days") or 0)
+    except (TypeError, ValueError):
+        return None
+    if days <= 0:
+        return None
+    created = str(job.get("created_at") or "").strip()
+    if not created:
+        return None
+    try:
+        created_dt = datetime.strptime(created[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    age_days = (datetime.now(timezone.utc) - created_dt).days
+    if age_days > days:
+        return f"发布时间超过 {days} 天（首次发现于 {created[:10]}）"
+    return None
+
+
+def rule_score(job: dict, config: dict) -> tuple[int, str]:
+    """本地规则评分（无 AI Key 时的兜底）：0-100 分。
+
+    基准 40 分 + 关键词命中（标题命中 +10、仅 JD 命中 +5，上限 40）
+    + 薪资符合 +10（不符合 +3）+ 城市符合 +5 + 学历符合 +5，上限 100。
+    未命中任何关键词时总分封顶 55：只凭薪资/城市/学历符合不能过线，
+    关键词是必须的相关性信号。校准目标（门槛 60）：标题命中+薪资符合
+    正好 60 分过线；标题命中+城市/学历符合 65-70 分；仅 JD 命中或
+    无命中时不过线。
+    """
+    profile = config.get("profile", {}) if isinstance(config.get("profile"), dict) else {}
+    search = config.get("search", {}) if isinstance(config.get("search"), dict) else {}
+    title = str(job.get("title") or "")
+    jd = str(job.get("jd") or "")
+    title_lower = title.lower()
+    jd_lower = jd.lower()
+
+    terms: list[str] = []
+    for source in (profile.get("target_roles") or [], search.get("keywords") or []):
+        for term in source if isinstance(source, list) else []:
+            cleaned = str(term or "").strip()
+            if cleaned and cleaned not in terms:
+                terms.append(cleaned)
+
+    keyword_points = 0
+    matched: list[str] = []
+    for term in terms:
+        term_lower = term.lower()
+        if term_lower in title_lower:
+            keyword_points += 10
+            matched.append(term)
+        elif term_lower in jd_lower:
+            keyword_points += 5
+            matched.append(term)
+    keyword_points = min(keyword_points, 40)
+
+    salary_points = 0
+    parsed = _parse_salary_range_k(str(job.get("salary") or ""))
+    salary_min = _as_number(profile.get("salary_min", 0))
+    salary_max = _as_number(profile.get("salary_max", 0))
+    if parsed is not None:
+        low, high = parsed
+        if (salary_min <= 0 or high >= salary_min) and (salary_max <= 0 or low <= salary_max):
+            salary_points = 10
+        else:
+            salary_points = 3
+
+    city_points = 0
+    target_cities = [str(c).strip() for c in (profile.get("target_cities") or []) if str(c).strip()]
+    job_city = str(job.get("city") or "").strip().split("·")[0].strip()
+    if target_cities and job_city and job_city in target_cities:
+        city_points = 5
+
+    education_points = 0
+    wanted_edu = str(profile.get("education") or "").strip()
+    job_edu = str(job.get("education") or "").strip()
+    if wanted_edu and job_edu and (wanted_edu in job_edu or job_edu in wanted_edu):
+        education_points = 5
+
+    score = 40 + keyword_points + salary_points + city_points + education_points
+    if not matched:
+        # 无关键词命中：薪资/城市/学历再符合也不能过线。
+        score = min(score, 55)
+    score = min(score, 100)
+    parts = []
+    if matched:
+        parts.append(f"命中关键词：{'、'.join(matched[:5])}")
+    if salary_points == 10:
+        parts.append("薪资符合")
+    if city_points:
+        parts.append("城市符合")
+    if education_points:
+        parts.append("学历符合")
+    reason = "；".join(parts) if parts else "未命中关键词"
+    return score, reason
 
 
 def salary_filter_result(salary: str, profile: dict) -> tuple[int, str]:

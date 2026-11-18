@@ -4,7 +4,7 @@ const steps = [
   { icon: Search, label: '采集', desc: '搜索岗位' },
   { icon: Bot, label: 'AI评分', desc: '匹配打分' },
   { icon: MessageSquare, label: '招呼语', desc: '个性生成' },
-  { icon: CheckCircle, label: '人工确认', desc: '审核通过' },
+  { icon: CheckCircle, label: '自动确认', desc: '达标即通过' },
   { icon: Send, label: '发送', desc: '自动投递' },
   { icon: Eye, label: '监控', desc: '跟进回复' },
 ]
@@ -30,7 +30,7 @@ export function PipelineFlow() {
         ))}
       </div>
       <p className="text-xs text-muted mt-4">
-        可从上方选择运行全流程、单独采集或单独监测；投递前需要人工确认。
+        可从上方选择运行全流程、单独采集或单独监测；达标岗位自动投递，无需人工确认。
       </p>
     </div>
   )

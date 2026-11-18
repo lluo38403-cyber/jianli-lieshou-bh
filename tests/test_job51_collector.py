@@ -361,8 +361,6 @@ class CollectionFlowSafetyTests(TestCase):
                 close_tab = Mock(return_value=True)
                 collector = Job51Collector(browser=Job51Browser(close_tab=close_tab))
                 with (
-                    patch("bosshunter.collection.platforms.job51.SendWindowChecker.is_active", return_value=True),
-                    patch("bosshunter.collection.platforms.job51.should_take_day_off", return_value=False),
                     patch.object(collector, "_ensure_host_tab", return_value=("host-tab", owned)),
                     patch.object(collector, "_collect_keyword"),
                 ):
@@ -766,28 +764,31 @@ class CollectEntryTests(TestCase):
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.reason_code, "no_valid_city")
 
-    def test_outside_send_window_returns_completed(self):
+    def test_collection_ignores_removed_send_window_config(self):
         request = PlatformCollectionRequest(
             "51job", ["AI"], ["上海"], {"上海": "020000"}, max_pages=1,
         )
         collector = Job51Collector(config={"throttle": {"send_windows": ["00:00-00:01"]}})
-        with patch("bosshunter.collection.platforms.job51.SendWindowChecker.is_active", return_value=False):
+        with (
+            patch.object(collector, "_ensure_host_tab", return_value=("host", True)),
+            patch.object(collector, "_collect_keyword"),
+        ):
             result = collector.collect(request, self._hooks())
         self.assertEqual(result.status, "completed")
-        self.assertEqual(result.reason_code, "outside_window")
+        self.assertNotIn(result.reason_code, ("outside_window", "day_off"))
 
-    def test_day_off_returns_completed(self):
+    def test_collection_ignores_removed_day_off_config(self):
         request = PlatformCollectionRequest(
             "51job", ["AI"], ["上海"], {"上海": "020000"}, max_pages=1,
         )
         collector = Job51Collector(config={"throttle": {"day_off_probability": 1.0}})
         with (
-            patch("bosshunter.collection.platforms.job51.SendWindowChecker.is_active", return_value=True),
-            patch("bosshunter.collection.platforms.job51.should_take_day_off", return_value=True),
+            patch.object(collector, "_ensure_host_tab", return_value=("host", True)),
+            patch.object(collector, "_collect_keyword"),
         ):
             result = collector.collect(request, self._hooks())
         self.assertEqual(result.status, "completed")
-        self.assertEqual(result.reason_code, "day_off")
+        self.assertNotIn(result.reason_code, ("outside_window", "day_off"))
 
     def test_stop_event_during_loop_returns_stopped(self):
         stop = Event()
@@ -804,8 +805,6 @@ class CollectEntryTests(TestCase):
         )
         collector = Job51Collector()
         with (
-            patch("bosshunter.collection.platforms.job51.SendWindowChecker.is_active", return_value=True),
-            patch("bosshunter.collection.platforms.job51.should_take_day_off", return_value=False),
             patch.object(collector, "_ensure_host_tab", return_value=("host", True)),
         ):
             result = collector.collect(request, hooks)
@@ -916,8 +915,6 @@ class CollectSalaryParseErrorTests(TestCase):
         )
         collector = Job51Collector(config={"profile": {"salary_min": "abc", "salary_max": "xyz"}})
         with (
-            patch("bosshunter.collection.platforms.job51.SendWindowChecker.is_active", return_value=True),
-            patch("bosshunter.collection.platforms.job51.should_take_day_off", return_value=False),
             patch.object(collector, "_ensure_host_tab", return_value=("host", True)),
             patch.object(collector, "_collect_keyword"),
         ):
@@ -974,8 +971,6 @@ class Job51FilterRegressionTests(TestCase):
             with (
                 patch("bosshunter.collection.platforms.job51.Job51Browser", return_value=browser),
                 patch.object(Job51Collector, "_ensure_host_tab", return_value=("fake", False)),
-                patch("bosshunter.collection.platforms.job51.SendWindowChecker.is_active", return_value=True),
-                patch("bosshunter.collection.platforms.job51.should_take_day_off", return_value=False),
                 patch("bosshunter.collection.platforms.job51._wait_or_stop", return_value=False),
                 patch.object(_ApiRateLimiter, "wait_before_request", return_value=True),
             ):

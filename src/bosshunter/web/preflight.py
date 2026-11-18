@@ -44,6 +44,10 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 	ai_required = mode in {"full", "rescore"} or (
 		mode == "collect" and bool(collection_options and collection_options.get("auto_score"))
 	)
+	ai_configured = bool(get_ai_api_key(config))
+	if ai_required and not ai_configured:
+		# 未配置 AI 不阻塞：评分走本地规则，招呼语走固定模板。
+		checks.append(_check("ai_connection", "AI 接口连接", "pass", "未配置 AI，使用本地规则评分", "不填 AI Key 也能跑全流程；要 AI 评分/定制简历时再去“配置 → AI 设置”填写。"))
 
 	if not ai_required:
 		# Pure collection must not perform an AI connectivity request. This keeps
@@ -56,22 +60,17 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 		return checks
 
 	with ThreadPoolExecutor(max_workers=2) as executor:
-		ai_future = executor.submit(check_ai_connection, deepcopy(config), True)
-		browser_future = executor.submit(check_browser_connection, deepcopy(config), collection_options)
-		for future, fallback in (
-			(ai_future, _check("ai_connection", "AI 接口连接", "error", "AI 接口检测失败", "请检查 AI 设置后重试。", "config")),
-			(
-				browser_future,
-				_check(
-					"browser_runtime",
-					"浏览器连接",
-					"error",
-					"浏览器连接检测失败",
-					"请重新启动 BossHunter 后再试。",
-					"browser",
-				),
-			),
-		):
+		pending_checks: list = []
+		if ai_configured:
+			pending_checks.append((
+				executor.submit(check_ai_connection, deepcopy(config), True),
+				_check("ai_connection", "AI 接口连接", "error", "AI 接口检测失败", "请检查 AI 设置后重试。", "config"),
+			))
+		pending_checks.append((
+			executor.submit(check_browser_connection, deepcopy(config), collection_options),
+			_check("browser_runtime", "浏览器连接", "error", "浏览器连接检测失败", "请重新启动 BossHunter 后再试。", "browser"),
+		))
+		for future, fallback in pending_checks:
 			try:
 				checks.extend(future.result())
 			except Exception:

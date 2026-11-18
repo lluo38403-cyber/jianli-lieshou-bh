@@ -8,7 +8,7 @@ console = Console()
 
 
 def run_pipeline(config: dict) -> None:
-    """Run the full pipeline: scrape → score → confirm → greet → send → monitor."""
+    """Run the full pipeline: scrape → score → auto-approve → greet → send → monitor."""
     configure(config)
 
     # Step 1: Check Browser Runtime connection
@@ -44,13 +44,17 @@ def run_pipeline(config: dict) -> None:
         return
     console.print(f"[green]  ✓ {scored} 个通过, {filtered} 个过滤[/green]\n")
 
-    # Step 4: Confirm which jobs to pursue
-    console.print("[bold]Step 4/6: 确认投递清单[/bold]")
-    from bosshunter.ui.confirm import show_confirmation
-    approved = show_confirmation(config)
-    if not approved:
-        console.print("[yellow]  已取消发送[/yellow]")
-        return
+    # Step 4: Auto-approve jobs that passed scoring (全自动，无需人工确认)
+    console.print("[bold]Step 4/6: 自动确认投递清单[/bold]")
+    from bosshunter.db import auto_approve_pending, get_db
+
+    threshold = int(config.get("scoring", {}).get("threshold", 60))
+    db = get_db()
+    try:
+        approved = auto_approve_pending(db, threshold)
+    finally:
+        db.close()
+    console.print(f"[green]  ✓ 自动确认 {len(approved)} 个岗位[/green]\n")
 
     # Step 5: Generate greetings for confirmed jobs, then send
     console.print("\n[bold]Step 5/6: 生成招呼语并发送[/bold]")

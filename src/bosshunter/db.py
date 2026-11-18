@@ -1041,19 +1041,39 @@ def get_jobs_pending_confirmation(conn: sqlite3.Connection) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def auto_approve_pending(conn: sqlite3.Connection, threshold: int = 60) -> list[str]:
+    """全自动确认：评分达标的待确认岗位自动批准投递，返回批准的岗位 ID。
+
+    低于阈值的岗位不动，仍留在待确认池里。
+    """
+    pending = [
+        job for job in get_jobs_pending_confirmation(conn)
+        if int(job.get("score") or 0) >= threshold
+    ]
+    approved_ids: list[str] = []
+    for job in pending:
+        update_job_status(conn, job["id"], "approved")
+        add_history(conn, job["id"], "approved", "全自动：评分达标，自动确认投递")
+        approved_ids.append(str(job["id"]))
+    return approved_ids
+
+
 def get_jobs_ready_to_send(
     conn: sqlite3.Connection,
     *,
     include_pending_review: bool = False,
 ) -> list[dict]:
-    """Get jobs that have generated greetings and are ready to send."""
+    """Get jobs that are ready to send.
+
+    BOSS 岗位需要已生成的招呼语；智联 / 前程无忧 / 猎聘走详情页投递，
+    不需要招呼语，因此不要求 greeting 非空。
+    """
     review_filter = "" if include_pending_review else "AND greeting_selection != 'pending'"
     rows = conn.execute(f"""
         SELECT * FROM jobs
         WHERE status IN ('ready', 'approved')
           AND deleted_at IS NULL
-          AND greeting IS NOT NULL
-          AND TRIM(greeting) != ''
+          AND (greeting IS NOT NULL AND TRIM(greeting) != '' OR source_platform != 'boss')
           {review_filter}
           AND (status = 'approved' OR NOT EXISTS (
               SELECT 1 FROM history AS evaluation
@@ -1075,8 +1095,7 @@ def get_jobs_with_send_errors(conn: sqlite3.Connection) -> list[dict]:
         SELECT * FROM jobs
         WHERE status = 'error'
           AND deleted_at IS NULL
-          AND greeting IS NOT NULL
-          AND TRIM(greeting) != ''
+          AND (greeting IS NOT NULL AND TRIM(greeting) != '' OR source_platform != 'boss')
         ORDER BY updated_at DESC, score DESC
     """).fetchall()
     return [dict(row) for row in rows]
@@ -1511,7 +1530,7 @@ def get_funnel_stats(conn: sqlite3.Connection, *, today: bool = False) -> dict[s
     resume_generated = conn.execute(f"SELECT COUNT(*) as cnt FROM jobs WHERE {scope} AND resume_path IS NOT NULL AND TRIM(resume_path) != ''").fetchone()["cnt"]
     follow_up = conn.execute(f"SELECT COUNT(*) as cnt FROM jobs WHERE {scope} AND status = 'follow_up_sent'").fetchone()["cnt"]
     rejected = conn.execute(f"SELECT COUNT(*) as cnt FROM jobs WHERE {scope} AND status = 'rejected'").fetchone()["cnt"]
-    return {"采集总数": total, "初筛通过": prefilter_passed, "AI评分": ai_scored, "人工确认": approved, "发送": sent, "回复": replied, "简历已发": resume_sent, "待手动发简历": needs_resume, "简历生成": resume_generated, "跟进": follow_up, "拒绝": rejected}
+    return {"采集总数": total, "初筛通过": prefilter_passed, "AI评分": ai_scored, "自动确认": approved, "发送": sent, "回复": replied, "简历已发": resume_sent, "待手动发简历": needs_resume, "简历生成": resume_generated, "跟进": follow_up, "拒绝": rejected}
 
 
 def get_daily_activity(conn: sqlite3.Connection, days: int = 7) -> list[dict]:

@@ -42,7 +42,7 @@ from bosshunter.db import (
     upsert_page_progress,
 )
 from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
-from bosshunter.throttle import SendWindowChecker, should_take_day_off
+
 
 
 SEARCH_URL = "https://www.zhaopin.com/sou/jl{city_code}/"
@@ -1271,15 +1271,6 @@ class ZhilianCollector:
     def collect(self, request: PlatformCollectionRequest, hooks: CollectorHooks) -> PlatformCollectionResult:
         if any(not str(request.city_codes.get(city) or "").strip() for city in request.cities):
             return PlatformCollectionResult(self.platform, "failed", "no_valid_city", "智联城市编码未配置")
-
-        throttle_cfg = self.config.get("throttle", {}) if isinstance(self.config.get("throttle"), dict) else {}
-        send_windows = throttle_cfg.get("send_windows", ["09:00-16:00"])
-        if not SendWindowChecker(send_windows).is_active():
-            return PlatformCollectionResult(self.platform, "completed", "outside_window",
-                                            f"当前不在采集时间窗口内（{send_windows}）")
-        if should_take_day_off(float(throttle_cfg.get("day_off_probability", 0.05))):
-            return PlatformCollectionResult(self.platform, "completed", "day_off",
-                                            "今日随机休息，跳过智联采集")
 
         # 词级断点续采：跳过最近 N 小时内已完成的 (city, keyword) 组合。
         collected_combos: set[tuple[str, str]] = set()

@@ -555,8 +555,6 @@ class JobSelectionTests(unittest.TestCase):
             ]
 
             with patch("bosshunter.db.DB_PATH", db_path), \
-                 patch("bosshunter.executor.sender.should_take_day_off", return_value=False), \
-                 patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True), \
                  patch("bosshunter.executor.sender._send_greeting_once", side_effect=attempts) as send_once, \
                  patch("bosshunter.executor.sender.close_tab") as close_tab:
                 sent = send_greetings({"throttle": {"daily_limit": 10}}, force=True)
@@ -586,8 +584,6 @@ class JobSelectionTests(unittest.TestCase):
                 "skip_backoff": True,
             }
             with patch("bosshunter.db.DB_PATH", db_path), \
-                 patch("bosshunter.executor.sender.should_take_day_off", return_value=False), \
-                 patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True), \
                  patch(
                      "bosshunter.executor.sender._send_greeting_once",
                      return_value=(failure, "task-target"),
@@ -629,8 +625,6 @@ class JobSelectionTests(unittest.TestCase):
                 },
             }
             with patch("bosshunter.db.DB_PATH", db_path), \
-                 patch("bosshunter.executor.sender.should_take_day_off", return_value=False), \
-                 patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True), \
                  patch(
                      "bosshunter.executor.sender._send_greeting_once",
                      side_effect=[({"success": True}, None), (failure, None)],
@@ -674,8 +668,6 @@ class JobSelectionTests(unittest.TestCase):
                 "throttle": {"daily_limit": 10, "interval_min": 0, "interval_max": 0},
             }
             with patch("bosshunter.db.DB_PATH", db_path), \
-                 patch("bosshunter.executor.sender.should_take_day_off", return_value=False), \
-                 patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True), \
                  patch("bosshunter.executor.sender._send_greeting_once", return_value=({"success": True}, None)):
                 sent = send_greetings(config, force=True)
 

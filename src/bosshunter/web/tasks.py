@@ -8,7 +8,6 @@ from threading import Event, Lock, Thread, Timer
 from typing import Any, Callable
 from uuid import uuid4
 
-from bosshunter.throttle import SendWindowChecker
 from bosshunter.browser.ownership import browser_execution
 from contextlib import nullcontext
 
@@ -227,9 +226,8 @@ class WorkbenchTaskRunner:
 
 
 def _deadline_from_config(mode: str, config: dict) -> datetime | None:
-    """Resolve the automatic stop deadline for long-running/send tasks."""
-    if mode not in DEADLINE_MODES:
-        return None
-    throttle = config.get("throttle", {}) if isinstance(config, dict) else {}
-    windows = throttle.get("send_windows", ["09:00-16:00"])
-    return SendWindowChecker(windows).latest_end_datetime()
+    """Resolve the automatic stop deadline for long-running/send tasks.
+
+    投递时间窗口已取消：任务不再按窗口自动截止，始终返回 None。
+    """
+    return None

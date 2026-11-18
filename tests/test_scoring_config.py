@@ -33,7 +33,7 @@ class ScoringConfigTests(unittest.TestCase):
 
         self.assertEqual(config["profile"]["target_cities"], ["北京"])
         self.assertEqual(config["ai"]["provider"], "anthropic")
-        self.assertEqual(config["scoring"]["threshold"], 71)
+        self.assertEqual(config["scoring"]["threshold"], 60)
         self.assertEqual(config["monitor"]["interval"], 30)
 
 

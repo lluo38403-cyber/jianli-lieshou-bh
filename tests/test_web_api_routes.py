@@ -91,8 +91,13 @@ class WebApiRouteTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             status, _, body = self._request("/api/config")
             self.assertEqual(json.loads(body)["throttle"]["send_windows"], windows)
+            # None = 未配置时间窗口，合法：保存后读回仍为 None。
+            status, _, body = self._request("/api/config", "POST", {"throttle": {"send_windows": None}})
+            self.assertTrue(status.startswith("200"), body)
+            status, _, body = self._request("/api/config")
+            self.assertIsNone(json.loads(body)["throttle"]["send_windows"])
             original = server.CONFIG_PATH.read_bytes()
-            for invalid in (None, "09:00-16:00", ["bad"], ["09:00-12:00", "11:00-16:00"]):
+            for invalid in ("09:00-16:00", ["bad"], ["09:00-12:00", "11:00-16:00"]):
                 with self.subTest(invalid=invalid):
                     status, _, body = self._request("/api/config", "POST", {"throttle": {"send_windows": invalid}})
                     self.assertTrue(status.startswith("400"), body)
@@ -515,7 +520,7 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(status.startswith("403"), body)
         self.assertIn("不能单独跳过确认发送", json.loads(body)["error"])
 
-    def test_agent_task_starts_full_workflow_with_existing_confirmation_gate(self):
+    def test_agent_task_starts_full_workflow_with_auto_approval_policy(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
             resume_path = base_dir / "resume.md"
@@ -523,8 +528,8 @@ class WebApiRouteTests(unittest.TestCase):
             (base_dir / "config.yaml").write_text(
                 yaml.safe_dump({
                     "profile": {"resume_path": str(resume_path)},
-                    "search": {"keywords": ["AI engineer"], "cities": ["Shanghai"]},
-                    "platforms": {"boss": {"enabled": True, "search": {"keywords": ["AI engineer"], "cities": ["Shanghai"], "city_codes": {"Shanghai": "101020100"}}}},
+                    "search": {"keywords": ["AI engineer"], "cities": ["上海"]},
+                    "platforms": {"boss": {"enabled": True, "search": {"keywords": ["AI engineer"], "cities": ["上海"], "city_codes": {"上海": "101020100"}}}},
                     "ai": {"api_key": "private-agent-key"},
                 }, allow_unicode=True),
                 encoding="utf-8",
@@ -541,7 +546,7 @@ class WebApiRouteTests(unittest.TestCase):
         payload = json.loads(body)
         self.assertTrue(status.startswith("200"), body)
         self.assertEqual(payload["task"], task)
-        self.assertIn("人工确认", payload["policy"]["delivery"])
+        self.assertIn("无需人工确认", payload["policy"]["delivery"])
         self.assertEqual(start.call_args.args[0], "full")
         self.assertTrue(start.call_args.args[1]["_collection_options"]["auto_score"])
         self.assertTrue(start.call_args.args[1]["_agent_workflow"])
@@ -659,7 +664,7 @@ class WebApiRouteTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM score_traces").fetchone()[0], 0)
             db.close()
 
-    def test_agent_greeting_requires_approval_before_shared_sender_selection(self):
+    def test_agent_greeting_not_sent_until_job_ready(self):
         from bosshunter.agent_api import validate_agent_evaluations
         from bosshunter.db import persist_agent_evaluations, get_jobs_ready_to_send, get_jobs_pending_confirmation
         from bosshunter.ai.greeter import generate_greetings
@@ -674,8 +679,8 @@ class WebApiRouteTests(unittest.TestCase):
             persist_agent_evaluations(db, evaluations)
             self.assertEqual(get_jobs_ready_to_send(db), [])
             from bosshunter.executor import sender
-            send_config = {"throttle": {"day_off_probability": 0, "send_windows": []}}
-            with patch.object(sender, "get_db", side_effect=lambda *args, **kwargs: get_db(db_path)), patch.object(sender, "should_take_day_off", return_value=False), patch.object(sender.SendWindowChecker, "is_active", return_value=True), patch.object(sender, "_send_greeting_once") as outbound:
+            send_config = {"throttle": {}}
+            with patch.object(sender, "get_db", side_effect=lambda *args, **kwargs: get_db(db_path)), patch.object(sender, "_send_greeting_once") as outbound:
                 self.assertEqual(sender.send_greetings(send_config), 0)
             self.assertEqual(send_config["_workbench_send_report"]["stop_reason"], "no_ready_jobs")
             outbound.assert_not_called()
@@ -715,28 +720,16 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(config["monitor"]["auto_reply_hr_questions"])
         self.assertTrue(config["follow_up"]["enabled"])
 
-    def test_agent_full_waits_before_send_and_preserves_monitor_restrictions(self):
-        for confirmed in (False, True):
-            with self.subTest(confirmed=confirmed):
-                task = WorkbenchTask(id="safe-full", mode="full", label="test")
-                config = {"_agent_workflow": True, "scoring": {"threshold": 71}, "_collection_options": {"platform_order": ["boss"]}}
-                def log(current, message):
-                    if message == "等待前端确认投递":
-                        deliver.assert_not_called()
-                        if confirmed:
-                            current.context["confirmed_job_ids"] = ["new-job"]
-                            current.context["confirmation_event"].set()
-                        else:
-                            current.stop_requested.set()
-                with patch.object(server, "_get_web_db", return_value=MagicMock()), patch.object(server, "get_jobs_ready_to_send", return_value=[{"id": "old-approved"}]), patch.object(server, "get_jobs_pending_confirmation", return_value=[{"id": "new-job", "score": 87}]), patch.object(server, "_execute_collect"), patch.object(server, "_execute_deliver") as deliver, patch.object(server, "_execute_monitor") as monitor, patch.object(server, "_wait_for_collection_delivery_cooldown", return_value=False), patch.object(server, "load_config", return_value={"monitor": {"auto_reply_hr_questions": True}}), patch.object(server, "_log", side_effect=log):
-                    server._execute_full(task, config)
-                if confirmed:
-                    deliver.assert_called_once()
-                    self.assertEqual(deliver.call_args.args[1]["_workbench_job_ids"], ["new-job"])
-                    self.assertTrue(monitor.call_args.args[1]["_agent_workflow"])
-                else:
-                    deliver.assert_not_called()
-                    monitor.assert_not_called()
+    def test_agent_full_auto_approves_and_delivers_without_confirmation(self):
+        task = WorkbenchTask(id="safe-full", mode="full", label="test")
+        config = {"_agent_workflow": True, "scoring": {"threshold": 71}, "_collection_options": {"platform_order": ["boss"]}}
+        with patch.object(server, "_get_web_db", return_value=MagicMock()), patch.object(server, "get_jobs_ready_to_send", return_value=[{"id": "old-approved"}]), patch.object(server, "auto_approve_pending", return_value=["new-job"]), patch.object(server, "_execute_collect"), patch.object(server, "_execute_deliver") as deliver, patch.object(server, "_execute_monitor") as monitor, patch.object(server, "_wait_for_collection_delivery_cooldown", return_value=False), patch.object(server, "load_config", return_value={"monitor": {"auto_reply_hr_questions": True}}), patch.object(server, "_log"):
+            server._execute_full(task, config)
+        deliver.assert_called_once()
+        self.assertEqual(deliver.call_args.args[1]["_workbench_job_ids"], ["old-approved", "new-job"])
+        self.assertTrue(monitor.call_args.args[1]["_agent_workflow"])
+        self.assertFalse(task.context["waiting_confirmation"])
+        self.assertTrue(task.context["confirmation_complete"])
 
     def test_web_assets_serve_javascript_with_windows_safe_mime_type(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -827,7 +820,7 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(json.loads(body)["ok"])
         self.assertEqual(collect.call_args.args[0], "rescore")
 
-    def test_web_api_workbench_preflight_full_requires_ai_key(self):
+    def test_web_api_workbench_preflight_full_passes_without_ai_key(self):
         # Arrange
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
@@ -868,9 +861,13 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(status.startswith("200"))
         self.assertIn("application/json", headers["Content-Type"])
         payload = json.loads(body)
-        self.assertFalse(payload["ok"])
-        self.assertTrue(any("尚未填写 AI API Key" in message for message in payload["messages"]))
-        self.assertTrue(any(check["id"] == "ai_credentials" for check in payload["checks"]))
+        self.assertTrue(payload["ok"])
+        self.assertFalse(any("尚未填写 AI API Key" in message for message in payload["messages"]))
+        self.assertTrue(any(
+            check["id"] == "ai_connection" and check["status"] == "pass"
+            and "本地规则评分" in check["message"]
+            for check in payload["checks"]
+        ))
 
     def test_web_api_ai_diagnostics_returns_structured_feedback(self):
         # Arrange
@@ -1320,7 +1317,7 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertIn("application/json", headers["Content-Type"])
         self.assertEqual([job["id"] for job in payload["pending_confirmation"]], ["ready-job"])
 
-    def test_workbench_excludes_collection_only_platforms_from_automatic_delivery(self):
+    def test_workbench_includes_all_platforms_in_pending_confirmation(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
             db = get_db(base_dir / "data" / "bosshunter.db")
@@ -1338,7 +1335,7 @@ class WebApiRouteTests(unittest.TestCase):
 
         payload = json.loads(body)
         self.assertTrue(status.startswith("200"), body)
-        self.assertEqual(payload["pending_confirmation"], [])
+        self.assertEqual([job["id"] for job in payload["pending_confirmation"]], ["zhilian-ready"])
 
     def test_web_api_workbench_reports_daily_send_quota(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1356,9 +1353,9 @@ class WebApiRouteTests(unittest.TestCase):
         payload = json.loads(body)
         self.assertTrue(status.startswith("200"), body)
         self.assertEqual(payload["send_quota"], {
-            "daily_limit": 30,
+            "daily_limit": 120,
             "sent": 1,
-            "remaining": 29,
+            "remaining": 119,
             "exhausted": False,
         })
 
@@ -1420,13 +1417,18 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["funnel_today"]["发送"], 1)
         self.assertEqual(len(payload["pending_confirmation"]), 1)
 
-    def test_web_api_full_task_stays_running_while_waiting_for_frontend_confirmation(self):
+    def test_web_api_full_task_auto_delivers_ready_job_without_waiting(self):
         # Arrange
-        confirmation_reached = False
+        calls = []
 
         def fake_collect(task, config):
-            nonlocal confirmation_reached
-            confirmation_reached = True
+            calls.append("collect")
+
+        def fake_deliver(task, config):
+            calls.append(("deliver", config.get("_workbench_job_ids")))
+
+        def fake_monitor(task, config, **kwargs):
+            calls.append("monitor")
 
         runner = WorkbenchTaskRunner()
         runner._executors["full"] = lambda task, config: server._execute_full(task, config)
@@ -1443,27 +1445,21 @@ class WebApiRouteTests(unittest.TestCase):
                 db.close()
             server.set_base_dir(base_dir)
 
-            with patch.object(server, "_execute_collect", side_effect=fake_collect):
-                task = runner.start("full", {"throttle": {"send_windows": []}})
-                for _ in range(20):
-                    status = runner.status()
-                    active = status["active"]
-                    if active and "等待前端确认投递" in active["logs"]:
-                        break
-                    time.sleep(0.01)
-                time.sleep(0.05)
+            with patch.object(server, "_execute_collect", side_effect=fake_collect), \
+                 patch.object(server, "_execute_deliver", side_effect=fake_deliver), \
+                 patch.object(server, "_execute_monitor", side_effect=fake_monitor):
+                task = runner.start("full", {"throttle": {}})
+                runner.wait(timeout=1)
                 status = runner.status()
-                active = status["active"]
-                if active:
-                    runner._tasks[task["id"]].stop_requested.set()
-                    runner.wait(timeout=1)
+                last_task = status["last_task"]
 
         # Assert
-        self.assertTrue(confirmation_reached)
-        self.assertIsNotNone(active)
-        self.assertEqual(active["id"], task["id"])
-        self.assertEqual(active["status"], "running")
-        self.assertIn("等待前端确认投递", active["logs"])
+        self.assertEqual(calls, ["collect", ("deliver", ["ready-job"]), "monitor"])
+        self.assertIsNone(status["active"])
+        self.assertEqual(last_task["id"], task["id"])
+        self.assertEqual(last_task["status"], "completed")
+        self.assertIn("全自动已确认 1 个岗位，继续投递", last_task["logs"])
+        self.assertNotIn("等待前端确认投递", last_task["logs"])
 
     def test_task_stop_keeps_active_slot_until_executor_really_returns(self):
         # Arrange
@@ -1816,7 +1812,7 @@ class WebApiRouteTests(unittest.TestCase):
 
         self.assertTrue(status.startswith("409"), body)
         payload = json.loads(body)
-        self.assertEqual(payload["error"], "所选岗位尚未完成评分筛选或人工确认，暂不能投递")
+        self.assertEqual(payload["error"], "所选岗位尚未完成评分筛选或确认，暂不能投递")
         self.assertEqual(payload["invalid_ids"], ["pending-without-history"])
         self.assertEqual(payload["already_sent_ids"], [])
         self.assertEqual(payload["not_ready_ids"], ["pending-without-history"])
@@ -2312,7 +2308,7 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(job_status, "ready")
         self.assertEqual(approved_history, 0)
 
-    def test_web_api_full_task_continues_delivery_and_monitoring_after_confirmation(self):
+    def test_web_api_full_task_auto_approves_and_continues_delivery_and_monitoring(self):
         # Arrange
         calls = []
 
@@ -2356,29 +2352,17 @@ class WebApiRouteTests(unittest.TestCase):
                  patch.object(server, "_execute_monitor", side_effect=fake_monitor), \
                  patch.object(server, "load_config", return_value={"throttle": {"daily_limit": 40}}):
                 task = runner.start("full", {"throttle": {"send_windows": []}})
-                for _ in range(50):
-                    running_task = runner._tasks[task["id"]]
-                    confirmation_event = running_task.context.get("confirmation_event")
-                    if isinstance(confirmation_event, Event):
-                        running_task.context["confirmed_job_ids"] = ["ready-a", "ready-b"]
-                        confirmation_event.set()
-                        break
-                    time.sleep(0.01)
                 runner.wait(timeout=1)
 
         # Assert
         self.assertEqual(
             calls,
-            ["collect", ("deliver", ["ready-a", "ready-b"], 40), "monitor"],
+            ["collect", ("deliver", ["ready-a"], 40), "monitor"],
         )
 
-    def test_full_task_consumes_confirmation_queued_before_event_creation(self):
+    def test_full_task_auto_approves_pending_job_without_confirmation(self):
         calls = []
         task = WorkbenchTask(id="queued-before-event", mode="full", label="运行全流程")
-        task.context.update({
-            "confirmed_job_ids": ["approved-a"],
-            "delivery_requested": True,
-        })
 
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
@@ -2405,9 +2389,8 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertFalse(task.context["waiting_confirmation"])
         self.assertTrue(task.context["confirmation_complete"])
 
-    def test_full_task_skips_backlog_without_confirmation(self):
-        # Codex 审计 P1 后的新契约：ready 积压代表"生成过草稿"而非"确认过投递"，
-        # 没有待确认岗位时全流程不得自动发送积压，只提示走「直接发送」人工路径。
+    def test_full_task_auto_sends_ready_backlog(self):
+        # 全自动契约：ready 积压（已有招呼语）无需人工确认，全流程直接投递。
         # Arrange
         calls = []
         task = WorkbenchTask(id="backlog-first", mode="full", label="运行全流程")
@@ -2437,12 +2420,13 @@ class WebApiRouteTests(unittest.TestCase):
 
             with patch.object(server, "_execute_deliver", side_effect=fake_deliver), \
                  patch.object(server, "_execute_collect", side_effect=fake_collect), \
+                 patch.object(server, "_execute_monitor", side_effect=lambda *_args, **_kwargs: calls.append("monitor")), \
                  patch.object(server, "load_config", return_value={"throttle": {"daily_limit": 40}}):
                 server._execute_full(task, {})
 
         # Assert
-        self.assertEqual(calls, ["collect"])
-        self.assertTrue(any("未经人工确认不会自动发送" in message for message in task.logs))
+        self.assertEqual(calls, ["collect", ("deliver", ["deferred-ready"], None, 40), "monitor"])
+        self.assertTrue(any("全自动已确认 1 个岗位，继续投递" in message for message in task.logs))
 
     def test_deliver_keeps_partial_result_and_continues_after_single_failure(self):
         # Arrange
@@ -3093,8 +3077,8 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(status.startswith("200"), body)
         self.assertEqual(payload["greeting"], "监测期间的新文本")
 
-    def test_full_flow_does_not_auto_send_ready_drafts_without_confirmation(self):
-        # Codex 审计 P1 回归：只生成过草稿（ready）未经确认，全流程启动不得自动发送积压。
+    def test_full_flow_auto_sends_ready_drafts(self):
+        # 全自动契约：只生成过草稿（ready）的岗位，全流程启动直接投递，无需人工确认。
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
             db = get_db(base_dir / "data" / "bosshunter.db")
@@ -3112,14 +3096,12 @@ class WebApiRouteTests(unittest.TestCase):
                  patch.object(server, "_execute_monitor"):
                 server._execute_full(task, {"scoring": {"threshold": 71}})
 
-        deliver.assert_not_called()
-        self.assertTrue(any("未经人工确认不会自动发送" in message for message in task.logs))
+        deliver.assert_called_once()
+        self.assertEqual(deliver.call_args.args[1]["_workbench_job_ids"], ["draft-only"])
+        self.assertTrue(any("全自动已确认 1 个岗位，继续投递" in message for message in task.logs))
 
-    def test_full_flow_delivers_only_confirmed_jobs(self):
-        # Codex 复审 P1 回归：确认范围必须精确——确认 B 不得连带发送未确认的积压 A；
-        # 积压仅提示走「直接发送」，投递次数恰为 1 且只含被确认岗位。
-        from threading import Thread
-        from time import sleep, time
+    def test_full_flow_delivers_backlog_and_auto_approved_jobs_together(self):
+        # 全自动契约：ready 积压与本轮达标待确认岗位在同一次投递调用里一起发送。
 
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
@@ -3141,25 +3123,12 @@ class WebApiRouteTests(unittest.TestCase):
                  patch.object(server, "_wait_for_collection_delivery_cooldown") as cooldown, \
                  patch.object(server, "_execute_monitor"):
                 cooldown.return_value = False
-                thread = Thread(target=server._execute_full, args=(task, {"scoring": {"threshold": 71}}), daemon=True)
-                thread.start()
-                deadline = time() + 3
-                while time() < deadline and not task.context.get("waiting_confirmation"):
-                    sleep(0.02)
-                self.assertTrue(task.context.get("waiting_confirmation"), task.logs)
-                # 确认前：零投递
-                self.assertEqual(deliver.call_count, 0)
-                task.context["confirmed_job_ids"] = ["confirmed-b"]
-                task.context["confirmation_event"].set()
-                thread.join(timeout=3)
+                server._execute_full(task, {"scoring": {"threshold": 71}})
 
-        self.assertFalse(thread.is_alive())
-        # 只发送被明确确认的 B；积压 A 不在任何投递调用中
+        # 积压 A（已有招呼语）与自动批准的 B 在同一次投递里一起发送
         self.assertEqual(deliver.call_count, 1)
         delivered_ids = deliver.call_args_list[0].args[1]["_workbench_job_ids"]
-        self.assertEqual(delivered_ids, ["confirmed-b"])
-        self.assertNotIn("backlog-a", delivered_ids)
-        self.assertTrue(any("不在本次确认范围" in message for message in task.logs))
+        self.assertEqual(delivered_ids, ["backlog-a", "confirmed-b"])
 
     def test_greet_task_pins_runtime_database_path(self):
         # Codex 审计 P2 回归：后台生成必须使用面板运行时数据库，而非 CWD 相对默认库。
@@ -4207,7 +4176,7 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertNotIn("target_count", task_config["_collection_options"]["platforms"]["boss"])
         self.assertTrue(task_config["_collection_options"]["auto_score"])
 
-    def test_full_task_rejects_collection_only_platform_from_saved_config(self):
+    def test_full_task_accepts_all_platforms_from_saved_config(self):
         config = {
             "search": {"keywords": ["人力"], "cities": ["深圳"]},
             "profile": {"resume_path": "C:/resume.md"},
@@ -4223,11 +4192,12 @@ class WebApiRouteTests(unittest.TestCase):
         ) as start:
             status, _, body = self._request("/api/workbench/task", method="POST", json_body={"mode": "full"})
 
-        self.assertTrue(status.startswith("400"), body)
-        self.assertEqual(json.loads(body)["collection_only_platforms"], ["zhilian"])
-        start.assert_not_called()
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(json.loads(body)["id"], "full-with-zhilian")
+        start.assert_called_once()
+        self.assertEqual(start.call_args.args[1]["_collection_options"]["platform_order"], ["boss", "zhilian"])
 
-    def test_full_task_rejects_collection_only_platform_from_dialog(self):
+    def test_full_task_accepts_all_platforms_from_dialog(self):
         config = {
             "profile": {"resume_path": "C:/resume.md"},
             "ai": {"api_key": "test-key"},
@@ -4260,10 +4230,10 @@ class WebApiRouteTests(unittest.TestCase):
                 json_body={"mode": "full", "options": options},
             )
 
-        self.assertTrue(status.startswith("400"), body)
-        self.assertEqual(json.loads(body)["collection_only_platforms"], ["zhilian"])
-        start.assert_not_called()
-        write_config.assert_not_called()
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(json.loads(body)["id"], "full-dialog-options")
+        start.assert_called_once()
+        self.assertEqual(start.call_args.args[1]["_collection_options"]["platform_order"], ["zhilian"])
 
     def _seed_scoring_base(self, base_dir: Path):
         (base_dir / "config.yaml").write_text(
@@ -4602,8 +4572,6 @@ class WebApiRouteTests(unittest.TestCase):
                 patch.object(server.task_runner, "status", return_value={
                     "active": {"id": "sending", "mode": "deliver", "status": "running"},
                 }),
-                patch("bosshunter.executor.sender.should_take_day_off", return_value=False),
-                patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True),
                 patch("bosshunter.executor.sender._send_greeting_once", side_effect=fake_send),
             ):
                 send_greetings({"_workbench_log": edit_during_send, "_workbench_greeting_activity": server.greeting_activity.claim, "throttle": {"daily_limit": 10}})
@@ -4659,8 +4627,6 @@ class WebApiRouteTests(unittest.TestCase):
                 return False
 
             with (
-                patch("bosshunter.executor.sender.should_take_day_off", return_value=False),
-                patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True),
                 patch("bosshunter.executor.sender.RequestThrottle.wait", side_effect=during_wait),
                 patch("bosshunter.executor.sender._send_greeting_once", side_effect=fake_send),
             ):
@@ -4761,8 +4727,6 @@ class WebApiRouteTests(unittest.TestCase):
             )
             self.assertTrue(status.startswith("200"), body)
             with (
-                patch("bosshunter.executor.sender.should_take_day_off", return_value=False),
-                patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True),
                 patch("bosshunter.executor.sender._send_greeting_once", return_value=({"success": True}, None)) as send,
             ):
                 self.assertEqual(send_greetings(config, db_path=db_path), 0)

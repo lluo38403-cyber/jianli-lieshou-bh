@@ -28,18 +28,6 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class ZhilianFixtureTests(TestCase):
-    def setUp(self):
-        self._patches = [
-            patch("bosshunter.collection.platforms.zhilian.SendWindowChecker.is_active", return_value=True),
-            patch("bosshunter.collection.platforms.zhilian.should_take_day_off", return_value=False),
-        ]
-        for p in self._patches:
-            p.start()
-
-    def tearDown(self):
-        for p in self._patches:
-            p.stop()
-
     def test_city_snapshot_is_local_and_not_shared_with_boss_codes(self):
         snapshot = load_zhilian_city_snapshot()
         self.assertEqual(snapshot["schema"], "bosshunter.zhilian_cities.v1")
@@ -394,7 +382,7 @@ class ZhilianFixtureTests(TestCase):
 
 
 class ZhilianEnhancedTests(TestCase):
-    """智联采集器增强：时间窗口 / 过滤链 / config 集成。"""
+    """智联采集器增强：过滤链 / config 集成。"""
 
     def _hooks(self):
         return CollectorHooks(
@@ -405,28 +393,37 @@ class ZhilianEnhancedTests(TestCase):
             on_event=lambda **_: None,
         )
 
-    def test_outside_send_window_skips_collection(self):
-        collector = ZhilianCollector()
-        with patch("bosshunter.collection.platforms.zhilian.SendWindowChecker.is_active", return_value=False):
-            result = collector.collect(
-                PlatformCollectionRequest("zhilian", ["AI"], ["北京"], {"北京": "530"}, max_pages=1),
-                self._hooks(),
-            )
+    def test_collection_runs_without_send_window(self):
+        browser = ZhilianBrowser(
+            new_tab=lambda url, **_: "tab-1",
+            close_tab=lambda _target: True,
+            evaluate=lambda _target, script: json.dumps({"items": []}),
+            scroll=lambda *_args, **_kwargs: True,
+            wait_for_load=lambda *_args, **_kwargs: True,
+        )
+        collector = ZhilianCollector(browser=browser)
+        result = collector.collect(
+            PlatformCollectionRequest("zhilian", ["AI"], ["北京"], {"北京": "530"}, max_pages=1),
+            self._hooks(),
+        )
         self.assertEqual(result.status, "completed")
-        self.assertEqual(result.reason_code, "outside_window")
+        self.assertNotIn(result.reason_code, ("outside_window", "day_off"))
 
-    def test_day_off_skips_collection(self):
-        collector = ZhilianCollector()
-        with (
-            patch("bosshunter.collection.platforms.zhilian.SendWindowChecker.is_active", return_value=True),
-            patch("bosshunter.collection.platforms.zhilian.should_take_day_off", return_value=True),
-        ):
-            result = collector.collect(
-                PlatformCollectionRequest("zhilian", ["AI"], ["北京"], {"北京": "530"}, max_pages=1),
-                self._hooks(),
-            )
+    def test_collection_runs_without_day_off(self):
+        browser = ZhilianBrowser(
+            new_tab=lambda url, **_: "tab-1",
+            close_tab=lambda _target: True,
+            evaluate=lambda _target, script: json.dumps({"items": []}),
+            scroll=lambda *_args, **_kwargs: True,
+            wait_for_load=lambda *_args, **_kwargs: True,
+        )
+        collector = ZhilianCollector(browser=browser)
+        result = collector.collect(
+            PlatformCollectionRequest("zhilian", ["AI"], ["北京"], {"北京": "530"}, max_pages=1),
+            self._hooks(),
+        )
         self.assertEqual(result.status, "completed")
-        self.assertEqual(result.reason_code, "day_off")
+        self.assertNotIn(result.reason_code, ("outside_window", "day_off"))
 
     def test_deal_breaker_filter(self):
         from bosshunter.collection.models import JobCandidate
@@ -553,8 +550,6 @@ class ZhilianResumeCheckpointTests(TestCase):
             sleep=lambda _s: None, uniform=lambda _a, _b: 10.0,
         )
         with (
-            patch("bosshunter.collection.platforms.zhilian.SendWindowChecker.is_active", return_value=True),
-            patch("bosshunter.collection.platforms.zhilian.should_take_day_off", return_value=False),
             patch("bosshunter.collection.platforms.zhilian.prune_collected_combos"),
             patch("bosshunter.collection.platforms.zhilian.prune_page_progress"),
             patch("bosshunter.collection.platforms.zhilian.get_collected_combos", return_value={("北京", "AI")}),
@@ -581,8 +576,6 @@ class ZhilianResumeCheckpointTests(TestCase):
             sleep=lambda _s: None, uniform=lambda _a, _b: 10.0,
         )
         with (
-            patch("bosshunter.collection.platforms.zhilian.SendWindowChecker.is_active", return_value=True),
-            patch("bosshunter.collection.platforms.zhilian.should_take_day_off", return_value=False),
             patch("bosshunter.collection.platforms.zhilian.prune_collected_combos"),
             patch("bosshunter.collection.platforms.zhilian.prune_page_progress"),
             patch("bosshunter.collection.platforms.zhilian.get_collected_combos", return_value=set()),
@@ -607,8 +600,6 @@ class ZhilianResumeCheckpointTests(TestCase):
             sleep=lambda _s: None, uniform=lambda _a, _b: 10.0,
         )
         with (
-            patch("bosshunter.collection.platforms.zhilian.SendWindowChecker.is_active", return_value=True),
-            patch("bosshunter.collection.platforms.zhilian.should_take_day_off", return_value=False),
             patch("bosshunter.collection.platforms.zhilian.prune_collected_combos"),
             patch("bosshunter.collection.platforms.zhilian.prune_page_progress"),
             patch("bosshunter.collection.platforms.zhilian.get_collected_combos", return_value=set()),
@@ -641,8 +632,6 @@ class ZhilianResumeCheckpointTests(TestCase):
             sleep=lambda _s: None, uniform=lambda _a, _b: 10.0,
         )
         with (
-            patch("bosshunter.collection.platforms.zhilian.SendWindowChecker.is_active", return_value=True),
-            patch("bosshunter.collection.platforms.zhilian.should_take_day_off", return_value=False),
             patch("bosshunter.collection.platforms.zhilian.prune_collected_combos"),
             patch("bosshunter.collection.platforms.zhilian.prune_page_progress"),
             patch("bosshunter.collection.platforms.zhilian.get_collected_combos", return_value=set()),
@@ -667,8 +656,6 @@ class ZhilianResumeCheckpointTests(TestCase):
             sleep=lambda _s: None, uniform=lambda _a, _b: 10.0,
         )
         with (
-            patch("bosshunter.collection.platforms.zhilian.SendWindowChecker.is_active", return_value=True),
-            patch("bosshunter.collection.platforms.zhilian.should_take_day_off", return_value=False),
             patch("bosshunter.collection.platforms.zhilian.prune_collected_combos"),
             patch("bosshunter.collection.platforms.zhilian.prune_page_progress"),
             patch("bosshunter.collection.platforms.zhilian.get_collected_combos", return_value=set()),
@@ -695,8 +682,6 @@ class ZhilianResumeCheckpointTests(TestCase):
             sleep=lambda _s: None, uniform=lambda _a, _b: 10.0,
         )
         with (
-            patch("bosshunter.collection.platforms.zhilian.SendWindowChecker.is_active", return_value=True),
-            patch("bosshunter.collection.platforms.zhilian.should_take_day_off", return_value=False),
             patch("bosshunter.collection.platforms.zhilian.prune_collected_combos") as prune_combos,
             patch("bosshunter.collection.platforms.zhilian.prune_page_progress") as prune_pages,
             patch("bosshunter.collection.platforms.zhilian.get_collected_combos", return_value=set()),
@@ -746,8 +731,6 @@ class ZhilianResumeCheckpointTests(TestCase):
             sleep=lambda _s: None, uniform=lambda _a, _b: 10.0,
         )
         with (
-            patch("bosshunter.collection.platforms.zhilian.SendWindowChecker.is_active", return_value=True),
-            patch("bosshunter.collection.platforms.zhilian.should_take_day_off", return_value=False),
             patch("bosshunter.collection.platforms.zhilian.prune_collected_combos") as prune_combos,
             patch("bosshunter.collection.platforms.zhilian.get_collected_combos") as get_combos,
             patch("bosshunter.collection.platforms.zhilian.get_page_progress") as get_progress,
@@ -1024,18 +1007,6 @@ class ZhilianApiFetchEnabledTests(TestCase):
 
 class ZhilianCollectApiTests(TestCase):
     """_collect_api 集成测试（mock browser）。"""
-
-    def setUp(self):
-        self._patches = [
-            patch("bosshunter.collection.platforms.zhilian.SendWindowChecker.is_active", return_value=True),
-            patch("bosshunter.collection.platforms.zhilian.should_take_day_off", return_value=False),
-        ]
-        for p in self._patches:
-            p.start()
-
-    def tearDown(self):
-        for p in self._patches:
-            p.stop()
 
     def _hooks(self, collected):
         return CollectorHooks(

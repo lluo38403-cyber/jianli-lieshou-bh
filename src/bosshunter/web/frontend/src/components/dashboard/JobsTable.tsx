@@ -256,7 +256,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                                 className="rounded-lg border border-card-border bg-card px-2 py-1.5 text-[11px] font-bold text-foreground"
                               >
                                 <option value="">修改状态</option>
-                                <option value="ready">待确认</option>
+                                <option value="ready">待投递</option>
                                 <option value="filtered">已过滤</option>
                                 <option value="skipped">已跳过</option>
                                 <option value="rejected">已拒绝</option>

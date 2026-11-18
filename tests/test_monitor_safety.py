@@ -111,7 +111,7 @@ class MonitorThrottleTests(unittest.TestCase):
         self.assertEqual(safe_config["monitor"]["max_conversations_per_cycle"], 1)
         self.assertFalse(safe_config["monitor"]["auto_reply_hr_questions"])
         self.assertFalse(safe_config["follow_up"]["enabled"])
-        self.assertEqual(safe_config["throttle"]["send_windows"], [])
+        self.assertNotIn("send_windows", safe_config["throttle"])
         self.assertTrue(safe_config["_monitor_reuse_chat_tab"])
         close_target.assert_called_once_with(safe_config)
 

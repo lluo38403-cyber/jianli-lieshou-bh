@@ -156,6 +156,9 @@ class ScoreOutcome:
     result: ScoreResult | None = None
     failure_detail: str = ""
     pause_reason: str = ""
+    # 传输层一次内容都没返回（真实无 Key 时 _call_claude 直接返回 None）。
+    # 与“返回了空串/无效内容”不同：后者是 AI 服务层面的失败，不兜底。
+    no_response: bool = False
 
 
 def _load_resume(config: dict) -> str:
@@ -630,9 +633,11 @@ def _request_score(
     """Request and validate one primary assessment without touching the database."""
     ai_cfg = config.get("ai", {}) if isinstance(config.get("ai"), dict) else {}
     response: str | None = None
+    saw_error = False
     try:
         response = _call_claude(_build_scoring_prompt(job, resume, config), config)
     except AIRequestError as exc:
+        saw_error = True
         if exc.kind == "output_truncated":
             _notify(config, f"{job['company']}｜{job['title']} 的评分回答被截断，正在增大输出 Token 上限后重试。")
             try:
@@ -643,6 +648,7 @@ def _request_score(
             try:
                 response = _call_claude(_build_scoring_prompt(job, resume, config), config, retry_tokens)
             except AIRequestError as retry_exc:
+                saw_error = True
                 if retry_exc.kind == "empty_response":
                     # 空响应用保持"空结果"语义：落入下方按配置重试，仍空则岗位级失败（#101 回归）。
                     response = None
@@ -656,6 +662,7 @@ def _request_score(
             try:
                 response = _call_claude(_build_scoring_prompt(job, resume, config), config, 128)
             except AIRequestError as retry_exc:
+                saw_error = True
                 if retry_exc.kind == "empty_response":
                     response = None
                 elif retry_exc.kind == "output_limit":
@@ -671,6 +678,7 @@ def _request_score(
             try:
                 response = _call_claude(_build_scoring_prompt(job, resume, config), config, retry_tokens)
             except AIRequestError as retry_exc:
+                saw_error = True
                 if retry_exc.kind == "empty_response":
                     response = None
                 elif retry_exc.kind == "context_limit":
@@ -697,13 +705,20 @@ def _request_score(
         try:
             response = _call_claude(_build_scoring_prompt(job, resume, config), config)
         except AIRequestError as retry_exc:
+            saw_error = True
             if retry_exc.kind in {"token_quota", "rate_limit", "auth", "network", "request_failed"}:
                 return ScoreOutcome(pause_reason=str(retry_exc))
             response = None
         result = _validated_score_result(response) if response else None
 
     if result is None:
-        return ScoreOutcome(failure_detail=_score_validation_failure_reason(response))
+        return ScoreOutcome(
+            failure_detail=_score_validation_failure_reason(response),
+            # 只有“传输层一次都没返回内容、且全程没抛过错”才算无响应——
+            # 真实无 Key 时 _call_claude 直接返回 None；mock 抛 empty_response
+            # 时 response 同样是 None，但那是 AI 层面的失败，不兜底。
+            no_response=response is None and not saw_error,
+        )
     return ScoreOutcome(result=result)
 
 
@@ -713,10 +728,40 @@ def _score_job_with_ai(
     config: dict,
     max_attempts: int,
 ) -> ScoreOutcome:
-    """Run primary scoring and an optional independent review for borderline results."""
+    """Run primary scoring and an optional independent review for borderline results.
+
+    先走 AI 流程（mock 的传输层照常被调用，测试 seam 不变）。只有当 AI
+    一次内容都没返回、且确实未配置 API Key 时，才用本地规则评分兜底，
+    而不是把岗位记为失败；配了 Key 或传输层返回了内容/抛错时，走正常流程。
+    """
     outcome = _request_score(job, resume, config, max_attempts)
     first = outcome.result
     if first is None or outcome.pause_reason:
+        if (
+            first is None
+            and not outcome.pause_reason
+            and outcome.no_response
+            and not get_ai_api_key(config)
+        ):
+            from bosshunter.ai.prefilter import rule_score
+
+            score, reason = rule_score(job, config)
+            return ScoreOutcome(
+                result=ScoreResult(
+                    score=score,
+                    raw_score=score,
+                    reason=f"规则评分：{reason}",
+                    components={"规则评分": score},
+                    caps=(),
+                    summary_reason=reason,
+                    missing="",
+                    structured=False,
+                    role_summary="",
+                    component_evidence={},
+                    hard_gaps=(),
+                    reviewed=False,
+                )
+            )
         return outcome
 
     ai_cfg = config.get("ai", {}) if isinstance(config.get("ai"), dict) else {}

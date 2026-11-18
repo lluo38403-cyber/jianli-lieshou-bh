@@ -337,7 +337,7 @@ describe('DashboardPage workbench task panel', () => {
     fireEvent.click(await screen.findByRole('button', { name: '展开招呼语：测试公司｜测试岗位' }))
     fireEvent.click(await screen.findByRole('button', { name: '手动编辑' }))
     const send = screen.getByRole('button', { name: '发送招呼语' }) as HTMLButtonElement
-    const batchSend = screen.getByRole('button', { name: '发送已确认 1 个' }) as HTMLButtonElement
+    const batchSend = screen.getByRole('button', { name: '发送 1 个' }) as HTMLButtonElement
     expect(send.disabled).toBe(true)
     expect(batchSend.disabled).toBe(true)
     fireEvent.change(screen.getByLabelText('手动编辑最终版本'), { target: { value: '保存后真正发送的文字' } })
@@ -365,7 +365,7 @@ describe('DashboardPage workbench task panel', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByText('优化候选')).toBeNull()
     expect(screen.queryByRole('button', { name: '发送招呼语' })).toBeNull()
-    expect((screen.getByRole('button', { name: '发送已确认 0 个' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: '发送 0 个' }) as HTMLButtonElement).disabled).toBe(true)
     fireEvent.click(toggle)
     expect(screen.getByText('优化候选')).toBeTruthy()
     expect((screen.getByRole('button', { name: '发送招呼语' }) as HTMLButtonElement).disabled).toBe(true)

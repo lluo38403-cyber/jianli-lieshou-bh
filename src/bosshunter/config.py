@@ -73,8 +73,10 @@ DEFAULTS: dict[str, Any] = {
         "education": "",
         "recruitment_type": "",
         "greeting_preference": "",
-        "ai_greeting_enabled": True,
-        "fixed_greeting": "",
+        "ai_greeting_enabled": False,
+        "fixed_greeting": "您好，我对贵公司的这个岗位很感兴趣，简历已附上，期待与您进一步沟通，谢谢！",
+        "job_types": ["实习", "全职", "兼职"],
+        "posted_days": 7,
         "salary_min": 0,
         "salary_max": 0,
         "salary_ceil_ratio": 1.5,
@@ -93,7 +95,7 @@ DEFAULTS: dict[str, Any] = {
         "filters": {},
     },
     "collection": {
-        "default_order": ["boss"],
+        "default_order": ["boss", "zhilian", "51job", "liepin"],
         "auto_score_default": False,
         "daily_search_page_limit": 60,
         "daily_detail_page_limit": 900,
@@ -118,7 +120,7 @@ DEFAULTS: dict[str, Any] = {
             },
         },
         "zhilian": {
-            "enabled": False,
+            "enabled": True,
             "search": {
                 "keywords": [],
                 "cities": [],
@@ -128,7 +130,7 @@ DEFAULTS: dict[str, Any] = {
             },
         },
         "51job": {
-            "enabled": False,
+            "enabled": True,
             "search": {
                 "keywords": [],
                 "cities": ["上海"],
@@ -138,7 +140,7 @@ DEFAULTS: dict[str, Any] = {
             },
         },
         "liepin": {
-            "enabled": False,
+            "enabled": True,
             "search": {
                 "keywords": [],
                 "cities": [],
@@ -149,18 +151,17 @@ DEFAULTS: dict[str, Any] = {
         },
     },
     "scoring": {
-        "threshold": 71,
+        "threshold": 60,
         "max_candidates": 20,
     },
     "throttle": {
-        "daily_limit": 30,
+        "daily_limit": 120,
         "interval_min": 60,
         "interval_max": 180,
         "browse_before_greet": True,
         "browse_duration_min": 15,
         "browse_duration_max": 30,
-        "send_windows": ["09:00-16:00"],
-        "day_off_probability": 0.05,
+        "silent_mode": False,
     },
     "ai": {
         "provider": "anthropic",
@@ -178,6 +179,7 @@ DEFAULTS: dict[str, Any] = {
         "greeting_max_attempts": 2,
         "greeting_review_threshold": 7.0,
         "greeting_style_suggestions": False,
+        "resume_tailor_enabled": False,
     },
     "monitor": {
         "interval": 30,  # 分钟
@@ -267,13 +269,20 @@ def save_config(config: dict[str, Any], config_path: Path | None = None) -> None
 
 
 def validate_config_send_windows(config: dict[str, Any]) -> None:
-    """Reject invalid windows before persisting settings or starting a task."""
+    """Reject invalid windows before persisting settings or starting a task.
+
+    投递时间窗已取消：配置里不再有 send_windows；只有旧配置里还留着
+    该字段时才校验它，新配置直接通过。
+    """
     from bosshunter.throttle import validate_send_windows
 
     throttle = config.get("throttle", {})
     if not isinstance(throttle, dict):
         raise ValueError("throttle 必须是配置对象")  # noqa: TRY004 - configuration validation reports ValueError
-    validate_send_windows(throttle.get("send_windows", DEFAULTS["throttle"]["send_windows"]))
+    windows = throttle.get("send_windows")
+    if windows is None:
+        return
+    validate_send_windows(windows)
 
 
 def migrate_legacy_credentials(config_path: Path | None = None) -> bool:
