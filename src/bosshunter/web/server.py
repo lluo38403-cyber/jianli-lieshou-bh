@@ -1029,6 +1029,64 @@ def health():
 	return _json_response({"status": "ok", "version": __version__})
 
 
+# ─── Self-update ────────────────────────────────────────────
+# 一键自动更新：启动时悄悄查一次新版（失败静默，绝不影响找工作）；
+# 首页横幅 + 我的设置里能手动检查，点“立即更新”就后台下载、校验、
+# 换上新版。下载地址只认配置里的中转地址；换文件那一步是 Windows
+# 批处理，只能在真实 Windows 上验证（见 bosshunter/updater.py）。
+
+def _update_payload(state):
+	"""Flatten the update state for the frontend: release info on top."""
+	payload = dict(state)
+	info = payload.get("info")
+	if isinstance(info, dict):
+		for key in ("version", "size", "sha256", "notes"):
+			payload[key] = info.get(key)
+	payload["current_version"] = __version__
+	return payload
+
+
+@app.route("/api/update/check")
+def api_update_check():
+	from bosshunter import updater
+
+	force = (request.query.get("force") or "").lower() in {"1", "true", "yes"}
+	return _json_response(_update_payload(updater.run_check(load_config(CONFIG_PATH), force=force)))
+
+
+@app.route("/api/update/status")
+def api_update_status():
+	from bosshunter import updater
+
+	return _json_response(_update_payload(updater.get_status()))
+
+
+@app.route("/api/update/start", method="POST")
+def api_update_start():
+	from bosshunter import updater
+
+	try:
+		payload = _update_payload(updater.start_download(load_config(CONFIG_PATH)))
+	except updater.UpdateError as exc:
+		return _json_response({"error": exc.user_message}, 400)
+	return _json_response(payload)
+
+
+@app.route("/api/update/apply", method="POST")
+def api_update_apply():
+	from bosshunter import updater
+
+	try:
+		install_dir = updater.get_install_dir()
+		if install_dir is None:
+			raise updater.UpdateError("一键更新只在正式安装的版本里能用。")
+		updater.apply_update(install_dir, updater.get_exe_name())
+	except updater.UpdateError as exc:
+		return _json_response({"error": exc.user_message}, 400)
+	updater.request_restart(delay=1.5)
+	return _json_response({"applying": True})
+
+
 # ─── Dashboard APIs ──────────────────────────────────────
 
 @app.route("/api/funnel")
@@ -3641,6 +3699,19 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 			time.sleep(1)
 			webbrowser.open(f"http://{host}:{port}")
 		threading.Thread(target=_open, daemon=True).start()
+
+	# 启动时悄悄查一次有没有新版：后台线程、10 秒超时，查不到就当没有，
+	# 绝不拖慢启动、绝不影响找工作。结果进更新状态，首页横幅直接用。
+	def _startup_update_check():
+		time.sleep(3)
+		try:
+			from bosshunter.updater import run_check
+			run_check(load_config(CONFIG_PATH), timeout=10.0)
+		except Exception:
+			pass
+
+	import threading
+	threading.Thread(target=_startup_update_check, daemon=True).start()
 
 	app.run(
 		host=host,

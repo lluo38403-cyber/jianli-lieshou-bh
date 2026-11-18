@@ -1,4 +1,5 @@
 import { useConfig } from '@/hooks/useConfig'
+import { useUpdate, formatUpdateSize } from '@/hooks/useUpdate'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -24,6 +25,17 @@ const BOSS_FILTER_OPTIONS = {
 
 export default function ConfigPage() {
   const { config, loading, saving, dirty, error, message, updateConfig, saveConfig, resetConfig } = useConfig()
+  const update = useUpdate()
+  const [updateNote, setUpdateNote] = useState('')
+  const handleManualUpdateCheck = async () => {
+    setUpdateNote('')
+    const found = await update.check(true)
+    if (found === null) {
+      setUpdateNote('没查到，网络可能断了，稍后再点一次。')
+    } else if (found === false) {
+      setUpdateNote('已经是最新版，不用换。')
+    }
+  }
   const [cityOptions, setCityOptions] = useState<CityOption[]>([])
   const [zhilianCityOptions, setZhilianCityOptions] = useState<CityOption[]>([])
   const [job51CityOptions, setJob51CityOptions] = useState<CityOption[]>([])
@@ -609,6 +621,65 @@ export default function ConfigPage() {
             <Field label="记录存在哪个文件">
               <Input value={config.dedup?.history_file || ''} onChange={e => updateConfig('dedup.history_file', e.target.value)} />
             </Field>
+          </div>
+        </SectionCard>
+
+        {/* Version Section */}
+        <SectionCard title="版本">
+          <div className="space-y-3">
+            <p className="text-sm text-foreground">
+              现在是 {update.currentVersion ? `${update.currentVersion} 版` : '…'}
+            </p>
+            {update.info ? (
+              <p className="text-sm text-muted">
+                有新版本 {update.info.version} 了
+                {formatUpdateSize(update.info.size) ? `，大概 ${formatUpdateSize(update.info.size)}` : ''}
+                {update.info.notes ? ` — ${update.info.notes}` : ''}，点一下就能换上，不用重新下载。
+              </p>
+            ) : update.phase === 'error' && update.error ? (
+              <p className="text-sm text-muted">{update.error}</p>
+            ) : updateNote ? (
+              <p className="text-sm text-muted">{updateNote}</p>
+            ) : (
+              <p className="text-sm text-muted">打开面板时会自动看有没有新版，有了会在首页顶上告诉你。</p>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              {update.info && (update.phase === 'idle' || update.phase === 'checking') ? (
+                <Button data-testid="config-update-start" onClick={() => void update.start()}>
+                  立即更新
+                </Button>
+              ) : null}
+              {update.info && update.phase === 'ready' ? (
+                <Button data-testid="config-update-apply" onClick={() => void update.apply()}>
+                  马上换上
+                </Button>
+              ) : null}
+              {update.info && (update.phase === 'downloading' || update.phase === 'verifying') ? (
+                <span className="inline-flex items-center gap-2 rounded-full bg-surface px-3 py-1.5 text-sm text-muted">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
+                  {update.phase === 'downloading' ? `下载中…${update.progress > 0 ? ` ${update.progress}%` : ''}` : '检查中…'}
+                </span>
+              ) : null}
+              {update.phase === 'applying' ? (
+                <span className="inline-flex items-center gap-2 rounded-full bg-surface px-3 py-1.5 text-sm text-muted">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
+                  换新版本中，面板马上重新打开…
+                </span>
+              ) : null}
+              {update.phase === 'error' ? (
+                <Button variant="secondary" onClick={() => void update.retry()}>
+                  再试一次
+                </Button>
+              ) : null}
+              <Button
+                variant="secondary"
+                onClick={() => void handleManualUpdateCheck()}
+                disabled={update.checking || update.phase === 'downloading' || update.phase === 'verifying' || update.phase === 'applying'}
+              >
+                {update.checking ? '正在看有没有新版…' : '检查更新'}
+              </Button>
+            </div>
+            <p className="text-xs text-muted">更新时你的设置和投递记录都不会动，换完自动重新打开。</p>
           </div>
         </SectionCard>
     </div>

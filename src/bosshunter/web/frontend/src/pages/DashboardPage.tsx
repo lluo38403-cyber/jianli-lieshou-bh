@@ -1,6 +1,8 @@
 import { OutsourcingBadge } from '@/components/jobs/OutsourcingBadge'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
+import { useUpdate } from '@/hooks/useUpdate'
+import { UpdateBanner } from '@/components/dashboard/UpdateBanner'
 import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
 import { Button } from '@/components/ui/button'
 import { START_ONBOARDING_EVENT } from '@/components/onboarding/OnboardingTour'
@@ -436,6 +438,17 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   } = useDashboard(view)
   const [selected, setSelected] = useState<string[]>([])
   const [notice, setNotice] = useState('')
+  const update = useUpdate()
+  const [updateNote, setUpdateNote] = useState('')
+  const handleManualUpdateCheck = useCallback(async () => {
+    setUpdateNote('')
+    const found = await update.check(true)
+    if (found === null) {
+      setUpdateNote('没查到，网络可能断了，稍后再点一次。')
+    } else if (found === false) {
+      setUpdateNote('已经是最新版，不用换。')
+    }
+  }, [update])
 
   // Dashboard visualization state
   const [activityData, setActivityData] = useState<ActivityData[]>([])
@@ -866,6 +879,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
 
   return (
     <div className="space-y-4">
+      <UpdateBanner update={update} />
       {showGettingStarted && (
         <GettingStartedCard
           onCheck={runStandalonePreflight}
@@ -888,6 +902,11 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               <RefreshCw className={cn('mr-1 h-3.5 w-3.5', refreshing && 'animate-spin')} />
               {refreshing ? '刷新中' : '刷新一下'}
             </Button>
+            <Button variant="ghost" size="sm" className="h-7 px-1" onClick={() => void handleManualUpdateCheck()} disabled={update.checking} title={update.currentVersion ? `现在是 ${update.currentVersion} 版` : undefined}>
+              <RefreshCw className={cn('mr-1 h-3.5 w-3.5', update.checking && 'animate-spin')} />
+              {update.checking ? '正在看有没有新版…' : '检查更新'}
+            </Button>
+            {updateNote ? <span className="text-xs text-muted">{updateNote}</span> : null}
           </div>
         </div>
 
