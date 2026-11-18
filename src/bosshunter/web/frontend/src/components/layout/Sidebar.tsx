@@ -1,15 +1,13 @@
 import { NavLink } from 'react-router-dom'
-import { BriefcaseBusiness, Github, LayoutDashboard, Radar, Settings } from 'lucide-react'
+import { Briefcase, Home, Radar, Settings } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 const navItems = [
-  { to: '/', icon: LayoutDashboard, label: '工作台' },
-  { to: '/jobs', icon: BriefcaseBusiness, label: '岗位池' },
-  { to: '/monitor', icon: Radar, label: '监测执行' },
-  { to: '/config', icon: Settings, label: '配置' },
+  { to: '/', icon: Home, label: '首页' },
+  { to: '/jobs', icon: Briefcase, label: '找工作' },
+  { to: '/monitor', icon: Radar, label: '投递跟进' },
+  { to: '/config', icon: Settings, label: '我的设置' },
 ]
-
-const GITHUB_URL = 'https://github.com/powerycy/BossHunter'
 
 interface SidebarProps {
   pendingReplies?: number
@@ -40,15 +38,15 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
   }, [pendingRepliesProp])
 
   return (
-    <aside className="flex w-16 shrink-0 flex-col border-r border-card-border bg-card md:w-60">
-      <div className="flex h-16 shrink-0 items-center justify-center border-b border-card-border md:justify-start md:px-5">
+    <aside className="app-sidebar flex w-16 shrink-0 flex-col md:w-60">
+      <div className="flex h-16 shrink-0 items-center justify-center border-b border-white/10 md:justify-start md:px-5">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-primary text-primary-foreground flex items-center justify-center shadow-lg shadow-primary/20">
-            <span className="font-black text-sm">BH</span>
+          <div className="sidebar-logo flex h-10 w-10 items-center justify-center rounded-2xl text-white">
+            <Briefcase className="h-5 w-5" />
           </div>
           <div className="hidden md:block">
-            <div className="font-black text-sm tracking-tight text-foreground">BossHunter</div>
-            <div className="text-[11px] text-muted">v2.4.0 · 本地控制台</div>
+            <div className="text-[15px] font-black tracking-tight text-white">简历猎手</div>
+            <div className="text-[11px] text-white/60">自动找工作 · 本地运行</div>
           </div>
         </div>
       </div>
@@ -60,39 +58,32 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
             to={item.to}
             data-tour={item.to === '/config' ? 'nav-config' : item.to === '/' ? 'nav-workbench' : undefined}
             className={({ isActive }) =>
-              `relative flex items-center justify-center gap-3 rounded-xl px-1 py-3 text-[10px] transition-colors md:justify-between md:px-3 md:text-sm ${
+              `relative flex items-center justify-center gap-3 rounded-xl px-1 py-3 text-[10px] transition-all duration-200 hover:-translate-y-px md:justify-between md:px-3 md:text-sm ${
                 isActive
-                  ? 'bg-secondary text-primary font-black'
-                  : 'text-muted hover:text-foreground hover:bg-surface'
+                  ? 'sidebar-nav-active font-black'
+                  : 'sidebar-nav-idle'
               }`
             }
           >
             <span className="flex flex-col items-center gap-1 md:flex-row md:gap-3">
-              <item.icon className="w-4 h-4" />
+              <item.icon className="h-4 w-4" />
               {item.label}
             </span>
             {item.to === '/monitor' && pendingReplies > 0 && (
-              <span className="absolute right-1 top-2 h-2 w-2 rounded-full bg-danger md:static" aria-label="有待处理事项" />
+              <span className="pulse-ring absolute right-1 top-2 h-2.5 w-2.5 rounded-full bg-amber-400 md:static" aria-label="有待处理事项" />
             )}
           </NavLink>
         ))}
       </nav>
 
-      <div className="space-y-3 border-t border-card-border px-2 py-4 md:px-4">
-        <a
-          href={GITHUB_URL}
-          target="_blank"
-          rel="noreferrer"
-          aria-label="BossHunter GitHub"
-          className="relative flex items-center justify-center rounded-xl border border-card-border bg-surface px-3 py-3 text-xs font-black text-foreground transition-colors hover:border-primary/60 hover:text-primary md:rounded-2xl"
-        >
-          <Github className="h-4 w-4 shrink-0 md:absolute md:left-3" />
-          <span className="mx-auto hidden items-center justify-center gap-2 md:flex">
-            <span className="text-xl leading-none text-star">★</span>
-            BossHunter
-          </span>
-        </a>
-        <p className="hidden text-center text-[11px] leading-5 text-muted md:block">❤️  欢迎点 Star 支持维护  ❤️</p>
+      <div className="space-y-3 border-t border-white/10 px-2 py-4 md:px-4">
+        <div className="hidden rounded-2xl bg-white/10 px-3 py-3 text-[11px] leading-5 text-white/85 md:block">
+          <span className="font-black text-white">每天最多自动投 120 个</span>
+          <br />够分的岗位才会投，投满了明天继续。
+        </div>
+        {pendingReplies > 0 && (
+          <p className="hidden text-center text-[11px] leading-5 text-amber-300 md:block">有 {pendingReplies} 条 HR 消息等你处理</p>
+        )}
       </div>
     </aside>
   )

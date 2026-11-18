@@ -63,7 +63,7 @@ describe('岗位列表屏蔽公司', () => {
 
   async function clickBlock() {
     render(<DashboardPage view="jobs" />)
-    const button = await screen.findByRole('button', { name: `屏蔽公司 ${company || '公司名缺失'}` }, { timeout: 5000 })
+    const button = await screen.findByRole('button', { name: `屏蔽这家公司 ${company || '没写公司名'}` }, { timeout: 5000 })
     fireEvent.click(button)
     return button as HTMLButtonElement
   }
@@ -75,15 +75,15 @@ describe('岗位列表屏蔽公司', () => {
       return true
     })
     await clickBlock()
-    expect(await screen.findByText('已屏蔽“测试科技”，匹配岗位已从列表隐藏，记录保留；解除屏蔽后恢复显示。')).toBeTruthy()
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('新增屏蔽公司：测试科技'))
+    expect(await screen.findByText('已经屏蔽了“测试科技”，相关的岗位从列表里藏起来了，记录还留着；解除屏蔽就恢复。')).toBeTruthy()
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('新增屏蔽这家公司：测试科技'))
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('已有屏蔽规则：已有屏蔽公司'))
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('从列表隐藏'))
     expect(JSON.parse(String(requestsTo('/api/agent/config/apply')[0][1]?.body))).toEqual({
       preferences: { blocked_companies: ['已有屏蔽公司', '测试科技'] }, confirm: true,
     })
-    await waitFor(() => expect(screen.queryByRole('button', { name: '屏蔽公司 测试科技' })).toBeNull())
-    expect(await screen.findByText('没有符合当前条件的岗位')).toBeTruthy()
+    await waitFor(() => expect(screen.queryByRole('button', { name: '屏蔽这家公司 测试科技' })).toBeNull())
+    expect(await screen.findByText('按现在的条件没找到合适的')).toBeTruthy()
     expect(screen.queryByText('JD摘要')).toBeNull()
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST').map(([url]) => url)).toEqual([
       '/api/agent/config/preview', '/api/agent/config/apply',
@@ -93,7 +93,7 @@ describe('岗位列表屏蔽公司', () => {
   it('does not save when confirmation is cancelled', async () => {
     confirm.mockReturnValue(false)
     const button = await clickBlock()
-    expect(await screen.findByText('已取消屏蔽，配置未修改。')).toBeTruthy()
+    expect(await screen.findByText('取消了，设置没动。')).toBeTruthy()
     expect(requestsTo('/api/agent/config/apply')).toHaveLength(0)
     expect(rules).toEqual(['已有屏蔽公司'])
     expect(button.disabled).toBe(false)
@@ -103,28 +103,28 @@ describe('岗位列表屏蔽公司', () => {
     rules = ['TEST']
     company = 'test 科技'
     const firstVisit = render(<DashboardPage view="jobs" />)
-    expect(await screen.findByText('没有符合当前条件的岗位')).toBeTruthy()
+    expect(await screen.findByText('按现在的条件没找到合适的')).toBeTruthy()
     expect(screen.queryByText(company)).toBeNull()
     firstVisit.unmount()
     render(<DashboardPage view="jobs" />)
-    expect(await screen.findByText('没有符合当前条件的岗位')).toBeTruthy()
+    expect(await screen.findByText('按现在的条件没找到合适的')).toBeTruthy()
     expect(screen.queryByText(company)).toBeNull()
     rules = []
-    act(() => window.dispatchEvent(new Event('bosshunter-config-saved')))
-    expect(await screen.findByRole('button', { name: '屏蔽公司 test 科技' })).toBeTruthy()
+    act(() => window.dispatchEvent(new Event('jianli-lieshou-config-saved')))
+    expect(await screen.findByRole('button', { name: '屏蔽这家公司 test 科技' })).toBeTruthy()
     expect(confirm).not.toHaveBeenCalled()
     expect(requestsTo('/api/agent/config/apply')).toHaveLength(0)
   })
 
   it('clears selected jobs when a saved blacklist hides them', async () => {
     render(<DashboardPage view="jobs" />)
-    await screen.findByRole('button', { name: '屏蔽公司 测试科技' })
-    fireEvent.click(screen.getByRole('checkbox', { name: '选择 测试科技 前端工程师' }))
-    expect(screen.getByText('已选择 1 条')).toBeTruthy()
+    await screen.findByRole('button', { name: '屏蔽这家公司 测试科技' })
+    fireEvent.click(screen.getByRole('checkbox', { name: '选这个 测试科技 前端工程师' }))
+    expect(screen.getByText('已选 1 个')).toBeTruthy()
     rules.push(company)
-    act(() => window.dispatchEvent(new Event('bosshunter-config-saved')))
-    expect(await screen.findByText('没有符合当前条件的岗位')).toBeTruthy()
-    expect(screen.getByText('已选择 0 条')).toBeTruthy()
+    act(() => window.dispatchEvent(new Event('jianli-lieshou-config-saved')))
+    expect(await screen.findByText('按现在的条件没找到合适的')).toBeTruthy()
+    expect(screen.getByText('已选 0 个')).toBeTruthy()
     expect(requestsTo('/api/agent/config/apply')).toHaveLength(0)
   })
 
@@ -134,7 +134,7 @@ describe('岗位列表屏蔽公司', () => {
       return true
     })
     await clickBlock()
-    expect(await screen.findByText('屏蔽名单已变化，请重新点击“屏蔽公司”查看最新预览。')).toBeTruthy()
+    expect(await screen.findByText('屏蔽名单变了，请重新点“屏蔽公司”看最新的预览。')).toBeTruthy()
     expect(requestsTo('/api/agent/config/apply')).toHaveLength(0)
     expect(rules).toContain('另一个页面新增的公司')
   })

@@ -44,19 +44,19 @@ export function JobFilterBar({
           <Input
             value={filters.query}
             onChange={event => update('query', event.target.value)}
-            placeholder="搜索职位、公司、JD 或评分理由"
+            placeholder="搜岗位、公司，或者打分理由"
             className={cn(controlClass, compact ? "pl-7" : "pl-9")}
             aria-label="关键词"
           />
         </label>
-        <Select className={controlClass} value={filters.createdWithin} onChange={event => update('createdWithin', event.target.value)} aria-label="采集时间">
-          <option value="">采集时间：全部</option>
+        <Select className={controlClass} value={filters.createdWithin} onChange={event => update('createdWithin', event.target.value)} aria-label="什么时候发布的">
+          <option value="">什么时候发布的：全部</option>
           <option value="today">今天</option>
           <option value="3d">近 3 天</option>
           <option value="7d">近 7 天</option>
         </Select>
-        <Select className={controlClass} value={filters.minScore} onChange={event => update('minScore', event.target.value)} aria-label="最低评分">
-          <option value="">最低评分：不限</option>
+        <Select className={controlClass} value={filters.minScore} onChange={event => update('minScore', event.target.value)} aria-label="最低分">
+          <option value="">最低分：不限</option>
           <option value="60">60+</option>
           <option value="71">71+</option>
           <option value="80">80+</option>
@@ -67,9 +67,9 @@ export function JobFilterBar({
           step="1"
           value={filters.salaryMin}
           onChange={event => update('salaryMin', event.target.value)}
-          placeholder="最低薪资 K"
+          placeholder="最低工资（千）"
           className={cn(controlClass, compact && 'xl:order-1')}
-          aria-label="最低薪资 K"
+          aria-label="最低工资（千）"
         />
         <Input
           type="number"
@@ -77,15 +77,15 @@ export function JobFilterBar({
           step="1"
           value={filters.salaryMax}
           onChange={event => update('salaryMax', event.target.value)}
-          placeholder="最高薪资 K"
+          placeholder="最高工资（千）"
           className={cn(controlClass, compact && 'xl:order-1')}
-          aria-label="最高薪资 K"
+          aria-label="最高工资（千）"
         />
         {showStatus && (
-          <MultiSelect className={controlClass} compact={compact} value={filters.status} onChange={value => updateMulti('status', value)} placeholder="全部状态" options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))} />
+          <MultiSelect className={controlClass} compact={compact} value={filters.status} onChange={value => updateMulti('status', value)} placeholder="什么状态都行" options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))} />
         )}
         {showSource && (
-          <MultiSelect className={controlClass} compact={compact} value={filters.sourcePlatform} onChange={value => updateMulti('sourcePlatform', value)} placeholder="来源平台：全部" options={[
+          <MultiSelect className={controlClass} compact={compact} value={filters.sourcePlatform} onChange={value => updateMulti('sourcePlatform', value)} placeholder="哪个平台的都行" options={[
             { value: 'boss', label: 'BOSS 直聘' },
             { value: 'zhilian', label: '智联招聘' },
             { value: '51job', label: '前程无忧' },
@@ -93,17 +93,17 @@ export function JobFilterBar({
           ]} />
         )}
         {cityOptions.length > 0 && (
-          <MultiSelect className={cn(controlClass, compact && 'xl:order-1')} compact={compact} value={filters.city} onChange={value => updateMulti('city', value)} placeholder="城市：全部" options={cityOptions.map(city => ({ value: city, label: city }))} />
+          <MultiSelect className={cn(controlClass, compact && 'xl:order-1')} compact={compact} value={filters.city} onChange={value => updateMulti('city', value)} placeholder="哪个城市都行" options={cityOptions.map(city => ({ value: city, label: city }))} />
         )}
-        <MultiSelect className={cn(controlClass, compact && 'xl:order-1')} compact={compact} value={filters.education} onChange={value => updateMulti('education', value)} placeholder="学历：全部" options={[
+        <MultiSelect className={cn(controlClass, compact && 'xl:order-1')} compact={compact} value={filters.education} onChange={value => updateMulti('education', value)} placeholder="什么学历都行" options={[
           { value: '博士', label: '博士' }, { value: '硕士', label: '硕士' }, { value: '本科', label: '本科' },
           { value: '大专', label: '大专' }, { value: '不限', label: '学历不限' }, { value: 'unknown', label: '未识别' },
         ]} />
-        <MultiSelect className={cn(controlClass, compact && 'xl:order-1')} compact={compact} value={filters.recruitmentType} onChange={value => updateMulti('recruitmentType', value)} placeholder="招聘类型：全部" options={[
+        <MultiSelect className={cn(controlClass, compact && 'xl:order-1')} compact={compact} value={filters.recruitmentType} onChange={value => updateMulti('recruitmentType', value)} placeholder="校招社招都行" options={[
           { value: 'campus', label: '校招' }, { value: 'experienced', label: '社招' }, { value: 'unknown', label: '未识别' },
         ]} />
         <div className={cn("flex min-w-0 items-center gap-2", compact ? "col-span-2 justify-end xl:col-span-1" : "min-h-9 flex-wrap justify-between rounded-md border border-card-border bg-card px-3 py-1")}>
-          {!compact && <span className="whitespace-nowrap text-xs font-bold text-muted">筛选结果 {resultCount} / 总数 {totalCount}</span>}
+          {!compact && <span className="whitespace-nowrap text-xs font-bold text-muted">找到 {resultCount} 个 / 一共 {totalCount} 个</span>}
           <Button
             type="button"
             variant="ghost"
@@ -116,7 +116,7 @@ export function JobFilterBar({
           </Button>
         </div>
       </div>
-      {invalidSalary && <p className="mt-2 text-xs font-bold text-danger">最低薪资不能高于最高薪资，请调整后再筛选。</p>}
+      {invalidSalary && <p className="mt-2 text-xs font-bold text-danger">最低工资不能比最高工资还高，改一下再筛。</p>}
     </div>
   )
 }

@@ -33,7 +33,7 @@ export function TrendChart({ data }: TrendChartProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="font-black text-foreground">7 日趋势</CardTitle>
+        <CardTitle className="font-black text-foreground">最近 7 天</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="h-[200px]">
@@ -48,8 +48,8 @@ export function TrendChart({ data }: TrendChartProps) {
                 itemStyle={{ color: 'hsl(var(--muted-foreground))', fontSize: '12px' }}
               />
               <Legend wrapperStyle={{ fontSize: '12px', color: 'hsl(var(--muted-foreground))' }} />
-              <Line type="monotone" dataKey="send" name="发送" stroke="hsl(var(--success))" strokeWidth={2} dot={{ r: 3, fill: 'hsl(var(--success))' }} activeDot={{ r: 5 }} />
-              <Line type="monotone" dataKey="reply" name="回复" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 3, fill: 'hsl(var(--primary))' }} activeDot={{ r: 5 }} />
+              <Line type="monotone" dataKey="send" name="投出去的" stroke="hsl(var(--success))" strokeWidth={2} dot={{ r: 3, fill: 'hsl(var(--success))' }} activeDot={{ r: 5 }} />
+              <Line type="monotone" dataKey="reply" name="HR 回的" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 3, fill: 'hsl(var(--primary))' }} activeDot={{ r: 5 }} />
             </LineChart>
           </ResponsiveContainer>
         </div>

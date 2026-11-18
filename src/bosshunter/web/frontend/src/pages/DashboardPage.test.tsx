@@ -59,8 +59,8 @@ describe('DashboardPage workbench task panel', () => {
   it('shows scoring progress for standalone scoring even before the first job completes', async () => {
     workbenchPayload = baseWorkbench({ task: buildTask({ mode: 'score', metrics: { ai_completed: 0, ai_total: 12 } }) })
     render(<DashboardPage view="workbench" />)
-    expect((await screen.findByRole('progressbar', { name: 'AI 评分进度' })).getAttribute('aria-valuenow')).toBe('0')
-    expect(screen.getByText('已处理 0 / 12 · 0%')).toBeTruthy()
+    expect((await screen.findByRole('progressbar', { name: '打分进度' })).getAttribute('aria-valuenow')).toBe('0')
+    expect(screen.getByText('已打 0 / 12 个 · 0%')).toBeTruthy()
   })
 
   it('groups all collection counters with separate parsing and saving failure records', async () => {
@@ -75,13 +75,13 @@ describe('DashboardPage workbench task panel', () => {
       } } },
     }) })
     render(<DashboardPage view="workbench" />)
-    fireEvent.click(await screen.findByText('采集详情'))
+    fireEvent.click(await screen.findByText('找岗位的详情'))
     expect(within(screen.getByLabelText('任务状态摘要')).queryByText(/本轮扫描|本轮新增|保存失败/)).toBeNull()
-    expect(screen.getByText('扫描 8 · 新增 2 · 重复 2 · 过滤 2 · 解析失败 1 · 保存失败 1')).toBeTruthy()
-    const records = screen.getByRole('list', { name: 'BOSS 直聘采集异常记录' })
+    expect(screen.getByText('看了 8 · 新增 2 · 重复 2 · 筛掉的 2 · 没看懂 1 · 没保存上 1')).toBeTruthy()
+    const records = screen.getByRole('list', { name: 'BOSS 直聘出问题的记录' })
     expect(records.classList.contains('max-h-60')).toBe(true)
     expect(within(records).getByText('解析失败')).toBeTruthy()
-    expect(within(records).getByText('保存失败')).toBeTruthy()
+    expect(within(records).getByText('没存上')).toBeTruthy()
     expect(within(records).getByText('测试岗位 · 测试公司')).toBeTruthy()
     expect(within(records).getAllByText('深圳 · AI · 第 2 页')).toHaveLength(2)
     expect(screen.getAllByText('保存岗位失败：RuntimeError')).toHaveLength(1)
@@ -97,13 +97,13 @@ describe('DashboardPage workbench task panel', () => {
       } } },
     }) })
     render(<DashboardPage view="workbench" />)
-    fireEvent.click(await screen.findByText('任务详情'))
+    fireEvent.click(await screen.findByText('看看详情'))
     const metrics = screen.getByLabelText('任务详细统计')
-    expect(within(metrics).getByText('AI已完成')).toBeTruthy()
-    expect(within(metrics).getByText('AI总数')).toBeTruthy()
-    expect(within(metrics).getByText('AI过滤')).toBeTruthy()
-    expect(within(metrics).queryByText('AI通过')).toBeNull()
-    fireEvent.click(screen.getByText('采集详情'))
+    expect(within(metrics).getByText('已打分')).toBeTruthy()
+    expect(within(metrics).getByText('要打分的')).toBeTruthy()
+    expect(within(metrics).getByText('打分筛掉的')).toBeTruthy()
+    expect(within(metrics).queryByText('打分通过的')).toBeNull()
+    fireEvent.click(screen.getByText('找岗位的详情'))
     expect(screen.getByText('翻页未生效，已停止采集')).toBeTruthy()
     expect(screen.getByText('薪资低于要求')).toBeTruthy()
   })
@@ -116,16 +116,16 @@ describe('DashboardPage workbench task panel', () => {
       } } },
     }) })
     render(<DashboardPage view="workbench" />)
-    fireEvent.click(await screen.findByText('采集详情'))
-    const records = screen.getByRole('list', { name: 'BOSS 直聘过滤记录' })
+    fireEvent.click(await screen.findByText('找岗位的详情'))
+    const records = screen.getByRole('list', { name: 'BOSS 直聘筛掉的记录' })
     expect(records.classList.contains('max-h-60')).toBe(true)
     expect(records.classList.contains('overflow-y-auto')).toBe(true)
     expect(records.tabIndex).toBe(0)
     expect(within(records).getByText('测试岗位 · 测试公司')).toBeTruthy()
     expect(screen.getAllByText('薪资低于硬性要求: 10K < 12K')).toHaveLength(1)
-    expect(screen.getByText('已保留 1 条，其余记录未保留或来自旧版采集')).toBeTruthy()
-    expect(screen.getByText('过滤记录 · 201 条')).toBeTruthy()
-    fireEvent.click(screen.getByText('过滤记录 · 201 条'))
+    expect(screen.getByText('留了 1 条，剩下的没留下来，或者是老版本找的')).toBeTruthy()
+    expect(screen.getByText('筛掉的记录 · 201 条')).toBeTruthy()
+    fireEvent.click(screen.getByText('筛掉的记录 · 201 条'))
     expect(records.closest('details')?.open).toBe(false)
   })
 
@@ -139,16 +139,16 @@ describe('DashboardPage workbench task panel', () => {
     }) })
     render(<DashboardPage view="workbench" />)
     await screen.findByLabelText('任务状态摘要')
-    expect(screen.queryByText('任务详情')).toBeNull()
+    expect(screen.queryByText('看看详情')).toBeNull()
     expect(screen.queryByText('浏览器无反应时，请检查 BOSS 登录状态和 Chrome 连接。')).toBeNull()
-    const details = screen.getByText('采集详情').closest('details')!
+    const details = screen.getByText('找岗位的详情').closest('details')!
     expect(details.open).toBe(false)
-    expect(within(details.querySelector('summary')!).getAllByText(/新增 32 条/)).toHaveLength(multiple ? 2 : 1)
-    fireEvent.click(screen.getByText('采集详情'))
+    expect(within(details.querySelector('summary')!).getAllByText(/新找到 32 条/)).toHaveLength(multiple ? 2 : 1)
+    fireEvent.click(screen.getByText('找岗位的详情'))
     expect(details.open).toBe(true)
     expect(within(details).getAllByText('BOSS 本轮搜索已结束')).toHaveLength(multiple ? 2 : 1)
-    expect(within(details).queryAllByText(/扫描 42 · 新增 32/)).toHaveLength(multiple ? 2 : 1)
-    expect(within(details).getAllByText(/过滤 9/)).toHaveLength(multiple ? 2 : 1)
+    expect(within(details).queryAllByText(/看了 42 · 新增 32/)).toHaveLength(multiple ? 2 : 1)
+    expect(within(details).getAllByText(/筛掉的 9/)).toHaveLength(multiple ? 2 : 1)
   })
 
   beforeEach(() => {
@@ -168,14 +168,14 @@ describe('DashboardPage workbench task panel', () => {
     render(<DashboardPage view="workbench" />)
 
     const guide = await screen.findByRole('region', { name: '开始使用' })
-    expect(within(guide).getByRole('link', { name: /连接 Chrome/ }).getAttribute('href')).toContain('QUICKSTART.md')
-    expect(within(guide).getByText(/单独采集且关闭自动评分时/)).toBeTruthy()
+    expect(within(guide).getByText(/先在 Chrome 里登录好招聘网站/)).toBeTruthy()
+    expect(within(guide).getByText(/只想先搜搜岗位/)).toBeTruthy()
     const started = vi.fn()
-    window.addEventListener('bosshunter:start-onboarding', started, { once: true })
-    fireEvent.click(within(guide).getByRole('button', { name: '开始交互引导' }))
+    window.addEventListener('jianli-lieshou:start-onboarding', started, { once: true })
+    fireEvent.click(within(guide).getByRole('button', { name: '带我走一遍' }))
     expect(started).toHaveBeenCalledOnce()
 
-    fireEvent.click(within(guide).getByRole('button', { name: '检查准备情况' }))
+    fireEvent.click(within(guide).getByRole('button', { name: '检查一下能不能跑' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/workbench/preflight?mode=full'))
   })
 
@@ -183,7 +183,7 @@ describe('DashboardPage workbench task panel', () => {
     workbenchPayload = baseWorkbench({ funnel: { collected: 2 } })
     render(<DashboardPage view="workbench" />)
 
-    expect(await screen.findByRole('heading', { name: '今日求职行动' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: '今天要做的事' })).toBeTruthy()
     expect(screen.queryByRole('region', { name: '开始使用' })).toBeNull()
   })
 
@@ -198,7 +198,7 @@ describe('DashboardPage workbench task panel', () => {
     render(<DashboardPage view="workbench" />)
 
     const guide = await screen.findByRole('region', { name: '开始使用' })
-    fireEvent.click(within(guide).getByRole('button', { name: '检查准备情况' }))
+    fireEvent.click(within(guide).getByRole('button', { name: '检查一下能不能跑' }))
     const results = await within(guide).findByRole('region', { name: '启动检查结果' })
     expect(within(results).getByRole('status').textContent).toContain('尚未配置有效简历')
   })
@@ -222,13 +222,13 @@ describe('DashboardPage workbench task panel', () => {
       outsourcing_level: 'confirmed', outsourcing_matches: ['合成供应商'],
     }] })
     render(<DashboardPage view="workbench" />)
-    const toggle = await screen.findByRole('button', { name: '展开招呼语：合成供应商｜测试岗位' })
+    const toggle = await screen.findByRole('button', { name: '展开打招呼的话：合成供应商｜测试岗位' })
     expect(within(toggle).getByLabelText('外包；命中：合成供应商')).toBeTruthy()
     fireEvent.click(toggle)
     expect(screen.getByLabelText('外包；命中：合成供应商')).toBeTruthy()
     expect(screen.getByText('表达可以更简洁')).toBeTruthy()
-    expect((screen.getByRole('button', { name: '发送招呼语' }) as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByRole('button', { name: '采用优化版' })).toBeTruthy()
+    expect((screen.getByRole('button', { name: '发这条打招呼' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: '就用改完的' })).toBeTruthy()
   })
 
   it('shows the latest queue summary and preserves full progress in expandable details', async () => {
@@ -243,13 +243,13 @@ describe('DashboardPage workbench task panel', () => {
     render(<DashboardPage view="workbench" />)
     const summary = await screen.findByLabelText('任务状态摘要')
     expect(within(summary).getByText('招呼语进度：2/3')).toBeTruthy()
-    fireEvent.click(screen.getByText('任务详情'))
+    fireEvent.click(screen.getByText('看看详情'))
     const progress = screen.getByText(latestProgress, { normalizer: text => text })
     expect(progress.textContent).toBe(latestProgress)
     expect(progress.classList.contains('whitespace-pre-line')).toBe(true)
     expect(progress.closest('details:not([open]), [hidden], [aria-hidden="true"]')).toBeNull()
     expect(screen.queryByText('招呼语进度：1/3')).toBeNull()
-    expect(screen.getByRole('button', { name: '停止任务' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '停下' })).toBeTruthy()
   })
 
   it('shows the pause reason when a greet task completed with partial success', async () => {
@@ -266,8 +266,8 @@ describe('DashboardPage workbench task panel', () => {
       }),
     })
     render(<DashboardPage view="workbench" />)
-    expect(await screen.findByText('提前暂停原因：AI 额度或账户余额不足。已生成内容已保存，剩余岗位下次运行会继续处理。')).toBeTruthy()
-    expect(screen.getByText('提前暂停')).toBeTruthy()
+    expect(await screen.findByText('提前停下的原因：额度或余额不够了。写好的都留着，剩下的岗位下次继续。')).toBeTruthy()
+    expect(screen.getByText('提前停下的')).toBeTruthy()
   })
 
   it('shows failure feedback and the raw error for a zero-output greet task', async () => {
@@ -290,11 +290,11 @@ describe('DashboardPage workbench task panel', () => {
     const confirmSpy = vi.fn(() => true)
     vi.stubGlobal('confirm', confirmSpy)
     render(<DashboardPage view="workbench" />)
-    const stopButton = await screen.findByRole('button', { name: '停止任务' })
+    const stopButton = await screen.findByRole('button', { name: '停下' })
     fireEvent.click(stopButton)
     expect(confirmSpy).toHaveBeenCalled()
     await waitFor(() => {
-      expect(screen.getAllByText('单独采集停止失败：任务已结束，无法停止').length).toBeGreaterThan(0)
+      expect(screen.getAllByText('单独采集没停下来：任务已结束，无法停止').length).toBeGreaterThan(0)
     })
   })
 
@@ -305,10 +305,10 @@ describe('DashboardPage workbench task panel', () => {
     stopResponse = () => jsonResponse(buildTask({ mode: 'collect', label: '单独采集', status: 'stopping', stop_requested: true }))
     vi.stubGlobal('confirm', () => true)
     render(<DashboardPage view="workbench" />)
-    const stopButton = await screen.findByRole('button', { name: '停止任务' })
+    const stopButton = await screen.findByRole('button', { name: '停下' })
     fireEvent.click(stopButton)
     await waitFor(() => {
-      expect(screen.getAllByText('单独采集已请求停止。').length).toBeGreaterThan(0)
+      expect(screen.getAllByText('单独采集已经让它停下了。').length).toBeGreaterThan(0)
     })
   })
   it('displays the final edited version alongside both generated candidates', async () => {
@@ -319,8 +319,8 @@ describe('DashboardPage workbench task panel', () => {
       greeting_reviewed_at: '2026-09-09 12:00:00',
     }] })
     render(<DashboardPage view="workbench" />)
-    fireEvent.click(await screen.findByRole('button', { name: '展开招呼语：测试公司｜测试岗位' }))
-    const finalVersion = await screen.findByLabelText('最终发送版本')
+    fireEvent.click(await screen.findByRole('button', { name: '展开打招呼的话：测试公司｜测试岗位' }))
+    const finalVersion = await screen.findByLabelText('最后发出去的版本')
     expect(within(finalVersion).getByText('手动修改后最终发送的文字')).toBeTruthy()
     expect(screen.getByText('AI 原始候选')).toBeTruthy()
     expect(screen.getByText('AI 优化候选')).toBeTruthy()
@@ -334,16 +334,16 @@ describe('DashboardPage workbench task panel', () => {
     }
     workbenchPayload = baseWorkbench({ pending_greetings: [job] })
     render(<DashboardPage view="workbench" />)
-    fireEvent.click(await screen.findByRole('button', { name: '展开招呼语：测试公司｜测试岗位' }))
-    fireEvent.click(await screen.findByRole('button', { name: '手动编辑' }))
-    const send = screen.getByRole('button', { name: '发送招呼语' }) as HTMLButtonElement
-    const batchSend = screen.getByRole('button', { name: '发送 1 个' }) as HTMLButtonElement
+    fireEvent.click(await screen.findByRole('button', { name: '展开打招呼的话：测试公司｜测试岗位' }))
+    fireEvent.click(await screen.findByRole('button', { name: '手动改一改' }))
+    const send = screen.getByRole('button', { name: '发这条打招呼' }) as HTMLButtonElement
+    const batchSend = screen.getByRole('button', { name: '发出去 1 个' }) as HTMLButtonElement
     expect(send.disabled).toBe(true)
     expect(batchSend.disabled).toBe(true)
-    fireEvent.change(screen.getByLabelText('手动编辑最终版本'), { target: { value: '保存后真正发送的文字' } })
+    fireEvent.change(screen.getByLabelText('自己改改最后发的版本'), { target: { value: '保存后真正发送的文字' } })
     let finishSave!: (response: Response) => void
     fetchMock.mockImplementationOnce(() => new Promise<Response>(resolve => { finishSave = resolve }))
-    fireEvent.click(screen.getByRole('button', { name: '保存编辑版' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存我改的' }))
     expect(send.disabled).toBe(true)
     expect(batchSend.disabled).toBe(true)
     const saved = { ...job, greeting: '保存后真正发送的文字', greeting_selection: 'edited' }
@@ -351,7 +351,7 @@ describe('DashboardPage workbench task panel', () => {
     finishSave(jsonResponse(saved))
     await waitFor(() => expect(send.disabled).toBe(false))
     expect(batchSend.disabled).toBe(false)
-    expect(within(screen.getByLabelText('最终发送版本')).getByText(saved.greeting)).toBeTruthy()
+    expect(within(screen.getByLabelText('最后发出去的版本')).getByText(saved.greeting)).toBeTruthy()
   })
 
   it('keeps candidates collapsed and prevents sending before a version is chosen', async () => {
@@ -361,16 +361,16 @@ describe('DashboardPage workbench task panel', () => {
       greeting_optimized: '优化候选', greeting_selection: 'pending',
     }] })
     render(<DashboardPage view="workbench" />)
-    const toggle = await screen.findByRole('button', { name: '展开招呼语：测试公司｜测试岗位' })
+    const toggle = await screen.findByRole('button', { name: '展开打招呼的话：测试公司｜测试岗位' })
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByText('优化候选')).toBeNull()
-    expect(screen.queryByRole('button', { name: '发送招呼语' })).toBeNull()
-    expect((screen.getByRole('button', { name: '发送 0 个' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: '发这条打招呼' })).toBeNull()
+    expect((screen.getByRole('button', { name: '发出去 0 个' }) as HTMLButtonElement).disabled).toBe(true)
     fireEvent.click(toggle)
     expect(screen.getByText('优化候选')).toBeTruthy()
-    expect((screen.getByRole('button', { name: '发送招呼语' }) as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByRole('button', { name: '保留原文' })).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '收起招呼语：测试公司｜测试岗位' }))
+    expect((screen.getByRole('button', { name: '发这条打招呼' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: '就用原来的' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '收起来打招呼的话：测试公司｜测试岗位' }))
     expect(screen.queryByText('优化候选')).toBeNull()
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
   })
@@ -383,11 +383,11 @@ describe('DashboardPage workbench task panel', () => {
     }
     workbenchPayload = baseWorkbench({ task: buildTask({ mode }), pending_greetings: [job] })
     render(<DashboardPage view="workbench" />)
-    fireEvent.click(await screen.findByRole('button', { name: '展开招呼语：测试公司｜测试岗位' }))
-    expect((screen.getByRole('button', { name: '保留原文' }) as HTMLButtonElement).disabled).toBe(false)
-    expect((screen.getByRole('button', { name: '手动编辑' }) as HTMLButtonElement).disabled).toBe(false)
-    expect((screen.getByRole('button', { name: '发送招呼语' }) as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.click(screen.getByRole('button', { name: '采用优化版' }))
+    fireEvent.click(await screen.findByRole('button', { name: '展开打招呼的话：测试公司｜测试岗位' }))
+    expect((screen.getByRole('button', { name: '就用原来的' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: '手动改一改' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: '发这条打招呼' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '就用改完的' }))
     await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST').length).toBe(1))
     const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')
     expect(String(posts[0][0])).toBe('/api/jobs/editable-preview/greeting-selection')
@@ -404,13 +404,13 @@ describe('DashboardPage workbench task panel', () => {
       { ...job, greeting_activity: activity }, { ...job, id: 'free-preview', company: '其他公司' },
     ] })
     render(<DashboardPage view="workbench" />)
-    fireEvent.click(await screen.findByRole('button', { name: '展开招呼语：当前公司｜测试岗位' }))
-    expect((screen.getByRole('button', { name: '保留原文' }) as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByText(activity === 'sending' ? '这条正在发送，暂不可修改。' : '这条正在生成，完成后即可选择。')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '收起招呼语：当前公司｜测试岗位' }))
-    fireEvent.click(screen.getByRole('button', { name: '展开招呼语：其他公司｜测试岗位' }))
-    expect((screen.getByRole('button', { name: '保留原文' }) as HTMLButtonElement).disabled).toBe(false)
-    expect((screen.getByRole('button', { name: '手动编辑' }) as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(await screen.findByRole('button', { name: '展开打招呼的话：当前公司｜测试岗位' }))
+    expect((screen.getByRole('button', { name: '就用原来的' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByText(activity === 'sending' ? '这条正在发，现在改不了。' : '这条正在写，写好就能挑。')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '收起来打招呼的话：当前公司｜测试岗位' }))
+    fireEvent.click(screen.getByRole('button', { name: '展开打招呼的话：其他公司｜测试岗位' }))
+    expect((screen.getByRole('button', { name: '就用原来的' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: '手动改一改' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('summarizes collection limits while keeping full diagnostics in closed details', async () => {
@@ -422,14 +422,14 @@ describe('DashboardPage workbench task panel', () => {
       } } },
     }) })
     render(<DashboardPage view="workbench" />)
-    const reason = await screen.findByText('今日详情页次数已用完')
+    const reason = await screen.findByText('今天能打开的岗位详情用完了')
     expect(reason.closest('details')?.open).toBe(false)
-    expect(screen.getByText('采集已结束，数量不足')).toBeTruthy()
+    expect(screen.getByText('找完了，但新岗位不多')).toBeTruthy()
     expect(screen.queryByText('completed_with_shortage')).toBeNull()
     const metrics = screen.getByLabelText('任务关键统计')
     expect(within(metrics).queryByText('保存失败 2')).toBeNull()
     expect(within(metrics).queryByText('解析失败')).toBeNull()
-    expect(screen.queryByText('任务详情')).toBeNull()
+    expect(screen.queryByText('看看详情')).toBeNull()
   })
 
 })
@@ -477,17 +477,17 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
 
   async function openScoringDialog() {
     render(<DashboardPage view="jobs" />)
-    fireEvent.click(await screen.findByText('评分选项'))
-    expect(await screen.findByText('符合条件')).toBeTruthy()
+    fireEvent.click(await screen.findByText('打分设置'))
+    expect(await screen.findByText('符合条件的')).toBeTruthy()
   }
 
   it('closes the scoring dialog and shows the started notice after scoring starts', async () => {
     stubDashboardFetch()
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     await openScoringDialog()
-    fireEvent.click(screen.getByText('确认开始评分'))
-    expect((await screen.findAllByText('独立评分已启动，共 3 个岗位。')).length).toBeGreaterThan(0)
-    await waitFor(() => expect(screen.queryByText('确认开始评分')).toBeNull())
+    fireEvent.click(screen.getByText('开始打分'))
+    expect((await screen.findAllByText('打分开始了，一共 3 个岗位。')).length).toBeGreaterThan(0)
+    await waitFor(() => expect(screen.queryByText('开始打分')).toBeNull())
   })
 
   it('keeps the progress visible in the jobs pool after the scoring dialog closes', async () => {
@@ -499,9 +499,9 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
     })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     await openScoringDialog()
-    fireEvent.click(screen.getByText('确认开始评分'))
-    await waitFor(() => expect(screen.queryByText('确认开始评分')).toBeNull())
-    expect((await screen.findByRole('progressbar', { name: 'AI 评分进度' })).getAttribute('aria-valuenow')).toBe('0')
+    fireEvent.click(screen.getByText('开始打分'))
+    await waitFor(() => expect(screen.queryByText('开始打分')).toBeNull())
+    expect((await screen.findByRole('progressbar', { name: '打分进度' })).getAttribute('aria-valuenow')).toBe('0')
   })
 
   it('refreshes progress, job scores and counts without losing the selection or requiring a page reload', async () => {
@@ -523,19 +523,19 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
         return normalFetch(input, init)
       }))
       await act(async () => { render(<DashboardPage view="jobs" />) })
-      fireEvent.click(screen.getByRole('checkbox', { name: '选择 测试公司 测试岗位' }))
-      expect(screen.getByText('筛选结果 2 / 总数 2')).toBeTruthy()
+      fireEvent.click(screen.getByRole('checkbox', { name: '选这个 测试公司 测试岗位' }))
+      expect(screen.getByText('找到 2 个 / 一共 2 个')).toBeTruthy()
       completed = 1
       await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
-      expect(screen.getByRole('progressbar', { name: 'AI 评分进度' }).getAttribute('aria-valuenow')).toBe('50')
+      expect(screen.getByRole('progressbar', { name: '打分进度' }).getAttribute('aria-valuenow')).toBe('50')
       expect(screen.getByText('88')).toBeTruthy()
-      expect(screen.getByText('筛选结果 1 / 总数 2')).toBeTruthy()
-      expect((screen.getByRole('checkbox', { name: '选择 测试公司 测试岗位' }) as HTMLInputElement).checked).toBe(true)
+      expect(screen.getByText('找到 1 个 / 一共 2 个')).toBeTruthy()
+      expect((screen.getByRole('checkbox', { name: '选这个 测试公司 测试岗位' }) as HTMLInputElement).checked).toBe(true)
       expect(screen.queryByText('加载中…')).toBeNull()
       completed = 2
       await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
-      expect(screen.getByRole('progressbar', { name: 'AI 评分进度' }).getAttribute('aria-valuenow')).toBe('100')
-      expect(screen.getByText('本轮 AI 评分 · 本轮处理完毕')).toBeTruthy()
+      expect(screen.getByRole('progressbar', { name: '打分进度' }).getAttribute('aria-valuenow')).toBe('100')
+      expect(screen.getByText('这轮打分 · 这轮打完了')).toBeTruthy()
     } finally {
       cleanup()
       vi.useRealTimers()
@@ -548,8 +548,8 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
     })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     await openScoringDialog()
-    fireEvent.click(screen.getByText('确认开始评分'))
+    fireEvent.click(screen.getByText('开始打分'))
     expect(await screen.findByText('AI 额度不足')).toBeTruthy()
-    expect(screen.getByText('确认开始评分')).toBeTruthy()
+    expect(screen.getByText('开始打分')).toBeTruthy()
   })
 })

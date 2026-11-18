@@ -114,7 +114,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
       type="button"
       onClick={() => onSortChange(key)}
       className="inline-flex items-center gap-1 font-bold hover:text-primary"
-      title={`按${label}排序`}
+      title={`按${label}排`}
     >
       {label}<span className="text-[10px]">{sortBy === key ? (sortOrder === 'asc' ? '↑' : '↓') : '↕'}</span>
     </button>
@@ -124,7 +124,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>岗位列表</CardTitle>
-        <span className="text-xs text-muted">{total} 条记录</span>
+        <span className="text-xs text-muted">{total} 个岗位</span>
       </CardHeader>
       <CardContent className="p-0">
         <div className="overflow-x-auto">
@@ -133,15 +133,15 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
               <tr className="border-b border-card-border bg-secondary text-xs text-muted">
                 <th className="w-10 px-3 py-3 text-center font-bold">选</th>
                 <th className="px-4 py-3 text-left font-bold">公司</th>
-                <th className="px-4 py-3 text-left font-bold">职位</th>
+                <th className="px-4 py-3 text-left font-bold">岗位</th>
                 <th className="px-4 py-3 text-left font-bold">城市</th>
-                <th className="px-4 py-3 text-left">{sortableHeader('薪资', 'salary')}</th>
-                <th className="px-4 py-3 text-left">{sortableHeader('学历 / 招聘类型', 'education')}</th>
-                <th className="px-4 py-3 text-left">{sortableHeader('评分', 'score')}</th>
+                <th className="px-4 py-3 text-left">{sortableHeader('工资', 'salary')}</th>
+                <th className="px-4 py-3 text-left">{sortableHeader('学历 · 校招社招', 'education')}</th>
+                <th className="px-4 py-3 text-left">{sortableHeader('打分', 'score')}</th>
                 <th className="px-4 py-3 text-left">{sortableHeader('状态', 'status')}</th>
-                <th className="px-4 py-3 text-left">{sortableHeader('招聘者活跃', 'hr_active')}</th>
+                <th className="px-4 py-3 text-left">{sortableHeader('HR 活跃吗', 'hr_active')}</th>
                 <th className="px-4 py-3 text-left">{sortableHeader('时间', 'created_at')}</th>
-                {hasActions && <th className="min-w-[210px] px-3 py-3 text-center font-bold">操作</th>}
+                {hasActions && <th className="min-w-[210px] px-3 py-3 text-center font-bold">能做什么</th>}
               </tr>
             </thead>
             <tbody>
@@ -163,7 +163,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                           type="checkbox"
                           checked={selectedIds.includes(job.id)}
                           onChange={() => onToggleSelected(job.id)}
-                          aria-label={`选择 ${job.company} ${job.title}`}
+                          aria-label={`选这个 ${job.company} ${job.title}`}
                           className="h-4 w-4 accent-primary"
                         />
                       </td>
@@ -180,13 +180,13 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                         </div>
                       </td>
                       <td className="max-w-[220px] truncate px-4 py-3 font-bold text-foreground">{job.title}</td>
-                      <td className="px-4 py-3 text-muted">{job.city || '未识别'}</td>
+                      <td className="px-4 py-3 text-muted">{job.city || '没认出来'}</td>
                       <td className="px-4 py-3 text-muted">{job.salary || '-'}</td>
                       <td className="px-4 py-3 text-xs">
-                        <div className="font-bold text-foreground">{job.education || '学历未识别'}</div>
-                        <div className="mt-1 text-muted">职位类型：{job.employment_type === 'internship' ? '实习' : job.employment_type === 'full_time' ? '全职' : job.employment_type === 'part_time' ? '兼职' : '待核实'}</div>
+                        <div className="font-bold text-foreground">{job.education || '学历没认出来'}</div>
+                        <div className="mt-1 text-muted">这份工作是：{job.employment_type === 'internship' ? '实习' : job.employment_type === 'full_time' ? '全职' : job.employment_type === 'part_time' ? '兼职' : '还没弄清'}</div>
                         {job.employment_review && <div className="mt-1 text-amber-600">{job.employment_review}</div>}
-                        <div className="mt-1 text-muted">{job.recruitment_type === 'campus' ? '校招' : job.recruitment_type === 'experienced' ? '社招' : '类型未识别'}</div>
+                        <div className="mt-1 text-muted">{job.recruitment_type === 'campus' ? '校招' : job.recruitment_type === 'experienced' ? '社招' : '还没弄清是哪种'}</div>
                       </td>
                       <td className="px-4 py-3">
                         <span className={`font-mono font-black ${getScoreColor(job.score)}`}>{job.score || '-'}</span>
@@ -194,7 +194,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                       <td className="px-4 py-3">
                         <Badge variant={statusVariant(job.status) as any}>{getStatusLabel(job.status)}</Badge>
                       </td>
-                      <td className="px-4 py-3 text-xs text-muted">{job.hr_active || '活跃度未知'}</td>
+                      <td className="px-4 py-3 text-xs text-muted">{job.hr_active || '不知道 HR 活跃不活跃'}</td>
                       <td className="px-4 py-3 text-xs text-muted">
                         <div className="flex items-center gap-2">
                           {timeAgo(job.created_at)}
@@ -206,15 +206,15 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                           <div className="flex flex-wrap items-center justify-center gap-1.5">
                             {isExternalPlatform && jobUrl && (
                               <a href={jobUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-card-border px-2 py-1.5 text-[11px] font-bold text-primary hover:bg-secondary">
-                                <ExternalLink className="h-3.5 w-3.5" />打开平台
+                                <ExternalLink className="h-3.5 w-3.5" />去平台看看
                               </a>
                             )}
                             {isExternalPlatform && !jobUrl && (
-                              <span className="rounded-lg bg-warning-soft px-2 py-1.5 text-[11px] font-bold text-warning">链接不可用</span>
+                              <span className="rounded-lg bg-warning-soft px-2 py-1.5 text-[11px] font-bold text-warning">这个链接打不开</span>
                             )}
                             {!isExternalPlatform && jobUrl && (
                               <a href={jobUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-card-border px-2 py-1.5 text-[11px] font-bold text-primary hover:bg-secondary">
-                                <ExternalLink className="h-3.5 w-3.5" />跳转岗位
+                                <ExternalLink className="h-3.5 w-3.5" />打开这个岗位
                               </a>
                             )}
                             {isExternalPlatform && onMarkManuallySent && (
@@ -224,11 +224,11 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                                 onClick={() => onMarkManuallySent(job)}
                                 className="inline-flex items-center gap-1 rounded-lg bg-primary px-2 py-1.5 text-[11px] font-bold text-primary-foreground hover:opacity-90 disabled:bg-success-soft disabled:text-success disabled:opacity-100"
                               >
-                                <CheckCircle2 className="h-3.5 w-3.5" />{alreadySent ? '已发送' : '我已发送'}
+                                <CheckCircle2 className="h-3.5 w-3.5" />{alreadySent ? '已投出' : '我投过了'}
                               </button>
                             )}
                             {onSoftDelete && (
-                              <button type="button" onClick={() => onSoftDelete(job)} className="rounded-lg p-2 text-muted hover:bg-danger-soft hover:text-danger" aria-label={`将 ${job.company} ${job.title} 移入回收站`}>
+                              <button type="button" onClick={() => onSoftDelete(job)} className="rounded-lg p-2 text-muted hover:bg-danger-soft hover:text-danger" aria-label={`将 ${job.company} ${job.title} 扔进回收站`}>
                                 <Trash2 className="h-4 w-4" />
                               </button>
                             )}
@@ -237,17 +237,17 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                                 type="button"
                                 disabled={!company || Boolean(blockedRule) || Boolean(blockingJobId)}
                                 onClick={() => onBlockCompany(job)}
-                                aria-label={`屏蔽公司 ${company || '公司名缺失'}`}
-                                title={blockedRule ? `已被“${blockedRule}”屏蔽，可在配置中解除` : company ? '预览后将公司加入屏蔽名单' : '缺少公司名称，无法屏蔽'}
+                                aria-label={`屏蔽这家公司 ${company || '没写公司名'}`}
+                                title={blockedRule ? `已经被“${blockedRule}”屏蔽了，在设置里能解除` : company ? '看完预览就把这家公司加进屏蔽名单' : '没写公司名，屏蔽不了'}
                                 className="inline-flex items-center gap-1 rounded-lg border border-card-border px-2 py-1.5 text-[11px] font-bold text-muted hover:bg-danger-soft hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
                               >
-                                <Ban className="h-3.5 w-3.5" />{blockingJobId === job.id ? '处理中…' : blockedRule ? '已屏蔽' : '屏蔽公司'}
+                                <Ban className="h-3.5 w-3.5" />{blockingJobId === job.id ? '正在处理…' : blockedRule ? '已经屏蔽了' : '屏蔽公司'}
                               </button>
                             )}
                             {onStatusChange && !alreadySent && (
                               <select
                                 defaultValue=""
-                                aria-label={`修改 ${job.company} ${job.title} 状态`}
+                                aria-label={`改一下 ${job.company} ${job.title} 状态`}
                                 onChange={event => {
                                   const status = event.target.value
                                   if (status) onStatusChange(job, status)
@@ -255,11 +255,11 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                                 }}
                                 className="rounded-lg border border-card-border bg-card px-2 py-1.5 text-[11px] font-bold text-foreground"
                               >
-                                <option value="">修改状态</option>
-                                <option value="ready">待投递</option>
-                                <option value="filtered">已过滤</option>
+                                <option value="">改状态</option>
+                                <option value="ready">等着投</option>
+                                <option value="filtered">已筛掉</option>
                                 <option value="skipped">已跳过</option>
-                                <option value="rejected">已拒绝</option>
+                                <option value="rejected">不要了</option>
                               </select>
                             )}
                           </div>
@@ -274,15 +274,15 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                           </div>
                           <div className="grid grid-cols-1 gap-4 text-sm lg:grid-cols-3">
                             <div className="rounded-2xl border border-card-border bg-card p-4">
-                              <p className="mb-2 text-xs font-black text-primary">JD摘要</p>
-                              <p className="line-clamp-6 leading-6 text-muted">{job.jd || '无'}</p>
+                              <p className="mb-2 text-xs font-black text-primary">JD简单说</p>
+                              <p className="line-clamp-6 leading-6 text-muted">{job.jd || '没有'}</p>
                             </div>
                             <div className="rounded-2xl border border-card-border bg-card p-4">
-                              <p className="mb-2 text-xs font-black text-primary">招呼语</p>
-                              <p className="line-clamp-6 whitespace-pre-wrap leading-6 text-muted">{job.greeting || '未生成'}</p>
+                              <p className="mb-2 text-xs font-black text-primary">打招呼的话</p>
+                              <p className="line-clamp-6 whitespace-pre-wrap leading-6 text-muted">{job.greeting || '还没写'}</p>
                             </div>
                             <div className="rounded-2xl border border-card-border bg-card p-4">
-                              <p className="mb-2 text-xs font-black text-primary">评分理由</p>
+                              <p className="mb-2 text-xs font-black text-primary">为什么给这个分</p>
                               <p className="line-clamp-6 whitespace-pre-wrap leading-6 text-muted">{job.score_reason || '无'}</p>
                             </div>
                           </div>
@@ -295,7 +295,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
               {!jobs.length && (
                 <tr>
                   <td colSpan={hasActions ? 11 : 10} className="px-4 py-10 text-center text-sm text-muted">
-                    {loading ? '正在读取岗位…' : '没有符合当前条件的岗位'}
+                    {loading ? '正在找岗位…' : '按现在的条件没找到合适的'}
                   </td>
                 </tr>
               )}
@@ -310,7 +310,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
               disabled={page === 0}
               className="font-bold text-muted transition hover:text-foreground disabled:opacity-30"
             >
-              首页
+              第一页
             </button>
             <button
               onClick={() => onPageChange(Math.max(0, page - 1))}
@@ -329,7 +329,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                 onChange={event => setPageInput(event.target.value)}
                 onKeyDown={event => { if (event.key === 'Enter') jumpToPage() }}
                 onBlur={jumpToPage}
-                aria-label="跳转页码"
+                aria-label="跳到第几页"
                 className="w-14 rounded-md border border-card-border bg-surface px-2 py-1 text-center text-foreground outline-none focus:border-primary"
               />
               页 / {totalPages} 页
@@ -346,7 +346,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
               disabled={page >= totalPages - 1}
               className="font-bold text-muted transition hover:text-foreground disabled:opacity-30"
             >
-              尾页
+              最后一页
             </button>
           </div>
         )}

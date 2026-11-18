@@ -1,4 +1,5 @@
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
+import { AnimatedNumber } from '@/components/AnimatedNumber'
 import type { FunnelData } from '@/hooks/useDashboard'
 
 interface FunnelCardsProps {
@@ -6,15 +7,13 @@ interface FunnelCardsProps {
 }
 
 const funnelSteps = [
-  { key: '采集总数', color: 'text-info', bg: 'bg-info-soft' },
-  { key: '初筛通过', color: 'text-cyan', bg: 'bg-cyan-soft' },
-  { key: 'AI评分', color: 'text-success', bg: 'bg-success-soft' },
-  { key: '自动确认', color: 'text-warning', bg: 'bg-warning-soft' },
+  { key: '采集总数', label: '找到的岗位', color: 'text-info', bg: 'bg-info-soft' },
+  { key: '初筛通过', label: '筛出来的', color: 'text-cyan', bg: 'bg-cyan-soft' },
+  { key: 'AI评分', label: '打过分的', color: 'text-success', bg: 'bg-success-soft' },
+  { key: '自动确认', label: '够格能投的', color: 'text-warning', bg: 'bg-warning-soft' },
 ]
 
 export function FunnelCards({ data }: FunnelCardsProps) {
-  const total = data['采集总数'] || 0
-
   return (
     <div className="grid grid-cols-4 gap-3">
       {funnelSteps.map((step, i) => {
@@ -23,13 +22,15 @@ export function FunnelCards({ data }: FunnelCardsProps) {
         const rate = prevCount > 0 && i > 0 ? ((count / prevCount) * 100).toFixed(1) + '%' : ''
 
         return (
-          <Card key={step.key}>
+          <Card key={step.key} className="hover-lift animate-fade-up" style={{ animationDelay: `${i * 70}ms` } as React.CSSProperties}>
             <CardHeader className="pb-2 p-4">
-              <CardTitle className="text-xs text-muted font-bold">{step.key}</CardTitle>
+              <CardTitle className="text-xs text-muted font-bold">{step.label}</CardTitle>
             </CardHeader>
             <CardContent className="p-4 pt-0">
-              <div className={`text-2xl font-black ${step.color}`}>{count}</div>
-              {rate && <p className="text-xs text-muted mt-1">转化率 {rate}</p>}
+              <div className={`text-2xl font-black tabular-nums ${step.color}`}>
+                <AnimatedNumber value={count} />
+              </div>
+              {rate && <p className="text-xs text-muted mt-1">上一步留下来 {rate}</p>}
             </CardContent>
           </Card>
         )

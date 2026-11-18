@@ -78,7 +78,7 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
       })
       .catch(() => {
         if (!cancelled) {
-          setPanelMessages((prev) => afterResumeLoadFailure(prev, '网络错误，无法读取简历'))
+          setPanelMessages((prev) => afterResumeLoadFailure(prev, '网络不好，简历没读出来'))
         }
       })
     return () => {
@@ -94,7 +94,7 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
       const res = await fetch('/api/resume/upload', { method: 'POST', body: form })
       const data = await res.json()
       if (!res.ok || !data.success) {
-        setPanelMessages((prev) => afterResumeLoadFailure(prev, data.error || '简历上传失败'))
+        setPanelMessages((prev) => afterResumeLoadFailure(prev, data.error || '简历没传上去'))
         return
       }
       const { success: _success, ...info } = data
@@ -102,7 +102,7 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
       // Upload already persisted resume_path server-side.
       updateConfig('profile.resume_path', data.path, { markDirty: false })
     } catch {
-      setPanelMessages((prev) => afterResumeLoadFailure(prev, '网络错误，简历上传失败'))
+      setPanelMessages((prev) => afterResumeLoadFailure(prev, '网络不好，简历没传上去'))
     }
   }, [updateConfig])
 
@@ -144,7 +144,7 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
       const data = await res.json().catch(() => null)
       if (!res.ok || !data?.success) {
         setPanelMessages((prev) =>
-          afterResumeLoadFailure(prev, (data && data.error) || '删除简历失败'),
+          afterResumeLoadFailure(prev, (data && data.error) || '简历没删掉'),
         )
         return
       }
@@ -153,13 +153,13 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
       // DELETE already cleared resume_path server-side.
       updateConfig('profile.resume_path', '', { markDirty: false })
     } catch {
-      setPanelMessages((prev) => afterResumeLoadFailure(prev, '网络错误，删除简历失败'))
+      setPanelMessages((prev) => afterResumeLoadFailure(prev, '网络不好，简历没删掉'))
     }
   }
 
   return (
     <div>
-      <label className="mb-2 block text-xs text-foreground">简历文件</label>
+      <label className="mb-2 block text-xs text-foreground">我的简历</label>
       {resumeInfo ? (
         <ResumeFileCard
           info={resumeInfo}
@@ -182,7 +182,7 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
           onDrop={handleResumeDrop}
         >
           <Upload className="mb-2 h-6 w-6 text-muted" />
-          <span className="text-sm text-muted">拖拽或点击上传 (.md、.docx、.pdf)</span>
+          <span className="text-sm text-muted">把简历拖进来，或者点一下选文件 (.md、.docx、.pdf)</span>
           <input type="file" accept=".md,.docx,.pdf,application/pdf" onChange={handleResumeUpload} className="hidden" />
         </label>
       )}

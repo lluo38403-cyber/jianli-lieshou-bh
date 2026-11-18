@@ -15,26 +15,26 @@ export function ScoringProgress({ metrics, status }: ScoringProgressProps) {
   const total = count(metrics?.ai_total)
   const completed = total > 0 ? Math.min(count(metrics?.ai_completed), total) : 0
   const percent = total > 0 ? Math.floor(completed * 100 / total) : undefined
-  const state = status === 'paused' ? '已暂停'
-    : status === 'stopping' ? '正在暂停'
-    : status === 'stopped' ? '已停止'
-    : status === 'failed' ? '任务失败'
-    : status === 'completed_with_errors' ? '已结束，部分失败'
-    : total > 0 && completed === total ? '本轮处理完毕'
-    : status === 'completed' ? '已结束'
-    : '评分中'
+  const state = status === 'paused' ? '先停下了'
+    : status === 'stopping' ? '正在停下'
+    : status === 'stopped' ? '已经停了'
+    : status === 'failed' ? '这次没打成'
+    : status === 'completed_with_errors' ? '打完了，有几个没打好'
+    : total > 0 && completed === total ? '这轮打完了'
+    : status === 'completed' ? '已经结束了'
+    : '正在打分'
 
-  const emptyText = ['running', 'stopping'].includes(status) ? '正在准备待评分岗位…' : '暂无评分计数'
+  const emptyText = ['running', 'stopping'].includes(status) ? '正在准备要打分的岗位…' : '还没开始打分'
 
   return (
-    <section className="mt-3 rounded-xl border border-card-border bg-surface px-3 py-3" aria-label="本轮 AI 评分进度">
+    <section className="mt-3 rounded-xl border border-card-border bg-surface px-3 py-3" aria-label="这轮打分进度">
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-        <span className="font-semibold">本轮 AI 评分 · {state}</span>
-        <span className="tabular-nums text-muted">{total > 0 ? `已处理 ${completed} / ${total} · ${percent}%` : emptyText}</span>
+        <span className="font-semibold">这轮打分 · {state}</span>
+        <span className="tabular-nums text-muted">{total > 0 ? `已打 ${completed} / ${total} 个 · ${percent}%` : emptyText}</span>
       </div>
       <div
         role="progressbar"
-        aria-label="AI 评分进度"
+        aria-label="打分进度"
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={percent}
@@ -44,10 +44,10 @@ export function ScoringProgress({ metrics, status }: ScoringProgressProps) {
         <div className={`h-full rounded-full transition-[width] duration-500 motion-reduce:transition-none ${status === 'failed' ? 'bg-danger' : 'bg-primary'} ${percent === undefined && status === 'running' ? 'animate-pulse motion-reduce:animate-none' : ''}`} style={{ width: `${percent ?? (status === 'running' ? 15 : 0)}%` }} />
       </div>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
-        <span>通过 {count(metrics?.ai_passed)}</span>
-        <span>过滤 {count(metrics?.ai_filtered)}</span>
-        <span className={count(metrics?.ai_failed) > 0 ? 'text-danger' : undefined}>失败 {count(metrics?.ai_failed)}</span>
-        <span>按岗位计数，重试不重复计入；恢复任务后显示本轮剩余岗位的进度。</span>
+        <span>通过 {count(metrics?.ai_passed)} 个</span>
+        <span>筛掉 {count(metrics?.ai_filtered)} 个</span>
+        <span className={count(metrics?.ai_failed) > 0 ? 'text-danger' : undefined}>没打好 {count(metrics?.ai_failed)} 个</span>
+        <span>按岗位数算，重试的不重复算；接着打的时候显示这轮还剩多少。</span>
       </div>
     </section>
   )

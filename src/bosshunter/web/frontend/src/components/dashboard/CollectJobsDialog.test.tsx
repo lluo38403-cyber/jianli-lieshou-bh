@@ -19,7 +19,7 @@ it('submits the city policy and only enables an eight hour session when explicit
   await screen.findByDisplayValue('AI')
   expect(screen.getByRole('switch', { name: '持续采集' }).getAttribute('aria-checked')).toBe('false')
   fireEvent.click(screen.getByRole('switch', { name: '持续采集' }))
-  expect((screen.getByLabelText('会话最长时长（小时）') as HTMLInputElement).value).toBe('8')
+  expect((screen.getByLabelText('一次最多找几小时') as HTMLInputElement).value).toBe('8')
   fireEvent.click(screen.getByRole('button', { name: '重新采集' }))
   await waitFor(() => expect(start).toHaveBeenCalledTimes(1))
   expect(start.mock.calls[0][0]).toMatchObject({
@@ -34,7 +34,7 @@ it('full workflow hides continuous collection and submits the existing scoring b
   render(<CollectJobsDialog open mode="full" activeTask={null} onClose={vi.fn()} onStart={start} />)
   await screen.findByDisplayValue('AI')
   expect(screen.queryByRole('switch', { name: '持续采集' })).toBeNull()
-  fireEvent.click(screen.getByRole('button', { name: '开始全流程' }))
+  fireEvent.click(screen.getByRole('button', { name: '开始自动找工作' }))
   await waitFor(() => expect(start).toHaveBeenCalledTimes(1))
   expect(start.mock.calls[0][0].auto_score).toBe(true)
   expect(start.mock.calls[0][0].continuous_collection).toBeUndefined()

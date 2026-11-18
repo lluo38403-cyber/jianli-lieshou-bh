@@ -1,15 +1,15 @@
 import type { WorkbenchTask } from '@/hooks/useDashboard'
 
 const GREET_PAUSE_REASON_LABELS: Record<string, string> = {
-  auth: 'AI 鉴权失败（服务未授权或当前模型没有访问权限）',
-  token_quota: 'AI 额度或账户余额不足',
-  rate_limit: 'AI 触发限流（请求或 Token 频率限制）',
-  context_limit: '请求超过模型上下文限制',
-  output_limit: '输出 Token 上限设置不被模型支持',
-  network: 'AI 网络连接失败或超时',
-  request_failed: 'AI 服务请求失败',
-  output_truncated: 'AI 回复被截断（输出 Token 上限）',
-  empty_response: 'AI 未返回有效内容',
+  auth: '服务没通过验证',
+  token_quota: '额度或余额不够了',
+  rate_limit: '打分太频繁，先缓一缓',
+  context_limit: '内容太长，装不下了',
+  output_limit: '写的内容超出了限制',
+  network: '网络连不上或超时了',
+  request_failed: '打分服务这次没接通',
+  output_truncated: '写到一半被截断了',
+  empty_response: '这次没拿到打分结果',
 }
 
 export function greetPauseReasonLabel(reason: unknown): string {
@@ -23,11 +23,11 @@ export function greetPauseReasonLabel(reason: unknown): string {
 export function describeGreetTaskOutcome(task: WorkbenchTask): string {
   const metrics = task.metrics ?? {}
   const conflictCount = task.progress?.conflict_ids?.length ?? 0
-  const base = `招呼语生成完成：新生成 ${metrics.greet_generated ?? 0}，保留现有 ${metrics.greet_preserved ?? 0}，失败 ${metrics.greet_failed ?? 0}`
-    + (conflictCount ? `；${conflictCount} 个岗位状态已变更未保存` : '')
+  const base = `打招呼写完了：新写了 ${metrics.greet_generated ?? 0} 条，沿用以前的 ${metrics.greet_preserved ?? 0} 条，失败 ${metrics.greet_failed ?? 0} 条`
+    + (conflictCount ? `；${conflictCount} 个岗位状态变了，没保存` : '')
   if (metrics.greet_paused) {
-    const label = greetPauseReasonLabel(metrics.greet_pause_reason) || 'AI 服务异常'
-    return `${base}；因${label}提前暂停，已生成内容已保存，剩余岗位下次可继续`
+    const label = greetPauseReasonLabel(metrics.greet_pause_reason) || '打分服务出了点问题'
+    return `${base}；因为${label}提前停下了，写好的都留着，剩下的下次继续`
   }
   return base
 }

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 export type ThemeMode = 'light' | 'dark' | 'system'
 
 /** 与 index.html 中防闪烁脚本使用的 key 保持一致 */
-export const THEME_STORAGE_KEY = 'bosshunter-theme'
+export const THEME_STORAGE_KEY = 'jianli-lieshou-theme'
 
 const MEDIA_QUERY = '(prefers-color-scheme: dark)'
 

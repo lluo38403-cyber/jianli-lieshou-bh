@@ -205,7 +205,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
         needsHistory ? fetch('/api/history?limit=50&include_unresolved=1&include_monitor_conversations=1', fetchOptions) : Promise.resolve(null),
       ])
       if ((workbenchRes && !workbenchRes.ok) || (historyRes && !historyRes.ok)) {
-        throw new Error('读取控制台数据失败')
+        throw new Error('没读到数据')
       }
       const [workbenchData, historyData] = await Promise.all([
         workbenchRes ? workbenchRes.json() : Promise.resolve(undefined),
@@ -222,7 +222,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     } catch (err) {
       if (refreshingRef.current !== controller) return
       console.error('Failed to fetch dashboard data:', err)
-      setError(controller.signal.aborted ? '进度刷新超时，将自动重试。' : '无法读取本地控制台数据，将自动重试。')
+      setError(controller.signal.aborted ? '刷新超时了，会自动再试。' : '数据没读出来，会自动再试。')
     } finally {
       window.clearTimeout(timeout)
       if (refreshingRef.current === controller) {
@@ -241,7 +241,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      throw new Error(data.error || '修改岗位状态失败')
+      throw new Error(data.error || '状态没改成')
     }
     await fetchAll()
   }, [fetchAll])
@@ -255,7 +255,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
       const details = Array.isArray(data.messages) ? data.messages.map(String).filter(Boolean).join('；') : ''
-      throw new Error([data.error || '启动失败', details].filter(Boolean).join('：'))
+      throw new Error([data.error || '没启动', details].filter(Boolean).join('：'))
     }
     const task = await res.json() as WorkbenchTask
     setWorkbench(prev => ({ ...prev, task, last_task: task }))
@@ -267,7 +267,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     const res = await fetch(`/api/workbench/task/${taskId}/stop`, { method: 'POST' })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      throw new Error(data.error || '停止失败')
+      throw new Error(data.error || '没停下来')
     }
     const task = await res.json() as WorkbenchTask
     setWorkbench(prev => ({ ...prev, task, last_task: task }))

@@ -26,8 +26,8 @@ afterEach(() => {
 it('walks from the highlighted config entry to the real form controls', async () => {
   render(
     <MemoryRouter initialEntries={['/']}>
-      <Link to="/" data-tour="nav-workbench">工作台</Link>
-      <Link to="/config" data-tour="nav-config">配置</Link>
+      <Link to="/" data-tour="nav-workbench">首页</Link>
+      <Link to="/config" data-tour="nav-config">我的设置</Link>
       <Routes>
         <Route path="/" element={<>
           <a data-tour="chrome-guide" href="/chrome-help">连接 Chrome</a>
@@ -44,25 +44,25 @@ it('walks from the highlighted config entry to the real form controls', async ()
     </MemoryRouter>,
   )
 
-  act(() => window.dispatchEvent(new Event('bosshunter:start-onboarding')))
-  expect((await screen.findByRole('dialog', { name: '交互引导' })).textContent).toContain('点击左侧“配置”')
-  fireEvent.click(screen.getByRole('link', { name: '配置' }))
+  act(() => window.dispatchEvent(new Event('jianli-lieshou:start-onboarding')))
+  expect((await screen.findByRole('dialog', { name: '交互引导' })).textContent).toContain('点左边的“我的设置”')
+  fireEvent.click(screen.getByRole('link', { name: '我的设置' }))
   expect((await screen.findByRole('dialog', { name: '交互引导' })).textContent).toContain('上传简历')
   fireEvent.click(screen.getByRole('button', { name: '下一步' }))
-  expect(screen.getByRole('dialog', { name: '交互引导' }).textContent).toContain('搜索关键词')
+  expect(screen.getByRole('dialog', { name: '交互引导' }).textContent).toContain('填想找的岗位')
   fireEvent.click(screen.getByRole('button', { name: '下一步' }))
-  expect(screen.getByRole('dialog', { name: '交互引导' }).textContent).toContain('搜索城市')
+  expect(screen.getByRole('dialog', { name: '交互引导' }).textContent).toContain('选想去的城市')
   fireEvent.click(screen.getByRole('button', { name: '下一步' }))
   expect(screen.getByRole('dialog', { name: '交互引导' }).textContent).toContain('保存')
   expect((screen.getByRole('button', { name: '下一步' }) as HTMLButtonElement).disabled).toBe(true)
   fireEvent.click(screen.getByRole('button', { name: '保存' }))
   await waitFor(() => expect((screen.getByRole('button', { name: '下一步' }) as HTMLButtonElement).disabled).toBe(false))
   fireEvent.click(screen.getByRole('button', { name: '下一步' }))
-  expect(screen.getByRole('dialog', { name: '交互引导' }).textContent).toContain('工作台')
-  fireEvent.click(screen.getByRole('link', { name: '工作台' }))
-  expect((await screen.findByRole('dialog', { name: '交互引导' })).textContent).toContain('连接 Chrome')
+  expect(screen.getByRole('dialog', { name: '交互引导' }).textContent).toContain('首页')
+  fireEvent.click(screen.getByRole('link', { name: '首页' }))
+  expect((await screen.findByRole('dialog', { name: '交互引导' })).textContent).toContain('连上 Chrome')
   fireEvent.click(screen.getByRole('button', { name: '下一步' }))
-  expect(screen.getByRole('dialog', { name: '交互引导' }).textContent).toContain('检查准备情况')
+  expect(screen.getByRole('dialog', { name: '交互引导' }).textContent).toContain('检查能不能跑')
   fireEvent.click(screen.getByRole('button', { name: '检查准备情况' }))
   await waitFor(() => expect(screen.queryByRole('dialog', { name: '交互引导' })).toBeNull())
 })

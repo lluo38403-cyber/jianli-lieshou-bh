@@ -40,12 +40,12 @@ export function ResumeFileCard({
           <div className="truncate text-sm font-bold text-foreground">{info.filename}</div>
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
             <span>{resumeSizeLabel(info)}</span>
-            {info.uploaded_at ? <span>上传于 {info.uploaded_at}</span> : null}
-            <span className="font-bold text-success">已上传</span>
-            {info.has_original_pdf ? <span>含原 PDF</span> : null}
+            {info.uploaded_at ? <span>传于 {info.uploaded_at}</span> : null}
+            <span className="font-bold text-success">已传好</span>
+            {info.has_original_pdf ? <span>带原 PDF</span> : null}
           </div>
         </div>
-        <Button type="button" variant="ghost" size="icon" onClick={onDelete} aria-label="删除简历">
+        <Button type="button" variant="ghost" size="icon" onClick={onDelete} aria-label="删掉这份简历">
           <Trash2 className="h-4 w-4 text-danger" />
         </Button>
       </div>

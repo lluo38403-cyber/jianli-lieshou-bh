@@ -16,11 +16,11 @@ function buildTask(overrides: Partial<WorkbenchTask>): WorkbenchTask {
 
 describe('greetPauseReasonLabel', () => {
   it('maps known pause reason kinds to friendly labels', () => {
-    expect(greetPauseReasonLabel('AI Token 额度或账户余额不足 (token_quota, status=402)')).toBe('AI 额度或账户余额不足')
-    expect(greetPauseReasonLabel('AI 服务鉴权失败：服务未授权或当前模型没有访问权限 (auth, status=401)')).toBe('AI 鉴权失败（服务未授权或当前模型没有访问权限）')
-    expect(greetPauseReasonLabel('AI 服务触发请求或 Token 频率限制 (rate_limit, status=429)')).toBe('AI 触发限流（请求或 Token 频率限制）')
-    expect(greetPauseReasonLabel('AI 服务连接失败或超时 (network)')).toBe('AI 网络连接失败或超时')
-    expect(greetPauseReasonLabel('请求内容超过当前模型的上下文限制 (context_limit)')).toBe('请求超过模型上下文限制')
+    expect(greetPauseReasonLabel('AI Token 额度或账户余额不足 (token_quota, status=402)')).toBe('额度或余额不够了')
+    expect(greetPauseReasonLabel('AI 服务鉴权失败：服务未授权或当前模型没有访问权限 (auth, status=401)')).toBe('服务没通过验证')
+    expect(greetPauseReasonLabel('AI 服务触发请求或 Token 频率限制 (rate_limit, status=429)')).toBe('打分太频繁，先缓一缓')
+    expect(greetPauseReasonLabel('AI 服务连接失败或超时 (network)')).toBe('网络连不上或超时了')
+    expect(greetPauseReasonLabel('请求内容超过当前模型的上下文限制 (context_limit)')).toBe('内容太长，装不下了')
   })
 
   it('falls back to the raw reason for unknown kinds', () => {
@@ -40,7 +40,7 @@ describe('describeGreetTaskOutcome', () => {
     const task = buildTask({
       metrics: { greet_generated: 5, greet_preserved: 2, greet_failed: 1 },
     })
-    expect(describeGreetTaskOutcome(task)).toBe('招呼语生成完成：新生成 5，保留现有 2，失败 1')
+    expect(describeGreetTaskOutcome(task)).toBe('打招呼写完了：新写了 5 条，沿用以前的 2 条，失败 1 条')
   })
 
   it('appends conflict count when jobs changed state', () => {
@@ -48,7 +48,7 @@ describe('describeGreetTaskOutcome', () => {
       metrics: { greet_generated: 3, greet_preserved: 0, greet_failed: 0 },
       progress: { conflict_ids: ['job-1', 'job-2'] },
     })
-    expect(describeGreetTaskOutcome(task)).toBe('招呼语生成完成：新生成 3，保留现有 0，失败 0；2 个岗位状态已变更未保存')
+    expect(describeGreetTaskOutcome(task)).toBe('打招呼写完了：新写了 3 条，沿用以前的 0 条，失败 0 条；2 个岗位状态变了，没保存')
   })
 
   it('explains the pause reason for partial success', () => {
@@ -62,7 +62,7 @@ describe('describeGreetTaskOutcome', () => {
       },
     })
     expect(describeGreetTaskOutcome(task)).toBe(
-      '招呼语生成完成：新生成 3，保留现有 0，失败 0；因AI 额度或账户余额不足提前暂停，已生成内容已保存，剩余岗位下次可继续'
+      '打招呼写完了：新写了 3 条，沿用以前的 0 条，失败 0 条；因为额度或余额不够了提前停下了，写好的都留着，剩下的下次继续'
     )
   })
 
@@ -71,7 +71,7 @@ describe('describeGreetTaskOutcome', () => {
       metrics: { greet_generated: 1, greet_preserved: 0, greet_failed: 0, greet_paused: 1 },
     })
     expect(describeGreetTaskOutcome(task)).toBe(
-      '招呼语生成完成：新生成 1，保留现有 0，失败 0；因AI 服务异常提前暂停，已生成内容已保存，剩余岗位下次可继续'
+      '打招呼写完了：新写了 1 条，沿用以前的 0 条，失败 0 条；因为打分服务出了点问题提前停下了，写好的都留着，剩下的下次继续'
     )
   })
 })

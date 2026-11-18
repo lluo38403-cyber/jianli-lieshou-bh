@@ -7,16 +7,16 @@ interface RecentActivityProps {
 }
 
 const ACTION_LABELS: Record<string, string> = {
-  scrape: '采集',
-  scored: '评分',
-  sent: '发送',
-  manual_sent: '手动已发送',
-  replied: '回复',
-  hr_reply_detected: 'HR 消息',
-  auto_replied: '自动回复',
-  error: '错误',
-  approved: '确认',
-  filtered: '过滤',
+  scrape: '找到的',
+  scored: '打分',
+  sent: '投出去',
+  manual_sent: '你手动投的',
+  replied: '回了消息',
+  hr_reply_detected: 'HR 回消息了',
+  auto_replied: '自动回了',
+  error: '出问题了',
+  approved: '确认了',
+  filtered: '筛掉的',
   resume_sent: '简历',
 }
 
@@ -31,10 +31,10 @@ export function RecentActivity({ data }: RecentActivityProps) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle className="font-black text-foreground">最近活动</CardTitle>
+          <CardTitle className="font-black text-foreground">最近干了啥</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-muted">暂无活动记录</p>
+          <p className="text-sm text-muted">最近还没动静</p>
         </CardContent>
       </Card>
     )

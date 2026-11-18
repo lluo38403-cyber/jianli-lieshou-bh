@@ -10,10 +10,10 @@ export function TopCompanies({ data }: TopCompaniesProps) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle className="font-black text-foreground">高分公司 TOP5</CardTitle>
+          <CardTitle className="font-black text-foreground">分数最高的 5 家公司</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-muted">暂无数据，完成岗位采集和 AI 评分后显示</p>
+          <p className="text-sm text-muted">还没有数据，找完岗位、打完分就有了</p>
         </CardContent>
       </Card>
     )
@@ -35,7 +35,7 @@ export function TopCompanies({ data }: TopCompaniesProps) {
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-sm font-bold text-foreground truncate max-w-[140px]">{company.company}</span>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted">{company.job_count} 岗</span>
+                    <span className="text-xs text-muted">{company.job_count} 个岗位</span>
                     <span className="text-xs font-mono font-black text-primary">{company.avg_score}</span>
                   </div>
                 </div>

@@ -90,8 +90,8 @@ export function useConfig() {
       const data = await res.json()
       if (data.success) {
         await fetchConfig()
-        window.dispatchEvent(new Event('bosshunter-config-saved'))
-        setMessage({ type: 'success', text: '配置已保存' })
+        window.dispatchEvent(new Event('jianli-lieshou-config-saved'))
+        setMessage({ type: 'success', text: '设置已经保存了' })
         setDirty(false)
       } else {
         setMessage({ type: 'error', text: data.error || '保存失败' })

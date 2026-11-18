@@ -125,7 +125,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
     if (mode === 'collect') {
       fetch('/api/collection/runs?limit=100', { cache: 'no-store' })
         .then(response => {
-          if (!response.ok) throw new Error('读取未完成任务失败')
+          if (!response.ok) throw new Error('上次没做完的任务没读出来')
           return response.json()
         })
         .then((runs: ResumableRun[]) => {
@@ -135,7 +135,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
           setResumeRunId(available[0]?.id || '')
         })
         .catch(() => {
-          if (!cancelled) setError('读取未完成任务失败，可关闭窗口后重试。')
+          if (!cancelled) setError('上次没做完的任务没读出来，关掉窗口再试试。')
         })
     }
     fetch('/api/config', { cache: 'no-store' })
@@ -162,37 +162,37 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         setCityPolicy({ enabled: true, warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5, ...(config?.platforms?.boss?.search?.city_yield_policy || config?.search?.city_yield_policy || {}) })
       })
       .catch(() => {
-        if (!cancelled) setError('读取采集默认配置失败，可直接填写后启动。')
+        if (!cancelled) setError('默认设置没读出来，直接填好就能开始。')
       })
     fetch('/api/cities?platform=zhilian', { cache: 'no-store' })
       .then(response => response.json())
       .then(data => {
         if (cancelled) return
         if (Array.isArray(data.cities)) setZhilianCities(data.cities)
-        if (!data.ok && !cancelled) setError(data.error || '读取内置智联城市目录失败。')
+        if (!data.ok && !cancelled) setError(data.error || '智联的城市列表没读出来。')
       })
       .catch(() => {
-        if (!cancelled) setError('读取内置智联城市目录失败，可稍后重试。')
+        if (!cancelled) setError('智联的城市列表没读出来，过会儿再试。')
       })
     fetch('/api/cities?platform=51job', { cache: 'no-store' })
       .then(response => response.json())
       .then(data => {
         if (cancelled) return
         if (Array.isArray(data.cities)) setJob51Cities(data.cities)
-        if (!data.ok) setError(data.error || '读取 51job 城市目录失败。')
+        if (!data.ok) setError(data.error || '前程无忧的城市列表没读出来。')
       })
       .catch(() => {
-        if (!cancelled) setError('读取 51job 城市目录失败，可稍后重试。')
+        if (!cancelled) setError('前程无忧的城市列表没读出来，过会儿再试。')
       })
     fetch('/api/cities?platform=liepin', { cache: 'no-store' })
       .then(response => response.json())
       .then(data => {
         if (cancelled) return
         if (Array.isArray(data.cities)) setLiepinCities(data.cities)
-        if (!data.ok) setError(data.error || '读取猎聘城市目录失败。')
+        if (!data.ok) setError(data.error || '猎聘的城市列表没读出来。')
       })
       .catch(() => {
-        if (!cancelled) setError('读取猎聘城市目录失败，可稍后重试。')
+        if (!cancelled) setError('猎聘的城市列表没读出来，过会儿再试。')
       })
     return () => { cancelled = true }
   }, [open, mode])
@@ -230,7 +230,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   const start = () => {
     if (starting) return
     if (!enabledOrder.length) {
-      setError('至少勾选一个平台。')
+      setError('至少选一个平台。')
       return
     }
     const platforms: Record<string, unknown> = {}
@@ -239,7 +239,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
       const keywords = splitValues(draft.keywords)
       const cities = splitValues(draft.cities)
       if (!keywords.length || !cities.length) {
-        setError(`${PLATFORM_LABELS[platform]} 需要至少一个关键词和城市。`)
+        setError(`${PLATFORM_LABELS[platform]} 至少填一个想找的岗位和一个城市。`)
         return
       }
       const configuredCodes = parseCityCodes(draft.cityCodes)
@@ -249,7 +249,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         : configuredCodes
       if (platform !== 'boss' && cities.some(city => !cityCodes[city])) {
         const missing = cities.filter(city => !cityCodes[city]).join('、')
-        setError(`${PLATFORM_SHORT_LABELS[platform]} 内置城市目录暂未收录：${missing}。请选择已验证城市。`)
+        setError(`${PLATFORM_SHORT_LABELS[platform]} 这些城市里面没有：${missing}。请选里面有的城市。`)
         return
       }
       platforms[platform] = {
@@ -262,7 +262,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
       }
     }
     if (continuous && (mode !== 'collect' || enabledOrder.join(',') !== 'boss')) {
-      setError('持续采集只支持单独 BOSS 采集。')
+      setError('一直找下去只支持单独找 BOSS 直聘。')
       return
     }
     void submit({ platform_order: enabledOrder, auto_score: mode === 'full' ? true : autoScore, platforms,
@@ -279,7 +279,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         onClose()
         return
       }
-      setError(result.error || '启动失败，请稍后重试。')
+      setError(result.error || '没启动，过会儿再试。')
     } catch (err) {
       setError(err instanceof Error ? err.message : '启动失败，请稍后重试。')
     } finally {
@@ -288,42 +288,42 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-label="岗位采集">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-label="找新岗位">
       <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-3xl border border-card-border bg-card p-6 shadow-2xl">
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="text-xs font-black tracking-[0.18em] text-primary">COLLECT JOBS</div>
-            <h2 className="mt-1 text-2xl font-black">{mode === 'full' ? '全流程采集设置' : '岗位采集'}</h2>
-            <p className="mt-1 text-sm leading-6 text-muted">平台会按队列严格串行执行；每个平台只设置最大页数和排序。</p>
+            <h2 className="mt-1 text-2xl font-black">{mode === 'full' ? '找新岗位的设置' : '岗位采集'}</h2>
+            <p className="mt-1 text-sm leading-6 text-muted">平台一个一个来，不会同时找；每个平台只要设翻几页、按什么排。</p>
           </div>
           <Button variant="ghost" size="sm" onClick={onClose} disabled={starting} aria-label="关闭"><X className="h-5 w-5" /></Button>
         </div>
 
         {mode === 'collect' && <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
-          <div className="text-sm font-black">继续未完成的 BOSS 采集</div>
-          <p className="mt-1 text-xs leading-5 text-muted">沿用原任务的搜索条件，从中断页恢复；已完成的组合不再重复搜索。想查看最新岗位，请使用下方“重新采集”。</p>
+          <div className="text-sm font-black">接着上次没找完的 BOSS 继续找</div>
+          <p className="mt-1 text-xs leading-5 text-muted">还是用上次的条件，从断掉的那页接着找；找过的就不再找了。想看最新的在前的岗位，就用下面的“重新找”。</p>
           {resumableRuns.length > 0 ? <>
             <div className="mt-3 flex flex-wrap gap-2">
-              <Select aria-label="未完成的 BOSS 采集任务" value={resumeRunId} onChange={event => setResumeRunId(event.target.value)}>
+              <Select aria-label="上次没找完的 BOSS 任务" value={resumeRunId} onChange={event => setResumeRunId(event.target.value)}>
                 {resumableRuns.map(run => <option key={run.id} value={run.id}>
                   {new Date(run.created_at.replace(' ', 'T') + 'Z').toLocaleString()} · {run.options.platforms.boss.cities.join('、')} · {run.options.platforms.boss.keywords.join('、')} · 每组 {run.options.platforms.boss.max_pages} 页
                 </option>)}
               </Select>
-              <Button variant="secondary" disabled={Boolean(activeTask) || !resumeRunId || starting} onClick={() => void submit({ resume_run_id: resumeRunId })}>继续采集</Button>
+              <Button variant="secondary" disabled={Boolean(activeTask) || !resumeRunId || starting} onClick={() => void submit({ resume_run_id: resumeRunId })}>接着找</Button>
             </div>
-            <p className="mt-2 text-xs text-muted">{resumableRuns.find(run => run.id === resumeRunId)?.options.auto_score ? '原任务已开启采集后自动评分，继续采集后也会执行评分。' : '原任务未开启自动评分，继续采集后结束。'}</p>
-          </> : <p className="mt-2 text-xs text-muted">暂无可恢复任务。新版本开始的 BOSS 单平台采集会保存进度；旧版本记录需重新采集。</p>}
+            <p className="mt-2 text-xs text-muted">{resumableRuns.find(run => run.id === resumeRunId)?.options.auto_score ? '上次找完是自动打分的，接着找也会打分。' : '上次找完不打分，接着找完就结束。'}</p>
+          </> : <p className="mt-2 text-xs text-muted">现在没有能接着找的任务。新版本开始的 BOSS 单独找会保存进度，老版本的记录得重新找。</p>}
         </div>}
 
         {activeTask?.progress?.platforms && (
           <div className="mt-4 rounded-2xl border border-primary/20 bg-secondary p-4">
-            <div className="text-sm font-black text-primary">采集进行中</div>
+            <div className="text-sm font-black text-primary">正在找</div>
             <div className="mt-3 grid gap-2 md:grid-cols-2">
               {Object.entries(activeTask.progress.platforms).map(([platform, state]) => (
                 <div key={platform} className="rounded-xl border border-card-border bg-card p-3 text-sm">
-                  <div className="flex items-center justify-between font-black"><span>{PLATFORM_LABELS[platform] || platform}</span><span>新增 {state.new}</span></div>
-                  <div className="mt-1 text-xs text-muted">{state.status} · {state.city || '等待'} · {state.keyword || ''} · 第 {state.page || 0}/{state.max_pages || 0} 页</div>
-                  <div className="mt-1 text-xs text-muted">扫描 {state.seen || 0} · 重复 {state.duplicate || 0} · 过滤 {state.filtered || 0} · 解析失败 {state.parse_failed || 0} · 保存失败 {state.save_failed || 0}</div>
+                  <div className="flex items-center justify-between font-black"><span>{PLATFORM_LABELS[platform] || platform}</span><span>新找到 {state.new}</span></div>
+                  <div className="mt-1 text-xs text-muted">{state.status} · {state.city || '等一下'} · {state.keyword || ''} · 第 {state.page || 0}/{state.max_pages || 0} 页</div>
+                  <div className="mt-1 text-xs text-muted">看了 {state.seen || 0} · 重复的 {state.duplicate || 0} · 筛掉的 {state.filtered || 0} · 没看懂的 {state.parse_failed || 0} · 没存上的 {state.save_failed || 0}</div>
                   {state.message && <div className="mt-1 text-xs text-primary">{state.message}</div>}
                 </div>
               ))}
@@ -340,53 +340,53 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
               <section key={platform} className={`rounded-2xl border p-4 ${draft.enabled ? 'border-primary/30 bg-surface' : 'border-card-border bg-card opacity-70'}`}>
                 <div className="flex items-center justify-between gap-3">
                   <label className="flex items-center gap-2 text-lg font-black"><input type="checkbox" checked={draft.enabled} disabled={mode === 'full' && platform !== 'boss'} onChange={event => togglePlatform(platform, event.target.checked)} className="h-4 w-4 accent-primary" />{label}</label>
-                  {draft.enabled && <div className="text-xs font-bold text-primary">队列 {enabledOrder.indexOf(platform) + 1}</div>}
+                  {draft.enabled && <div className="text-xs font-bold text-primary">排队 {enabledOrder.indexOf(platform) + 1}</div>}
                 </div>
                 {draft.enabled && <div className="mt-4 space-y-3">
-                  <label className="block text-xs font-bold text-muted">关键词（逗号或换行分隔）<Input value={draft.keywords} onChange={event => updateDraft(platform, 'keywords', event.target.value)} placeholder="AI 产品经理, 产品运营" /></label>
-                  <label className="block text-xs font-bold text-muted">城市（逗号或换行分隔）<Input list={platform !== 'boss' ? `${platform}-city-options` : undefined} value={draft.cities} onChange={event => updateDraft(platform, 'cities', event.target.value)} placeholder={platform === '51job' ? '上海' : '北京'} /></label>
+                  <label className="block text-xs font-bold text-muted">想找的岗位（逗号或换行隔开）<Input value={draft.keywords} onChange={event => updateDraft(platform, 'keywords', event.target.value)} placeholder="产品经理, 产品运营" /></label>
+                  <label className="block text-xs font-bold text-muted">城市（逗号或换行隔开）<Input list={platform !== 'boss' ? `${platform}-city-options` : undefined} value={draft.cities} onChange={event => updateDraft(platform, 'cities', event.target.value)} placeholder={platform === '51job' ? '上海' : '北京'} /></label>
                   {platform !== 'boss' ? <>
                     <datalist id={`${platform}-city-options`}>{platformCities.map(city => <option key={city.code} value={city.name} />)}</datalist>
                     <div className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs text-muted">
-                      <div className="font-bold text-foreground">平台城市编码</div>
-                      <p className="mt-1">系统只使用已验证的{PLATFORM_SHORT_LABELS[platform]}城市编码，不会猜测。</p>
+                      <div className="font-bold text-foreground">城市编号</div>
+                      <p className="mt-1">只用里面有的{PLATFORM_SHORT_LABELS[platform]}城市编号，不会瞎猜。</p>
                       {!!splitValues(draft.cities).length && <div className="mt-2 flex flex-wrap gap-1">
                         {splitValues(draft.cities).map(city => <span key={city} className={`rounded-full px-2 py-1 ${findPlatformCity(city, platformCities) ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'}`}>
-                          {city} · {findPlatformCity(city, platformCities) ? '已自动识别' : '暂未收录'}
+                          {city} · {findPlatformCity(city, platformCities) ? '已经认出来了' : '里面没有'}
                         </span>)}
                       </div>}
                     </div>
-                  </> : <p className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs text-muted">BOSS 城市编码由系统内置匹配，无需填写。</p>}
+                  </> : <p className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs text-muted">BOSS 城市编号系统自己会配，不用你填。</p>}
                   <div className="grid grid-cols-2 gap-2">
-                    <label className="text-xs font-bold text-muted">最大页数<Input type="number" min={1} max={10} value={draft.maxPages} onChange={event => updateDraft(platform, 'maxPages', event.target.value)} /></label>
-                    <label className="text-xs font-bold text-muted">排序<Select value={draft.sort} onChange={event => updateDraft(platform, 'sort', event.target.value)}><option value="default">默认</option>{platform !== '51job' && <option value="newest">最新</option>}</Select></label>
+                    <label className="text-xs font-bold text-muted">最多翻几页<Input type="number" min={1} max={10} value={draft.maxPages} onChange={event => updateDraft(platform, 'maxPages', event.target.value)} /></label>
+                    <label className="text-xs font-bold text-muted">按什么排<Select value={draft.sort} onChange={event => updateDraft(platform, 'sort', event.target.value)}><option value="default">默认</option>{platform !== '51job' && <option value="newest">最新</option>}</Select></label>
                   </div>
                 </div>}
-                {!draft.enabled && mode === 'full' && platform !== 'boss' && <p className="mt-3 text-xs text-muted">当前只支持“岗位采集”，不进入发送全流程。</p>}
+                {!draft.enabled && mode === 'full' && platform !== 'boss' && <p className="mt-3 text-xs text-muted">现在只支持“岗位采集”，不会顺便投出去。</p>}
               </section>
             )
           })}
         </div>
 
         <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
-          <div className="flex items-center justify-between gap-3"><div><div className="text-sm font-black">执行顺序</div><p className="mt-1 text-xs text-muted">平台串行采集；智联、前程无忧和猎聘暂不执行发送或监听。</p></div><div className="flex gap-2">{enabledOrder.map((platform, index) => <div key={platform} className="flex items-center gap-1 rounded-full bg-card px-3 py-1 text-xs font-black text-primary"><span>{index + 1}. {PLATFORM_SHORT_LABELS[platform]}</span><button type="button" onClick={() => move(platform, -1)} disabled={index === 0} aria-label="上移"><ArrowUp className="h-3 w-3" /></button><button type="button" onClick={() => move(platform, 1)} disabled={index === enabledOrder.length - 1} aria-label="下移"><ArrowDown className="h-3 w-3" /></button></div>)}</div></div>
+          <div className="flex items-center justify-between gap-3"><div><div className="text-sm font-black">先找哪个</div><p className="mt-1 text-xs text-muted">平台一个一个找；智联、前程无忧、猎聘这次不投、也不盯着。</p></div><div className="flex gap-2">{enabledOrder.map((platform, index) => <div key={platform} className="flex items-center gap-1 rounded-full bg-card px-3 py-1 text-xs font-black text-primary"><span>{index + 1}. {PLATFORM_SHORT_LABELS[platform]}</span><button type="button" onClick={() => move(platform, -1)} disabled={index === 0} aria-label="往上"><ArrowUp className="h-3 w-3" /></button><button type="button" onClick={() => move(platform, 1)} disabled={index === enabledOrder.length - 1} aria-label="往下"><ArrowDown className="h-3 w-3" /></button></div>)}</div></div>
         </div>
 
         {drafts.boss.enabled && <section className="mt-4 border-t border-card-border pt-4">
-          <label className="flex items-center justify-between gap-3 text-sm font-bold">城市低产切换<Switch aria-label="城市低产切换" checked={cityPolicy.enabled} onChange={enabled => setCityPolicy(p => ({ ...p, enabled }))} /></label>
+          <label className="flex items-center justify-between gap-3 text-sm font-bold">这个城市新岗位太少就换地方<Switch aria-label="城市低产切换" checked={cityPolicy.enabled} onChange={enabled => setCityPolicy(p => ({ ...p, enabled }))} /></label>
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <label className="text-xs text-muted">首次检查（分钟）<Input type="number" min={1} max={60} value={cityPolicy.warmup_minutes} onChange={e => setCityPolicy(p => ({ ...p, warmup_minutes: Number(e.target.value) }))} /></label>
-            <label className="text-xs text-muted">检查间隔（分钟）<Input type="number" min={1} max={30} value={cityPolicy.window_minutes} onChange={e => setCityPolicy(p => ({ ...p, window_minutes: Number(e.target.value) }))} /></label>
-            <label className="text-xs text-muted">窗口最低新增<Input type="number" min={1} max={1000} value={cityPolicy.min_new_jobs} onChange={e => setCityPolicy(p => ({ ...p, min_new_jobs: Number(e.target.value) }))} /></label>
+            <label className="text-xs text-muted">过几分钟先看一次<Input type="number" min={1} max={60} value={cityPolicy.warmup_minutes} onChange={e => setCityPolicy(p => ({ ...p, warmup_minutes: Number(e.target.value) }))} /></label>
+            <label className="text-xs text-muted">隔几分钟看一次<Input type="number" min={1} max={30} value={cityPolicy.window_minutes} onChange={e => setCityPolicy(p => ({ ...p, window_minutes: Number(e.target.value) }))} /></label>
+            <label className="text-xs text-muted">一次至少新找到几个<Input type="number" min={1} max={1000} value={cityPolicy.min_new_jobs} onChange={e => setCityPolicy(p => ({ ...p, min_new_jobs: Number(e.target.value) }))} /></label>
           </div>
         </section>}
         {mode === 'collect' && <section className="mt-4 border-t border-card-border pt-4">
-          <label className="flex items-center justify-between gap-3 text-sm font-bold">持续采集<Switch aria-label="持续采集" checked={continuous} onChange={setContinuous} disabled={enabledOrder.join(',') !== 'boss'} /></label>
-          {continuous && <label className="mt-3 block text-xs text-muted">会话最长时长（小时）<Input type="number" min={1} max={24} value={durationHours} onChange={e => setDurationHours(Number(e.target.value))} /></label>}
+          <label className="flex items-center justify-between gap-3 text-sm font-bold">一直找下去<Switch aria-label="持续采集" checked={continuous} onChange={setContinuous} disabled={enabledOrder.join(',') !== 'boss'} /></label>
+          {continuous && <label className="mt-3 block text-xs text-muted">一次最多找几小时<Input type="number" min={1} max={24} value={durationHours} onChange={e => setDurationHours(Number(e.target.value))} /></label>}
         </section>}
-        <label className="mt-4 flex items-center justify-between border-t border-card-border py-4"><span className="text-sm font-black">{mode === 'full' ? '全流程自动评分' : continuous ? '会话结束后评分' : '采集后自动评分'}</span><Switch checked={mode === 'full' || autoScore} onChange={mode === 'full' ? () => undefined : setAutoScore} disabled={mode === 'full'} /></label>
+        <label className="mt-4 flex items-center justify-between border-t border-card-border py-4"><span className="text-sm font-black">{mode === 'full' ? '找完自动打分' : continuous ? '找完再打分' : '找到就打分'}</span><Switch checked={mode === 'full' || autoScore} onChange={mode === 'full' ? () => undefined : setAutoScore} disabled={mode === 'full'} /></label>
         {error && <div className="mt-3 rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
-        <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={starting}>取消</Button><Button onClick={() => void start()} disabled={Boolean(activeTask) || starting}>{starting ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" />启动中…</span> : mode === 'full' ? '开始全流程' : '重新采集'}</Button></div>
+        <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={starting}>取消</Button><Button onClick={() => void start()} disabled={Boolean(activeTask) || starting}>{starting ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" />正在开始…</span> : mode === 'full' ? '开始自动找工作' : '重新采集'}</Button></div>
       </div>
     </div>
   )

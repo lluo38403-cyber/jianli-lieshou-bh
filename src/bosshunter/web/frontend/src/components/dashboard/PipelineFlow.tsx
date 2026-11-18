@@ -1,36 +1,36 @@
 import { Search, Bot, MessageSquare, CheckCircle, Send, Eye } from 'lucide-react'
 
 const steps = [
-  { icon: Search, label: '采集', desc: '搜索岗位' },
-  { icon: Bot, label: 'AI评分', desc: '匹配打分' },
-  { icon: MessageSquare, label: '招呼语', desc: '个性生成' },
-  { icon: CheckCircle, label: '自动确认', desc: '达标即通过' },
-  { icon: Send, label: '发送', desc: '自动投递' },
-  { icon: Eye, label: '监控', desc: '跟进回复' },
+  { icon: Search, label: '找岗位', desc: '去平台搜' },
+  { icon: Bot, label: '打分', desc: '看看合不合适' },
+  { icon: MessageSquare, label: '写打招呼', desc: '按岗位现写' },
+  { icon: CheckCircle, label: '自动把关', desc: '够分就投' },
+  { icon: Send, label: '投出去', desc: '自动投递' },
+  { icon: Eye, label: '盯回复', desc: 'HR 回了就提醒' },
 ]
 
 export function PipelineFlow() {
   return (
-    <div className="rounded-2xl border border-card-border bg-surface p-6">
-      <h3 className="text-sm font-black text-foreground mb-4">BossHunter 自动求职流程</h3>
+    <div className="rounded-3xl border border-card-border bg-surface p-6 shadow-[0_2px_16px_-6px_hsl(var(--primary)/0.12)]">
+      <h3 className="text-sm font-black text-foreground mb-4">从找岗到拿到回复，一共 6 步</h3>
       <div className="grid grid-cols-3 gap-x-3 gap-y-5 lg:grid-cols-6">
         {steps.map((step, i) => (
-          <div key={step.label} className="relative min-w-0">
+          <div key={step.label} className="relative min-w-0 animate-pop" style={{ animationDelay: `${i * 90}ms` } as React.CSSProperties}>
             <div className="flex flex-col items-center">
-              <div className="w-12 h-12 rounded-xl bg-card border border-card-border flex items-center justify-center mb-2 hover:border-primary/50 hover:shadow-md transition-all shadow-sm">
-                <step.icon className="w-5 h-5 text-primary" />
+              <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-2xl border border-card-border bg-card shadow-sm transition-all duration-200 hover:-translate-y-1 hover:border-primary/60 hover:shadow-lg hover:shadow-primary/20">
+                <step.icon className="h-5 w-5 text-primary" />
               </div>
               <span className="text-xs font-black text-foreground">{step.label}</span>
-              <span className="text-[10px] text-muted mt-0.5">{step.desc}</span>
+              <span className="mt-0.5 text-[10px] text-muted">{step.desc}</span>
             </div>
             {i < steps.length - 1 && (
-              <div className="absolute left-[calc(50%+28px)] right-[calc(-50%+16px)] top-6 hidden h-px bg-card-border lg:block" />
+              <div className="flow-line absolute left-[calc(50%+28px)] right-[calc(-50%+16px)] top-6 hidden h-0.5 lg:block" />
             )}
           </div>
         ))}
       </div>
-      <p className="text-xs text-muted mt-4">
-        可从上方选择运行全流程、单独采集或单独监测；达标岗位自动投递，无需人工确认。
+      <p className="mt-4 text-xs text-muted">
+        点上面“开始自动找工作”，够分的岗位会自动投出去，不用你一个个点。
       </p>
     </div>
   )
