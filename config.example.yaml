@@ -112,7 +112,7 @@ ai:
   # AI 走云端中转，服务商 Key 不再进包：exe 只调中转，不带任何 Key。
   # relay_token 只挡中转滥用、不是服务商 Key，丢了可在服务端轮换。
   relay_url: "http://43.139.24.90:8687"
-  relay_token: "384a1c74a0def85236285c99bf6e0477"
+  relay_token: "d2118d4f9923e2eee55928cce5a44c4f"
   thinking: "auto"               # auto / disabled / enabled / off（切回直连时用）
   thinking_budget: 2048           # thinking=enabled 时使用，至少 1024
   timeout_seconds: 180
