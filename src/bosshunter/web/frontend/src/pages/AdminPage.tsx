@@ -1,65 +1,32 @@
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
-import { Loader2 } from 'lucide-react'
 
-const AI_SERVICES = {
-  anthropic: {
-    label: 'Claude / Anthropic',
-    provider: 'anthropic',
-    baseUrl: '',
-    defaultModel: 'claude-sonnet-4-6',
-  },
-  deepseek: {
-    label: 'DeepSeek',
-    provider: 'openai_compatible',
-    baseUrl: 'https://api.deepseek.com',
-    defaultModel: '',
-  },
-  doubao: {
-    label: '豆包 / 火山方舟',
-    provider: 'openai_compatible',
-    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-    defaultModel: '',
-  },
-  zhipu: {
-    label: '智谱免费 (GLM-4.7-Flash)',
-    provider: 'openai_compatible',
-    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    defaultModel: 'glm-4.7-flash',
-  },
-  custom: {
-    label: '其他 OpenAI 兼容接口',
-    provider: 'openai_compatible',
-    baseUrl: '',
-    defaultModel: '',
-  },
-  local: {
-    label: '本地规则（不用 AI）',
-    provider: 'local',
-    baseUrl: '',
-    defaultModel: '',
-  },
-} as const
-
-type AiService = keyof typeof AI_SERVICES
+type RelayStatus = {
+  url?: string
+  reachable?: boolean
+  provider?: string | null
+  model?: string | null
+  ai_enabled?: boolean | null
+}
 
 type AdminAi = {
-  service?: string
-  provider?: string
-  base_url?: string
-  model?: string
+  relay?: RelayStatus
   thinking?: string
   thinking_budget?: number
   timeout_seconds?: number
+  scoring_max_tokens?: number
+  scoring_max_attempts?: number
   scoring_concurrency?: number
   scoring_second_review?: boolean
+  greeting_max_tokens?: number
+  greeting_review_max_tokens?: number
+  greeting_max_attempts?: number
+  greeting_review_threshold?: number
   greeting_style_suggestions?: boolean
   resume_tailor_enabled?: boolean
-  services?: Record<string, { api_key?: string; auth_token?: string; api_key_masked?: string; auth_token_masked?: string }>
 }
 
 type AdminProfile = {
@@ -67,8 +34,6 @@ type AdminProfile = {
   fixed_greeting?: string
   greeting_preference?: string
 }
-
-type KeyInputs = Record<string, { api_key: string; auth_token: string }>
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -94,6 +59,15 @@ function SectionCard({ title, children }: { title: string; children: React.React
   )
 }
 
+function StatusRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-card-border bg-surface px-3 py-2">
+      <span className="text-xs text-muted">{label}</span>
+      <span className="text-xs font-bold text-foreground break-all text-right">{value}</span>
+    </div>
+  )
+}
+
 export default function AdminPage() {
   const [status, setStatus] = useState<{ authorized: boolean; password_configured: boolean } | null>(null)
   const [loading, setLoading] = useState(true)
@@ -103,8 +77,6 @@ export default function AdminPage() {
 
   const [ai, setAi] = useState<AdminAi | null>(null)
   const [profile, setProfile] = useState<AdminProfile | null>(null)
-  const [keyInputs, setKeyInputs] = useState<KeyInputs>({})
-  const [modelList, setModelList] = useState<{ loading: boolean; models: string[]; message?: string; error?: boolean }>({ loading: false, models: [] })
   const [aiTest, setAiTest] = useState<{ testing: boolean; ok?: boolean; message?: string }>({ testing: false })
   const [saving, setSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -167,69 +139,16 @@ export default function AdminPage() {
     setStatus({ authorized: false, password_configured: status?.password_configured ?? true })
     setAi(null)
     setProfile(null)
-    setKeyInputs({})
   }
-
-  const aiService = (ai?.service || (ai?.provider === 'openai_compatible' ? 'custom' : 'anthropic')) as AiService
 
   const updateAi = (key: string, value: unknown) => {
     setAi(prev => prev ? { ...prev, [key]: value } : prev)
   }
 
-  const handleAiServiceChange = (service: AiService) => {
-    if (!ai || service === aiService) return
-    const preset = AI_SERVICES[service]
-    setAi({ ...ai, service, provider: preset.provider, base_url: preset.baseUrl, model: preset.defaultModel })
-    setModelList({ loading: false, models: [] })
-    setAiTest({ testing: false })
-  }
-
-  const setKeyInput = (service: string, field: 'api_key' | 'auth_token', value: string) => {
-    setKeyInputs(prev => {
-      const current = prev[service] || { api_key: '', auth_token: '' }
-      return { ...prev, [service]: { ...current, [field]: value } }
-    })
-  }
-
-  const buildServices = (): Record<string, { api_key?: string; auth_token?: string }> => {
-    const services: Record<string, { api_key?: string; auth_token?: string }> = {}
-    for (const [service, typed] of Object.entries(keyInputs)) {
-      const entry: { api_key?: string; auth_token?: string } = {}
-      if (typed.api_key.trim()) entry.api_key = typed.api_key.trim()
-      if (typed.auth_token.trim()) entry.auth_token = typed.auth_token.trim()
-      if (Object.keys(entry).length) services[service] = entry
-    }
-    return services
-  }
-
   const draftAi = (): AdminAi => {
-    // 掩码字段只用来显示，绝不发回后端；只发管理员新填的 Key。
-    const { services: _maskedServices, ...rest } = ai || {}
-    const services = buildServices()
-    return { ...rest, ...(Object.keys(services).length ? { services } : {}) }
-  }
-
-  const handleFetchModels = async () => {
-    setModelList({ loading: true, models: [] })
-    try {
-      const res = await fetch('/api/admin/config/models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ai: draftAi() }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || '获取模型列表失败')
-      if (!Array.isArray(data.models) || !data.models.every((model: unknown) => typeof model === 'string')) {
-        throw new Error('模型列表格式不正确，可手动填写模型 ID')
-      }
-      setModelList({
-        loading: false,
-        models: data.models,
-        message: data.models.length ? `已获取 ${data.models.length} 个模型，请选择或继续手动填写。` : '服务商未返回可用模型，可手动填写模型 ID。',
-      })
-    } catch (error) {
-      setModelList({ loading: false, models: [], error: true, message: error instanceof Error ? error.message : '获取模型列表失败，请重试' })
-    }
+    // 中转状态只用来显示，绝不发回后端；其余调参字段原样发回。
+    const { relay: _relay, ...rest } = ai || {}
+    return rest
   }
 
   const handleAiTest = async () => {
@@ -261,7 +180,6 @@ export default function AdminPage() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || '保存失败')
-      setKeyInputs({})
       await loadAdminConfig()
       setSaveMessage({ type: 'success', text: '已保存，全局生效，用户直接体验结果。' })
     } catch (error) {
@@ -339,8 +257,8 @@ export default function AdminPage() {
     )
   }
 
-  const maskedKey = ai.services?.[aiService]?.api_key_masked || ''
-  const maskedToken = ai.services?.[aiService]?.auth_token_masked || ''
+  const relay = ai.relay || {}
+  const relayAiState = relay.ai_enabled === true ? '开启' : relay.ai_enabled === false ? '关闭' : '未知'
 
   return (
     <div className="mx-auto h-full max-w-3xl space-y-4 overflow-y-auto pr-4">
@@ -360,144 +278,20 @@ export default function AdminPage() {
         </div>
       </div>
 
-      <SectionCard title="AI 服务">
+      <SectionCard title="云端中转">
         <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
-          不用配也能跑：未配置 AI 服务时评分走本地规则，招呼语用固定模板。HR 自动回复和按岗位定制简历需要 AI 服务。
+          AI 走云端中转：Key 与模型由云端统一管理，安装包里不再带 Key。中转连不上时评分走本地规则，招呼语用固定模板，不会卡住。
         </p>
-        <Field label="提供商">
-          <Select aria-label="提供商" value={aiService} onChange={e => handleAiServiceChange(e.target.value as AiService)}>
-            {Object.entries(AI_SERVICES).map(([value, preset]) => (
-              <option key={value} value={value}>{preset.label}</option>
-            ))}
-          </Select>
-          <p className="mt-1 text-xs text-muted">
-            {aiService === 'local'
-              ? '不用联网等 AI：评分走本地规则，招呼语用固定模板。'
-              : '切换提供商会自动填好协议、服务地址和默认模型。'}
-          </p>
-        </Field>
-        {aiService === 'zhipu' && (
-          <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
-            智谱免费（GLM-4.7-Flash）：模型长期免费；去 open.bigmodel.cn 注册拿 Key，新用户另有约 2000 万 token 额度可用更强模型；免费政策可能变，以官网为准；免费模型限并发，一天最多 120 次、一个一个调的量够用；限流或调用失败时自动回落本地规则，不会卡住。
-          </p>
-        )}
-        {aiService === 'local' && (
-          <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
-            本地规则：不调用任何 AI。评分按关键词、薪资、城市、学历这些规则算，招呼语用固定模板，定制简历发原简历。不用联网等 AI。
-          </p>
-        )}
-        {aiService !== 'local' && (
-          <>
-            <Field label="API Key">
-              <Input
-                type="password"
-                aria-label="API Key"
-                value={keyInputs[aiService]?.api_key || ''}
-                onChange={e => setKeyInput(aiService, 'api_key', e.target.value)}
-                placeholder={maskedKey ? `已保存：${maskedKey}（留空保持不变）` : '填写该服务商的 API Key'}
-              />
-              <p className="mt-1 text-xs text-muted">
-                Key 只存在后端配置文件里，不会完整显示在任何界面；留空表示沿用已保存的。注意：Key 随安装包分发，有心人能从程序里翻出来，只用免费模型，被刷就换 Key。
-              </p>
-            </Field>
-            {aiService === 'anthropic' && (
-              <Field label="Auth Token（可选）">
-                <Input
-                  type="password"
-                  aria-label="Auth Token"
-                  value={keyInputs[aiService]?.auth_token || ''}
-                  onChange={e => setKeyInput(aiService, 'auth_token', e.target.value)}
-                  placeholder={maskedToken ? `已保存：${maskedToken}（留空保持不变）` : '也可通过 Auth Token 授权'}
-                />
-              </Field>
-            )}
-            <Field label="模型名称">
-              <div className="flex flex-wrap gap-2">
-                <Input
-                  aria-label="模型名称"
-                  className="min-w-0 flex-1 basis-40"
-                  value={ai.model || ''}
-                  onChange={e => updateAi('model', e.target.value)}
-                  placeholder="填写服务商当前支持的模型 ID"
-                />
-                <Button type="button" variant="secondary" disabled={modelList.loading} onClick={handleFetchModels}>
-                  {modelList.loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-                  {modelList.loading ? '获取中…' : '获取模型列表'}
-                </Button>
-              </div>
-              {modelList.models.length > 0 && (
-                <Select
-                  aria-label="可用模型"
-                  className="mt-2 pr-8 appearance-auto"
-                  value={modelList.models.includes(ai.model || '') ? (ai.model || '') : ''}
-                  onChange={e => updateAi('model', e.target.value)}
-                >
-                  <option value="" disabled>请选择模型</option>
-                  {modelList.models.map(model => <option key={model} value={model}>{model}</option>)}
-                </Select>
-              )}
-              <p role="status" className={`mt-1 text-xs ${modelList.error ? 'text-danger' : 'text-muted'}`}>
-                {modelList.message || '按当前服务商与已保存的 Key 获取，无需先保存配置。'}
-              </p>
-            </Field>
-            <Field label="Base URL">
-              <Input
-                value={ai.base_url || ''}
-                onChange={e => updateAi('base_url', e.target.value)}
-                placeholder="留空使用默认"
-              />
-              <p className="mt-1 text-xs text-muted">填写后优先生效；留空时使用服务商默认地址。</p>
-            </Field>
-          </>
-        )}
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Thinking 模式">
-            <Select value={ai.thinking || 'auto'} onChange={e => updateAi('thinking', e.target.value)}>
-              <option value="auto">自动兼容（推荐）</option>
-              <option value="disabled">强制关闭</option>
-              <option value="enabled">强制开启</option>
-              <option value="off">不发送参数</option>
-            </Select>
-            <p className="mt-1 text-xs text-muted">自动模式优先获取纯文本；接口不支持 thinking 参数时会安全回退。</p>
-          </Field>
-          <Field label="Thinking 预算 Token">
-            <Input
-              type="number"
-              value={ai.thinking_budget || 2048}
-              onChange={e => updateAi('thinking_budget', Number(e.target.value))}
-              min={1024}
-              max={32768}
-              disabled={(ai.thinking || 'auto') !== 'enabled'}
-            />
-          </Field>
-        </div>
-        <Field label="AI 请求超时 (秒)">
-          <Input
-            type="number"
-            value={ai.timeout_seconds || 180}
-            onChange={e => updateAi('timeout_seconds', Number(e.target.value))}
-            min={5}
-            max={600}
-          />
-        </Field>
-        <Field label="AI 评分并发数">
-          <Select value={String(ai.scoring_concurrency || 1)} onChange={e => updateAi('scoring_concurrency', Number(e.target.value))}>
-            {[1, 2, 3].map(value => <option key={value} value={value}>{value}</option>)}
-          </Select>
-          <p className="mt-1 text-xs text-muted">默认 1；提高并发会增加 API 限流风险。</p>
-        </Field>
-        <div className="flex items-center justify-between rounded-lg border border-card-border bg-surface p-3">
-          <div>
-            <label className="text-xs font-bold text-foreground">临界评分二次复核</label>
-            <p className="mt-1 text-xs text-muted">默认关闭；开启后会增加 AI 调用次数。</p>
-          </div>
-          <Switch checked={ai.scoring_second_review ?? false} onChange={v => updateAi('scoring_second_review', v)} />
-        </div>
+        <StatusRow label="中转地址" value={relay.url || '未配置'} />
+        <StatusRow label="中转状态" value={relay.reachable ? '连接正常' : '连接失败'} />
+        <StatusRow label="服务端服务商" value={relay.provider || '未知'} />
+        <StatusRow label="服务端模型" value={relay.model || '未知'} />
+        <StatusRow label="服务端 AI 开关" value={relayAiState} />
         <div className="rounded-2xl border border-card-border bg-surface p-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-sm font-black text-foreground">AI 连接检测</div>
-              <p className="mt-1 text-xs text-muted">不会消耗对话 Token；检测已保存的 Key、Base URL 和服务可用性。</p>
+              <p className="mt-1 text-xs text-muted">不会消耗对话 Token；只检测中转健康接口。</p>
             </div>
             <Button variant="secondary" size="sm" onClick={handleAiTest} disabled={aiTest.testing}>
               {aiTest.testing ? '检测中...' : '测试连接'}

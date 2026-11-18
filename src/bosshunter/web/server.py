@@ -33,14 +33,11 @@ from bosshunter.agent_api import (
 	validate_agent_evaluations,
 )
 from bosshunter import __version__
-from bosshunter.ai.credentials import AIRequestError, get_ai_api_key, list_ai_models
+from bosshunter.ai.credentials import get_ai_api_key, get_relay_health, get_relay_url
 from bosshunter.ai.scorer import sanitize_score_trace
 from bosshunter.cities import CityRefreshError, get_city_map, load_city_snapshot, refresh_city_cache
 from bosshunter.config import (
 	ADMIN_PASSWORD_MIN_LENGTH,
-	AI_CREDENTIAL_FIELDS,
-	AI_SERVICE_PRESETS,
-	SUPPORTED_AI_SERVICES,
 	get_admin_password_hash,
 	hash_admin_password,
 	load_config,
@@ -272,14 +269,6 @@ def _serialize_job(item, *, config=None):
 		record["greeting_style_issues"] = []
 	return record
 
-
-def _mask_secret(value: str) -> str:
-	"""Return a display-safe marker for a stored secret (admin panel only)."""
-	if not value:
-		return ""
-	if len(value) > 8:
-		return value[:4] + "***" + value[-4:]
-	return "***"
 
 
 # 用户端看不到、也改不了的字段：整个 ai 区 + 招呼语相关的 profile 字段
@@ -1508,8 +1497,8 @@ def api_ai_diagnostics():
 
 
 # ─── Admin Panel API ────────────────────────────────────────────
-# 管理员面板（/admin）：密码保护，由 lucky 掌控。AI 配置（提供方、
-# 模型、凭证、招呼语、改简历开关）只在这里改，改完全局生效。
+# 管理员面板（/admin）：密码保护，由 lucky 掌控。AI 走云端中转，
+# Key 与模型由云端统一管理，面板只显示中转状态、改招呼语与改简历开关。
 # 会话令牌只放内存：服务重启后失效，需要重新登录。
 
 _ADMIN_SESSION_COOKIE = "bh_admin_session"
@@ -1588,28 +1577,47 @@ def api_admin_logout():
 	return _json_response({"ok": True})
 
 
+# 管理员面板返回的 AI 字段：只保留与 Key/模型无关的调参项；
+# 提供方、模型、Base URL、凭证一律不在这里出现——它们由云端统一管理。
+_ADMIN_AI_VIEW_FIELDS = (
+	"thinking",
+	"thinking_budget",
+	"timeout_seconds",
+	"scoring_max_tokens",
+	"scoring_max_attempts",
+	"scoring_concurrency",
+	"scoring_second_review",
+	"greeting_max_tokens",
+	"greeting_review_max_tokens",
+	"greeting_max_attempts",
+	"greeting_review_threshold",
+	"greeting_style_suggestions",
+	"resume_tailor_enabled",
+)
+
+
 def _admin_ai_view(config: dict) -> dict:
-	"""AI config for the admin panel: keys are masked, never raw values."""
-	ai_cfg = deepcopy(config.get("ai", {})) if isinstance(config.get("ai"), dict) else {}
-	services_out: dict[str, dict[str, str]] = {}
-	services = ai_cfg.pop("services", None)
-	if isinstance(services, dict):
-		for svc, entry in services.items():
-			if not isinstance(entry, dict):
-				continue
-			masked: dict[str, str] = {}
-			for field in AI_CREDENTIAL_FIELDS:
-				if entry.get(field):
-					masked[f"{field}_masked"] = _mask_secret(str(entry[field]))
-			if masked:
-				services_out[svc] = masked
-	for field in AI_CREDENTIAL_FIELDS:
-		if ai_cfg.get(field):
-			ai_cfg[f"{field}_masked"] = _mask_secret(str(ai_cfg[field]))
-			ai_cfg.pop(field, None)
-	if services_out:
-		ai_cfg["services"] = services_out
-	return ai_cfg
+	"""AI config for the admin panel: relay status only, never credentials.
+
+	返回中转状态（地址、可达性、服务端服务商/模型、AI 开关）+ 非凭证的
+	调参字段；不含 service/provider/model/base_url/api_key/auth_token/
+	services。健康探测失败时 reachable 为 False，绝不抛异常。
+	"""
+	ai_cfg = config.get("ai", {}) if isinstance(config.get("ai"), dict) else {}
+	view = {
+		field: deepcopy(ai_cfg[field])
+		for field in _ADMIN_AI_VIEW_FIELDS
+		if field in ai_cfg
+	}
+	health = get_relay_health(config, timeout=5)
+	view["relay"] = {
+		"url": get_relay_url(config),
+		"reachable": bool(health and health.get("ok")),
+		"provider": (health or {}).get("provider"),
+		"model": (health or {}).get("model"),
+		"ai_enabled": (health or {}).get("ai_enabled"),
+	}
+	return view
 
 
 @app.route("/api/admin/config")
@@ -1627,58 +1635,18 @@ def api_admin_config_get():
 def _merge_admin_ai(posted_ai: dict, saved_ai: dict) -> dict:
 	"""Merge admin-submitted AI settings over the saved config.
 
-	提供方/模型等明文直接覆盖；凭证字段只认新值（非空且与掩码不同），
-	没提交或留空的沿用已保存的。输入非法时抛 ValueError。
+	AI 一律走云端中转：service/provider 强制写 relay；提交的
+	service/provider/model/base_url/api_key/auth_token/services/
+	clear_credentials 一律忽略，永远不写。其余调参字段与校验保留。
 	"""
 	new_ai = deepcopy(saved_ai) if isinstance(saved_ai, dict) else {}
-	service = posted_ai.get("service") or new_ai.get("service") or "anthropic"
-	if service not in AI_SERVICE_PRESETS:
-		raise ValueError("不支持的 AI 服务商")
-	new_ai["service"] = service
-	new_ai["provider"] = AI_SERVICE_PRESETS[service]["provider"]
-	# 清除已保存的凭证（管理员主动清理时用；之后再填的新 Key 仍生效）。
-	if posted_ai.get("clear_credentials"):
-		new_ai.pop("api_key", None)
-		new_ai.pop("auth_token", None)
-		new_ai.pop("services", None)
-	for field in (
-		"base_url", "model", "thinking", "thinking_budget", "timeout_seconds",
-		"scoring_max_tokens", "scoring_max_attempts", "scoring_concurrency",
-		"scoring_second_review", "greeting_max_tokens", "greeting_review_max_tokens",
-		"greeting_max_attempts", "greeting_style_suggestions", "resume_tailor_enabled",
-	):
+	new_ai["service"] = "relay"
+	new_ai["provider"] = "relay"
+	for field in _ADMIN_AI_VIEW_FIELDS:
 		if field in posted_ai:
 			new_ai[field] = posted_ai[field]
 	if new_ai.get("thinking") not in {"auto", "disabled", "enabled", "off"}:
 		raise ValueError("Thinking 模式不正确")
-	if not isinstance(new_ai.get("model", ""), str) or not isinstance(new_ai.get("base_url", ""), str):
-		raise ValueError("模型名称与 Base URL 必须是文本")
-	for field in AI_CREDENTIAL_FIELDS:
-		posted_value = posted_ai.get(field)
-		if posted_value is None or str(posted_value).strip() == "":
-			continue
-		saved_value = saved_ai.get(field) if isinstance(saved_ai, dict) else None
-		if saved_value and str(posted_value) == _mask_secret(str(saved_value)):
-			continue
-		new_ai[field] = posted_value
-	posted_services = posted_ai.get("services")
-	if isinstance(posted_services, dict):
-		saved_services = new_ai.get("services")
-		if not isinstance(saved_services, dict):
-			saved_services = {}
-			new_ai["services"] = saved_services
-		for svc, entry in posted_services.items():
-			if svc not in SUPPORTED_AI_SERVICES or not isinstance(entry, dict):
-				continue
-			saved_entry = saved_services.get(svc) if isinstance(saved_services.get(svc), dict) else {}
-			for field in AI_CREDENTIAL_FIELDS:
-				posted_value = entry.get(field)
-				if posted_value is None or str(posted_value).strip() == "":
-					continue
-				saved_value = saved_entry.get(field)
-				if saved_value and str(posted_value) == _mask_secret(str(saved_value)):
-					continue
-				saved_services.setdefault(svc, {})[field] = posted_value
 	return new_ai
 
 
@@ -1728,31 +1696,6 @@ def api_admin_config_post():
 		return _json_response({"success": True, "message": "管理员配置已保存"})
 	except Exception as e:
 		return _json_response({"error": str(e)}, 500)
-
-
-@app.route("/api/admin/config/models", method="POST")
-def api_admin_config_models():
-	"""Fetch the model list with an admin draft plus saved credentials."""
-	if (denied := _require_admin()) is not None:
-		return denied
-	try:
-		data = request.json
-		if not isinstance(data, dict) or not isinstance(data.get("ai"), dict):
-			return _json_response({"error": "请提供 AI 配置"}, 400)
-		ai = data["ai"]
-		for field in ("service", "provider", "base_url", "api_key", "auth_token", "model"):
-			if field in ai and not isinstance(ai[field], str):
-				return _json_response({"error": "AI 配置字段必须是文本"}, 400)
-		config = load_config(CONFIG_PATH)
-		try:
-			draft = _merge_admin_ai(ai, config.get("ai", {}))
-		except ValueError as exc:
-			return _json_response({"error": str(exc)}, 400)
-		return _json_response({"models": list_ai_models({"ai": draft})})
-	except AIRequestError as exc:
-		return _json_response({"error": exc.user_message}, 400)
-	except Exception:
-		return _json_response({"error": "获取模型列表失败，请检查 AI 配置后重试"}, 500)
 
 
 def _scoring_options_from_body(body: dict) -> dict:

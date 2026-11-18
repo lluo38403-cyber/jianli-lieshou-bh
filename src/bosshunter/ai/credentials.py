@@ -19,9 +19,51 @@ _THINKING_MODES = {"auto", "disabled", "enabled", "off"}
 ZHIPU_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 ZHIPU_DEFAULT_MODEL = "glm-4.7-flash"
 
+# 云端中转：Key 只存在服务端，exe 不带任何服务商 Key，只调中转
+# /api/ai/chat；中转返回 OpenAI 兼容 JSON。relay_token 只挡中转
+# 滥用、不是服务商 Key，丢了可在服务端轮换。直连服务商的代码保留，
+# 改配置（ai.service/provider）就能切回去。
+RELAY_DEFAULT_URL = "http://43.139.24.90:8687"
+
 # 失败时回落本地规则 / 固定招呼语 / 原简历、不暂停整批的服务商：
-# 智谱免费档限并发、Key 也可能没填，失败不该卡死流程。
-FALLBACK_FRIENDLY_SERVICES = frozenset({"zhipu"})
+# 智谱免费档限并发、Key 也可能没填，失败不该卡死流程；中转同理，
+# 中转一断就回落本地规则，不卡住整批。
+FALLBACK_FRIENDLY_SERVICES = frozenset({"zhipu", "relay"})
+
+
+def get_relay_url(config: dict) -> str:
+    """Return the configured relay base URL, falling back to the default."""
+    ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
+    url = str(ai_cfg.get("relay_url") or "").strip()
+    return url or RELAY_DEFAULT_URL
+
+
+def get_relay_token(config: dict) -> str | None:
+    """Return the relay App-Token, or None when it is not configured."""
+    ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
+    token = str(ai_cfg.get("relay_token") or "").strip()
+    return token or None
+
+
+def get_relay_health(config: dict, timeout: float = 8) -> dict | None:
+    """Probe the relay ``/api/ai/health`` endpoint without ever raising.
+
+    Returns the parsed health JSON (``{"ok", "provider", "model",
+    "ai_enabled"}``) on success, or None when the relay is unreachable
+    or returns an invalid response. Never exposes the token.
+    """
+    url = get_relay_url(config).rstrip("/")
+    try:
+        result = httpx.get(
+            f"{url}/api/ai/health",
+            timeout=_coerce_timeout(timeout, 8),
+            trust_env=False,
+        )
+        result.raise_for_status()
+        payload = result.json()
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _ambient_proxy_vars() -> bool:
@@ -363,8 +405,8 @@ def get_ai_api_key(config: dict) -> str | None:
     """
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
     service = get_ai_service(config)
-    if service == "local":
-        # 本地规则不调任何 AI，不用 Key。
+    if service in {"local", "relay"}:
+        # 本地规则不调任何 AI，不用 Key；中转的 Key 在服务端，本地没有。
         return None
     service_creds = get_service_credentials(config, service)
     if service == "deepseek":
@@ -403,6 +445,9 @@ def get_ai_key_source(config: dict) -> str | None:
     """Return only the credential source name, never the credential value."""
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
     service = get_ai_service(config)
+    if service == "relay":
+        # 中转的 Key 在服务端，本地只有挡滥用的 App-Token，不算服务商凭证。
+        return "云端中转"
     service_creds = get_service_credentials(config, service)
     if service_creds.get("api_key"):
         return "本地配置"
@@ -501,6 +546,9 @@ def get_ai_base_url_source(config: dict) -> str | None:
 
 def list_ai_models(config: dict) -> list[str]:
     """Fetch model IDs without sending prompts or exposing provider error bodies."""
+    if get_ai_service(config) == "relay":
+        # 模型由云端统一管理，本地没有模型列表可取。
+        raise AIRequestError("unsupported", "模型由云端统一管理")
     anthropic = get_ai_service(config) == "anthropic"
     base = (get_ai_base_url(config) or ("https://api.anthropic.com" if anthropic else "")).strip().rstrip("/")
     try:
@@ -773,6 +821,72 @@ def call_openai_compatible_text(
     raise AIRequestError("empty_response", "AI 服务没有返回文本内容，可能只返回了思考过程")
 
 
+def call_relay_text(
+    prompt: str,
+    config: dict,
+    max_tokens: int,
+    *,
+    timeout: float | None = None,
+    purpose: str | None = None,
+) -> str | None:
+    """Call the cloud relay ``POST /api/ai/chat`` and return the text reply.
+
+    No provider key is involved locally: the relay authenticates with the
+    App-Token (``X-App-Token``) and returns OpenAI-compatible JSON.
+    Returns None only when the relay is not configured (no URL/token);
+    every other failure raises AIRequestError so callers can fall back.
+    """
+    ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
+    relay_url = get_relay_url(config)
+    relay_token = get_relay_token(config)
+    if not relay_url or not relay_token:
+        return None
+
+    request_timeout = _coerce_timeout(
+        timeout if timeout is not None else ai_cfg.get("timeout_seconds", 180), 180
+    )
+    try:
+        response = httpx.post(
+            f"{relay_url.rstrip('/')}/api/ai/chat",
+            headers={"X-App-Token": relay_token, "Content-Type": "application/json"},
+            json={
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "max_tokens": max_tokens,
+            },
+            timeout=request_timeout,
+            trust_env=False,
+        )
+    except httpx.RequestError as exc:
+        raise AIRequestError("relay_unavailable", "无法连接云端中转") from exc
+    if response.status_code == 401:
+        raise AIRequestError("relay_auth", "中转鉴权失败", 401)
+    if response.status_code == 429:
+        raise AIRequestError("relay_rate_limited", "中转限流，请稍后重试", 429)
+    if response.status_code in {502, 503}:
+        raise AIRequestError("relay_upstream", "中转上游失败", response.status_code)
+    try:
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        raise normalize_ai_error(exc, response) from exc
+    if not isinstance(payload, dict):
+        raise AIRequestError("empty_response", "中转没有返回文本内容")
+    choices = payload.get("choices", [])
+    text = None
+    if choices and isinstance(choices[0], dict):
+        message = choices[0].get("message", {})
+        content = message.get("content") if isinstance(message, dict) else None
+        text = _extract_text_content(content)
+        if not text:
+            text = _extract_text_content(choices[0].get("text"))
+    if not text:
+        text = _extract_text_content(payload.get("output_text"))
+    if not text:
+        raise AIRequestError("empty_response", "中转没有返回文本内容")
+    return text
+
+
 def call_ai_text(
     prompt: str,
     config: dict,
@@ -785,11 +899,14 @@ def call_ai_text(
 
     - local: no AI at all; return None so callers use rule scoring /
       the fixed greeting / the original resume.
+    - relay: the cloud relay (no provider key in the package).
     - anything else: the existing Anthropic / OpenAI-compatible path.
     """
     service = get_ai_service(config)
     if service == "local":
         return None
+    if service == "relay":
+        return call_relay_text(prompt, config, max_tokens, timeout=timeout, purpose=purpose)
     return call_anthropic_text(prompt, config, max_tokens, timeout=timeout, purpose=purpose)
 
 

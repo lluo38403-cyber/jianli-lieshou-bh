@@ -171,7 +171,9 @@ def _load_resume(config: dict) -> str:
 
 def _call_claude(prompt: str, config: dict, max_tokens: int | None = None) -> str | None:
     """Call Claude API and return response text."""
-    if get_ai_service(config) not in {"local"} and not get_ai_api_key(config):
+    # 中转的 Key 在服务端，本地没有 Key 可查：不拦调用，让中转自己鉴权；
+    # 没配中转地址/Token 时 call_relay_text 返回 None，再走本地规则。
+    if get_ai_service(config) not in {"local", "relay"} and not get_ai_api_key(config):
         console.print("[red]未配置当前 AI 服务，改用本地规则评分[/red]")
         return None
     ai_cfg = config.get("ai", {}) if isinstance(config.get("ai"), dict) else {}

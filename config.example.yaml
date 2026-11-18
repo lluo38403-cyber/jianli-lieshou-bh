@@ -106,10 +106,14 @@ throttle:
   day_off_probability: 0.05
 
 ai:
-  provider: "anthropic"
-  service: "anthropic"           # anthropic / deepseek / doubao / zhipu / custom / local
-  model: "claude-sonnet-4-6"
-  thinking: "auto"               # auto / disabled / enabled / off
+  provider: "relay"
+  service: "relay"               # relay / anthropic / deepseek / doubao / zhipu / custom / local
+  # 模型由云端中转决定，本地不再填 model。
+  # AI 走云端中转，服务商 Key 不再进包：exe 只调中转，不带任何 Key。
+  # relay_token 只挡中转滥用、不是服务商 Key，丢了可在服务端轮换。
+  relay_url: "http://43.139.24.90:8687"
+  relay_token: "384a1c74a0def85236285c99bf6e0477"
+  thinking: "auto"               # auto / disabled / enabled / off（切回直连时用）
   thinking_budget: 2048           # thinking=enabled 时使用，至少 1024
   timeout_seconds: 180
   scoring_max_tokens: 8192
@@ -127,16 +131,11 @@ ai:
   greeting_review_threshold: 7
   greeting_style_suggestions: false  # 可选质量提醒；只检查一次，不拒绝或自动改写文案
   resume_max_pages: 3
-  # 凭证只由打包方写进配置文件，不走前端、不让用户填：
-  # 各服务商的 Key 写在下面 services 里，打包时随包发出去；
-  # 首次运行后会被挪到 exe 旁 .config.credentials.yaml（0600，不进 git）。
-  # 智谱 Key 去 open.bigmodel.cn 注册（手机号+短信验证，不用绑卡），
-  # 模型 GLM-4.7-Flash 长期免费（另有 glm-4-flash-250414 也是免费款）。
+  # 切回直连时才用下面这些：把 service/provider 改回对应服务商，
+  # Key 写进 ai.services.<服务>.api_key（首次启动后会被挪到 exe 旁
+  # .config.credentials.yaml，0600，不进 git）；模型填 model 行。
   # 风险：Key 在分发的包里，有心人能从 exe 里翻出来——只用免费模型，
   # 发现被刷就换 Key；不要把付费 Key 写进来。
-  # services:
-  #   zhipu:
-  #     api_key: "智谱 Key"
   # base_url 填写后优先生效；留空时才读取对应环境变量或使用服务商默认地址
   # （ANTHROPIC_API_KEY / DEEPSEEK_API_KEY / ARK_API_KEY / ZHIPU_API_KEY / OPENAI_API_KEY）
   # base_url: "https://api.anthropic.com"

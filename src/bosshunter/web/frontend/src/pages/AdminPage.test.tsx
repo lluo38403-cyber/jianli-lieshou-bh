@@ -9,24 +9,26 @@ afterEach(() => {
 
 function stubAdminFetch(overrides: {
   status?: { authorized: boolean; password_configured: boolean }
+  relay?: { url?: string; reachable?: boolean; provider?: string | null; model?: string | null; ai_enabled?: boolean | null }
   onAdminPost?: (body: Record<string, any>) => void
   onLogin?: (body: Record<string, any>) => void
 } = {}) {
   const status = overrides.status ?? { authorized: true, password_configured: true }
   const adminConfig = {
     ai: {
-      service: 'zhipu',
-      provider: 'openai_compatible',
-      base_url: 'https://open.bigmodel.cn/api/paas/v4',
-      model: 'glm-4.7-flash',
+      relay: overrides.relay ?? {
+        url: 'http://127.0.0.1:8687',
+        reachable: true,
+        provider: 'zhipu',
+        model: 'glm-4.7-flash',
+        ai_enabled: true,
+      },
       thinking: 'auto',
-      thinking_budget: 2048,
       timeout_seconds: 180,
       scoring_concurrency: 1,
       scoring_second_review: false,
       greeting_style_suggestions: false,
       resume_tailor_enabled: false,
-      services: { zhipu: { api_key_masked: 'sk-z***real' } },
     },
     profile: { ai_greeting_enabled: true, greeting_preference: '语气简洁' },
   }
@@ -41,7 +43,6 @@ function stubAdminFetch(overrides: {
       body = { success: true, message: '管理员配置已保存' }
     }
     else if (url === '/api/admin/config') body = adminConfig
-    else if (url === '/api/admin/config/models') body = { models: ['glm-4.7-flash', 'glm-4-flash-250414'] }
     else if (url === '/api/admin/login') {
       const parsed = JSON.parse(String(init?.body))
       overrides.onLogin?.(parsed)
@@ -49,7 +50,7 @@ function stubAdminFetch(overrides: {
       else { statusCode = 401; body = { error: '管理员密码不正确' } }
     }
     else if (url === '/api/admin/logout') body = { ok: true }
-    else if (url === '/api/diagnostics/ai') body = { ok: true, checks: [{ message: '智谱接口连接正常', detail: '仅检测模型列表接口，未发送生成请求。' }] }
+    else if (url === '/api/diagnostics/ai') body = { ok: true, checks: [{ message: '云端中转连接正常（zhipu/glm-4.7-flash）', detail: '仅检测中转健康接口，未发送生成请求。' }] }
     return new Response(JSON.stringify(body), { status: statusCode })
   })
 }
@@ -65,7 +66,7 @@ it('shows the login form when not authorized', async () => {
   vi.stubGlobal('fetch', stubAdminFetch({ status: { authorized: false, password_configured: true } }))
   render(<AdminPage />)
   expect(await screen.findByText('管理员登录')).toBeTruthy()
-  expect(screen.queryByText('提供商')).toBeNull()
+  expect(screen.queryByText('云端中转')).toBeNull()
 })
 
 it('rejects a wrong password and logs in with the right one', async () => {
@@ -78,46 +79,54 @@ it('rejects a wrong password and logs in with the right one', async () => {
   fireEvent.change(passwordInput, { target: { value: 'lucky-admin-1' } })
   fireEvent.click(screen.getByRole('button', { name: '登录' }))
   await screen.findByText('管理员面板')
-  expect((screen.getByLabelText('提供商') as HTMLSelectElement).value).toBe('zhipu')
-  expect(screen.getByPlaceholderText(/已保存：sk-z\*\*\*real/)).toBeTruthy()
+  expect(await screen.findByText('云端中转')).toBeTruthy()
+  expect(screen.getByText('http://127.0.0.1:8687')).toBeTruthy()
+  expect(screen.getByText('连接正常')).toBeTruthy()
+  expect(screen.getByText('glm-4.7-flash')).toBeTruthy()
+  expect(screen.getByText(/Key 与模型由云端统一管理/)).toBeTruthy()
+  expect(screen.queryByText('提供商')).toBeNull()
+  expect(screen.queryByText('API Key')).toBeNull()
 })
 
-it('saves AI settings and greeting fields without leaking the saved key', async () => {
+it('shows the relay as unreachable when health fails', async () => {
+  vi.stubGlobal('fetch', stubAdminFetch({
+    relay: { url: 'http://127.0.0.1:8687', reachable: false, provider: null, model: null, ai_enabled: null },
+  }))
+  render(<AdminPage />)
+  await screen.findByText('管理员面板')
+  expect(screen.getByText('连接失败')).toBeTruthy()
+  expect(screen.getAllByText('未知')).toHaveLength(3) // 服务商、模型、AI 开关均为未知
+})
+
+it('saves the resume switch and greeting fields without any provider or key', async () => {
   let posted: Record<string, any> = {}
   vi.stubGlobal('fetch', stubAdminFetch({ onAdminPost: body => { posted = body } }))
   render(<AdminPage />)
   await screen.findByText('管理员面板')
-  fireEvent.change(screen.getByLabelText('提供商'), { target: { value: 'deepseek' } })
-  fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'sk-deepseek-new' } })
+  fireEvent.click(screen.getByRole('switch', { name: '按岗位定制简历' }))
   fireEvent.click(screen.getByRole('switch', { name: 'AI 生成招呼语' }))
   const fixed = '您好，我做过品牌内容，也独立运营过账号。'
   fireEvent.change(screen.getByRole('textbox', { name: '固定招呼语' }), { target: { value: fixed } })
   fireEvent.click(screen.getByRole('button', { name: '保存' }))
   await screen.findByText('已保存，全局生效，用户直接体验结果。')
-  expect(posted.ai.service).toBe('deepseek')
-  expect(posted.ai.services.deepseek.api_key).toBe('sk-deepseek-new')
+  expect(posted.ai.resume_tailor_enabled).toBe(true)
+  expect(posted.ai.service).toBeUndefined()
+  expect(posted.ai.provider).toBeUndefined()
+  expect(posted.ai.model).toBeUndefined()
+  expect(posted.ai.api_key).toBeUndefined()
+  expect(posted.ai.services).toBeUndefined()
+  expect(posted.ai.relay).toBeUndefined()
   expect(posted.profile.ai_greeting_enabled).toBe(false)
   expect(posted.profile.fixed_greeting).toBe(fixed)
-  expect(JSON.stringify(posted)).not.toContain('sk-z***real')
-  expect(JSON.stringify(posted)).not.toContain('api_key_masked')
+  expect(JSON.stringify(posted)).not.toContain('api_key')
 })
 
-it('fetches the model list with the admin draft and picks a model', async () => {
-  vi.stubGlobal('fetch', stubAdminFetch())
-  render(<AdminPage />)
-  await screen.findByText('管理员面板')
-  fireEvent.click(screen.getByRole('button', { name: '获取模型列表' }))
-  await screen.findByText(/已获取 2 个模型/)
-  fireEvent.change(screen.getByLabelText('可用模型'), { target: { value: 'glm-4-flash-250414' } })
-  expect((screen.getByLabelText('模型名称') as HTMLInputElement).value).toBe('glm-4-flash-250414')
-})
-
-it('tests the AI connection from the admin panel', async () => {
+it('tests the relay connection from the admin panel', async () => {
   vi.stubGlobal('fetch', stubAdminFetch())
   render(<AdminPage />)
   await screen.findByText('管理员面板')
   fireEvent.click(screen.getByRole('button', { name: '测试连接' }))
-  expect(await screen.findByText(/智谱接口连接正常/)).toBeTruthy()
+  expect(await screen.findByText(/云端中转连接正常/)).toBeTruthy()
 })
 
 it('changes the admin password only when the two entries match', async () => {
@@ -142,5 +151,5 @@ it('logs out and returns to the login form', async () => {
   await screen.findByText('管理员面板')
   fireEvent.click(screen.getByRole('button', { name: '退出登录' }))
   expect(await screen.findByText('管理员登录')).toBeTruthy()
-  expect(screen.queryByText('提供商')).toBeNull()
+  expect(screen.queryByText('云端中转')).toBeNull()
 })

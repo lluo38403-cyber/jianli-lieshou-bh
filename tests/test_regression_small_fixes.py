@@ -115,7 +115,7 @@ class ConfigValidationTests(unittest.TestCase):
             config_path = Path(tmp) / "config.yaml"
             config_path.write_text("ai:\n  provider: openai\n", encoding="utf-8")
 
-            with self.assertRaisesRegex(ValueError, "Anthropic 或 OpenAI 兼容接口"):
+            with self.assertRaisesRegex(ValueError, "当前版本支持"):
                 load_config(config_path)
 
     def test_load_config_defaults_to_not_allowing_internships(self):

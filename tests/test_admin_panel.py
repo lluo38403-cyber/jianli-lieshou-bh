@@ -31,9 +31,10 @@ class AdminPanelTests(unittest.TestCase):
 			yaml.dump(
 				{
 					"ai": {
-						"service": "zhipu",
-						"model": "glm-4.7-flash",
-						"services": {"zhipu": {"api_key": "sk-zhipu-real-secret"}},
+						"service": "relay",
+						"provider": "relay",
+						"relay_url": "http://127.0.0.1:9",
+						"relay_token": "test-app-token",
 					},
 					"admin": {"password": "lucky-admin-1"},
 				},
@@ -132,60 +133,72 @@ class AdminPanelTests(unittest.TestCase):
 			status, _, body = self._request("/api/admin/config", method, payload)
 			self.assertTrue(status.startswith("401"), body)
 
-	def test_admin_config_returns_masked_keys_only(self):
+	def test_admin_config_returns_relay_status_only(self):
+		cookie = self._login()
+		health = {"ok": True, "provider": "zhipu", "model": "glm-4.7-flash", "ai_enabled": True}
+		with patch.object(server, "get_relay_health", return_value=health):
+			status, _, body = self._request("/api/admin/config", cookie=cookie)
+		self.assertTrue(status.startswith("200"), body)
+		payload = json.loads(body)
+		self.assertEqual(payload["ai"]["relay"], {
+			"url": "http://127.0.0.1:9",
+			"reachable": True,
+			"provider": "zhipu",
+			"model": "glm-4.7-flash",
+			"ai_enabled": True,
+		})
+		# 不含提供方/模型/凭证/中转 Token。
+		for forbidden in ("service", "provider", "model", "base_url", "api_key", "auth_token", "services", "relay_token"):
+			self.assertNotIn(forbidden, payload["ai"])
+		self.assertNotIn("test-app-token", body)
+		# 非凭证的调参字段保留。
+		self.assertEqual(payload["ai"]["thinking"], "auto")
+
+	def test_admin_config_returns_unreachable_relay_without_raising(self):
 		cookie = self._login()
 		status, _, body = self._request("/api/admin/config", cookie=cookie)
 		self.assertTrue(status.startswith("200"), body)
 		payload = json.loads(body)
-		self.assertEqual(payload["ai"]["service"], "zhipu")
-		self.assertEqual(payload["ai"]["services"]["zhipu"]["api_key_masked"], "sk-z***cret")
-		self.assertNotIn("sk-zhipu-real-secret", body)
-		self.assertNotIn("api_key", payload["ai"]["services"]["zhipu"])
+		self.assertFalse(payload["ai"]["relay"]["reachable"])
+		self.assertIsNone(payload["ai"]["relay"]["provider"])
 
-	def test_admin_config_post_changes_provider_globally(self):
+	def test_admin_config_post_cannot_change_provider_model_or_key(self):
 		cookie = self._login()
 		status, _, body = self._request(
 			"/api/admin/config", "POST",
-			{"ai": {"service": "deepseek", "model": "deepseek-chat"}},
+			{"ai": {
+				"service": "deepseek",
+				"provider": "openai_compatible",
+				"model": "hacker-model",
+				"base_url": "https://evil.example/v1",
+				"api_key": "evil-key",
+				"services": {"deepseek": {"api_key": "evil-service-key"}},
+				"clear_credentials": True,
+				"resume_tailor_enabled": True,
+			}},
 			cookie=cookie,
 		)
 		self.assertTrue(status.startswith("200"), body)
 		saved = server.load_config(server.CONFIG_PATH)
-		self.assertEqual(saved["ai"]["service"], "deepseek")
-		self.assertEqual(saved["ai"]["model"], "deepseek-chat")
-		# 已保存的智谱 Key 不受改提供方影响。
-		self.assertEqual(saved["ai"]["services"]["zhipu"]["api_key"], "sk-zhipu-real-secret")
+		# 提供方/模型/凭证一律改不了，强制走云端中转。
+		self.assertEqual(saved["ai"]["service"], "relay")
+		self.assertEqual(saved["ai"]["provider"], "relay")
+		self.assertNotEqual(saved["ai"].get("model"), "hacker-model")
+		self.assertNotIn("evil-key", str(saved))
+		self.assertNotIn("evil-service-key", str(saved))
+		self.assertNotIn("evil.example", str(saved))
+		# 中转地址与 Token 不受影响；调参字段仍可改。
+		self.assertEqual(saved["ai"]["relay_url"], "http://127.0.0.1:9")
+		self.assertEqual(saved["ai"]["relay_token"], "test-app-token")
+		self.assertTrue(saved["ai"]["resume_tailor_enabled"])
 
-	def test_admin_config_post_accepts_new_key_and_keeps_saved_key_when_blank(self):
-		cookie = self._login()
-		status, _, body = self._request(
-			"/api/admin/config", "POST",
-			{"ai": {"service": "zhipu", "services": {"zhipu": {"api_key": "sk-zhipu-new-key"}}}},
-			cookie=cookie,
-		)
-		self.assertTrue(status.startswith("200"), body)
-		self.assertEqual(
-			server.load_config(server.CONFIG_PATH)["ai"]["services"]["zhipu"]["api_key"],
-			"sk-zhipu-new-key",
-		)
-		status, _, body = self._request(
-			"/api/admin/config", "POST",
-			{"ai": {"service": "zhipu", "services": {"zhipu": {"api_key": ""}}}},
-			cookie=cookie,
-		)
-		self.assertTrue(status.startswith("200"), body)
-		self.assertEqual(
-			server.load_config(server.CONFIG_PATH)["ai"]["services"]["zhipu"]["api_key"],
-			"sk-zhipu-new-key",
-		)
-
-	def test_admin_config_post_rejects_unknown_service(self):
+	def test_admin_config_post_ignores_unknown_service_and_forces_relay(self):
 		cookie = self._login()
 		status, _, body = self._request(
 			"/api/admin/config", "POST", {"ai": {"service": "ollama"}}, cookie=cookie,
 		)
-		self.assertTrue(status.startswith("400"), body)
-		self.assertEqual(server.load_config(server.CONFIG_PATH)["ai"]["service"], "zhipu")
+		self.assertTrue(status.startswith("200"), body)
+		self.assertEqual(server.load_config(server.CONFIG_PATH)["ai"]["service"], "relay")
 
 	def test_admin_config_post_validates_greeting_fields(self):
 		cookie = self._login()
@@ -252,8 +265,8 @@ class AdminPanelTests(unittest.TestCase):
 		)
 		self.assertTrue(status.startswith("200"), body)
 		saved = server.load_config(server.CONFIG_PATH)
-		self.assertEqual(saved["ai"]["service"], "zhipu")
-		self.assertEqual(saved["ai"]["services"]["zhipu"]["api_key"], "sk-zhipu-real-secret")
+		self.assertEqual(saved["ai"]["service"], "relay")
+		self.assertEqual(saved["ai"]["relay_token"], "test-app-token")
 		self.assertNotIn("evil-key", str(saved))
 		self.assertTrue(verify_admin_password("lucky-admin-1", saved["admin"]["password_hash"]))
 		self.assertFalse(verify_admin_password("evil-admin-password", saved["admin"]["password_hash"]))
@@ -275,54 +288,13 @@ class AdminPanelTests(unittest.TestCase):
 		self.assertTrue(status.startswith("200"), body)
 		self.assertEqual(json.loads(body)["checks"], checks)
 
-	def test_admin_models_uses_draft_and_saved_key(self):
+	def test_admin_models_endpoint_is_gone(self):
 		cookie = self._login()
-		# 未授权进不去。
-		status, _, body = self._request(
-			"/api/admin/config/models", "POST", {"ai": {"service": "zhipu"}},
+		status, _, _ = self._request(
+			"/api/admin/config/models", "POST", {"ai": {"service": "relay"}}, cookie=cookie,
 		)
-		self.assertTrue(status.startswith("401"), body)
-		with patch.object(server, "list_ai_models", return_value=["glm-4.7-flash"]) as discover:
-			status, _, body = self._request(
-				"/api/admin/config/models", "POST",
-				{"ai": {"service": "zhipu", "base_url": "https://draft.example/v4"}},
-				cookie=cookie,
-			)
-		self.assertTrue(status.startswith("200"), body)
-		self.assertEqual(json.loads(body), {"models": ["glm-4.7-flash"]})
-		draft = discover.call_args.args[0]["ai"]
-		self.assertEqual(draft["base_url"], "https://draft.example/v4")
-		self.assertEqual(draft["services"]["zhipu"]["api_key"], "sk-zhipu-real-secret")
-		# 草稿 Key 优先；clear_credentials 清掉已保存的 Key。
-		with patch.object(server, "list_ai_models", return_value=[]) as discover:
-			self._request(
-				"/api/admin/config/models", "POST",
-				{"ai": {"service": "zhipu", "services": {"zhipu": {"api_key": "draft-key"}}}},
-				cookie=cookie,
-			)
-		self.assertEqual(discover.call_args.args[0]["ai"]["services"]["zhipu"]["api_key"], "draft-key")
-		with patch.object(server, "list_ai_models", return_value=[]) as discover:
-			self._request(
-				"/api/admin/config/models", "POST",
-				{"ai": {"service": "zhipu", "clear_credentials": True}},
-				cookie=cookie,
-			)
-		self.assertNotIn("api_key", discover.call_args.args[0]["ai"])
-		self.assertNotIn("services", discover.call_args.args[0]["ai"])
-
-	def test_admin_models_rejects_bad_input_and_hides_unexpected_errors(self):
-		cookie = self._login()
-		for payload in ({}, {"ai": []}, {"ai": {"base_url": []}}, {"ai": {"api_key": 123}}):
-			with patch.object(server, "list_ai_models") as discover:
-				status, _, _ = self._request("/api/admin/config/models", "POST", payload, cookie=cookie)
-				self.assertTrue(status.startswith("400"))
-				discover.assert_not_called()
-		with patch.object(server, "list_ai_models", side_effect=RuntimeError("private-secret")):
-			status, _, body = self._request(
-				"/api/admin/config/models", "POST", {"ai": {"service": "zhipu"}}, cookie=cookie,
-			)
-		self.assertTrue(status.startswith("500"))
-		self.assertNotIn("private-secret", body)
+		# 模型由云端统一管理，模型列表接口已删除（404 未找到或 405 方法不允许）。
+		self.assertTrue(status.startswith("404") or status.startswith("405"), status)
 
 	def test_old_user_models_endpoint_is_gone(self):
 		cookie = self._login()

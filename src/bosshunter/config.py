@@ -74,8 +74,8 @@ CITY_CODES: dict[str, str] = {
 }
 
 
-SUPPORTED_AI_PROVIDERS = {"anthropic", "openai_compatible", "local"}
-SUPPORTED_AI_SERVICES = {"anthropic", "deepseek", "doubao", "zhipu", "custom", "local"}
+SUPPORTED_AI_PROVIDERS = {"anthropic", "openai_compatible", "local", "relay"}
+SUPPORTED_AI_SERVICES = {"anthropic", "deepseek", "doubao", "zhipu", "custom", "local", "relay"}
 AI_SERVICE_PRESETS: dict[str, dict[str, str]] = {
     "anthropic": {
         "provider": "anthropic",
@@ -110,6 +110,14 @@ AI_SERVICE_PRESETS: dict[str, dict[str, str]] = {
     "local": {
         "provider": "local",
         "label": "本地规则（不用 AI）",
+        "base_url": "",
+        "key_env": "",
+    },
+    "relay": {
+        # 云端中转：Key 只在服务端，exe 不带 Key，只调中转 /api/ai/chat。
+        # 直连服务商的代码保留，切回直连时改配置即可。
+        "provider": "relay",
+        "label": "云端中转",
         "base_url": "",
         "key_env": "",
     },
@@ -544,14 +552,14 @@ def _validate_ai_provider(config: dict[str, Any]) -> None:
     ai_cfg = config.get("ai", {})
     provider = ai_cfg.get("provider", "anthropic")
     if provider not in SUPPORTED_AI_PROVIDERS:
-        raise ValueError("当前版本支持 Anthropic 或 OpenAI 兼容接口。")
+        raise ValueError("当前版本支持 Claude、DeepSeek、豆包、智谱免费、自定义 OpenAI 兼容接口、云端中转或本地规则。")
     service = ai_cfg.get("service", "anthropic")
     if provider == "openai_compatible" and service == "anthropic":
         # Legacy configs only had `provider`; preserve them as custom OpenAI-compatible.
         ai_cfg["service"] = "custom"
         service = "custom"
     if service not in SUPPORTED_AI_SERVICES:
-        raise ValueError("当前版本支持 Claude、DeepSeek、豆包、智谱免费、自定义 OpenAI 兼容接口或本地规则。")
+        raise ValueError("当前版本支持 Claude、DeepSeek、豆包、智谱免费、自定义 OpenAI 兼容接口、云端中转或本地规则。")
     expected_provider = AI_SERVICE_PRESETS[service]["provider"]
     if provider != expected_provider:
         ai_cfg["provider"] = expected_provider

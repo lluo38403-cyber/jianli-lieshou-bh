@@ -17,6 +17,8 @@ from bosshunter.ai.credentials import (
 	get_ai_base_url,
 	get_ai_base_url_source,
 	get_ai_service,
+	get_relay_health,
+	get_relay_url,
 	get_service_credentials,
 )
 from bosshunter.browser.diagnostics import run_browser_diagnostics
@@ -44,7 +46,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 	ai_required = mode in {"full", "rescore"} or (
 		mode == "collect" and bool(collection_options and collection_options.get("auto_score"))
 	)
-	ai_configured = bool(get_ai_api_key(config)) or get_ai_service(config) in {"local"}
+	ai_configured = bool(get_ai_api_key(config)) or get_ai_service(config) in {"local", "relay"}
 	if ai_required and not ai_configured:
 		# 未配置 AI 不阻塞：评分走本地规则，招呼语走固定模板。
 		checks.append(_check("ai_connection", "AI 接口连接", "pass", "未配置 AI，使用本地规则评分", "未配置 AI 服务也能跑全流程，评分走本地规则。"))
@@ -129,6 +131,36 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 	# 不拦启动；任务失败时回落本地规则。
 	if service == "zhipu":
 		severity = "warning"
+	if service == "relay":
+		# 云端中转：不需要本地 Key，只探健康接口；任何异常都只提示
+		# warning，不拦启动；任务失败时回落本地规则。
+		severity = "warning"
+		health = get_relay_health(config, timeout=8)
+		if health and health.get("ok"):
+			provider = str(health.get("provider") or "云端中转").strip() or "云端中转"
+			model = str(health.get("model") or "未知").strip() or "未知"
+			ai_state = "开启" if health.get("ai_enabled") else "关闭"
+			return [
+				_check(
+					"ai_connection",
+					"AI 接口连接",
+					"pass",
+					f"云端中转连接正常（{provider}/{model}）",
+					f"中转地址：{get_relay_url(config)}；服务端 AI 开关：{ai_state}。"
+					"本次仅检测中转健康接口，未发送生成请求。",
+				)
+			]
+		return [
+			_check(
+				"ai_connection",
+				"AI 接口连接",
+				"warning",
+				"中转连接失败，将回落本地规则",
+				"云端中转暂时连不上，评分走本地规则，招呼语用固定模板；"
+				"请稍后重试，或联系管理员检查中转服务。",
+				"config",
+			)
+		]
 	if service == "local":
 		return [
 			_check(
