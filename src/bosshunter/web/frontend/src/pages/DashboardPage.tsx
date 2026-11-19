@@ -418,7 +418,7 @@ function GettingStartedCard({
             <button
               key={platform}
               type="button"
-              onClick={() => openPlatformLogin(platform)}
+              onClick={() => { void openPlatformLogin(platform) }}
               className="rounded-full border border-card-border bg-surface px-2.5 py-1 text-xs font-bold text-primary hover:border-primary/40"
             >
               去{PLATFORM_LABELS[platform]}登录

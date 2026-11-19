@@ -600,7 +600,9 @@ describe('DashboardPage persisted preflight and platform login status', () => {
     expect(within(statusCard).getByText('已掉线')).toBeTruthy()
     expect(within(statusCard).getByText('还没查过')).toBeTruthy()
     fireEvent.click(within(statusCard).getByRole('button', { name: '重新登录智联招聘' }))
-    expect(openSpy).toHaveBeenCalledWith('https://www.zhaopin.com/', '_blank', 'noopener,noreferrer')
+    // openPlatformLogin 现在先走后端 /api/browser/open，失败再回退 window.open：
+    // fetchMock 对未知地址返回 {}，后端 ok 为假，于是异步回退。
+    await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://www.zhaopin.com/', '_blank', 'noopener,noreferrer'))
   })
 
   it('offers one-tap login jumps for all four platforms in the getting-started card', async () => {
@@ -608,9 +610,9 @@ describe('DashboardPage persisted preflight and platform login status', () => {
     render(<DashboardPage view="workbench" />)
     const guide = await screen.findByRole('region', { name: '开始使用' })
     fireEvent.click(within(guide).getByRole('button', { name: '去BOSS 直聘登录' }))
-    expect(openSpy).toHaveBeenCalledWith('https://www.zhipin.com/web/user/login', '_blank', 'noopener,noreferrer')
+    await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://www.zhipin.com/web/user/login', '_blank', 'noopener,noreferrer'))
     fireEvent.click(within(guide).getByRole('button', { name: '去猎聘登录' }))
-    expect(openSpy).toHaveBeenCalledWith('https://www.liepin.com/', '_blank', 'noopener,noreferrer')
+    await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://www.liepin.com/', '_blank', 'noopener,noreferrer'))
   })
 
   it('tells the not-found and connection-failed browser cases apart', async () => {
@@ -626,6 +628,6 @@ describe('DashboardPage persisted preflight and platform login status', () => {
     expect(within(panel).getByText('没找到能用的浏览器')).toBeTruthy()
     expect(within(panel).getByText('先装一个 Chrome 再回来。')).toBeTruthy()
     expect(within(panel).getByRole('button', { name: '重新检测' })).toBeTruthy()
-    expect(within(panel).getByRole('button', { name: '一键复制诊断日志' })).toBeTruthy()
+    expect(within(panel).getByRole('button', { name: '一键复制诊断信息' })).toBeTruthy()
   })
 })

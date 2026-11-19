@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { PlatformStatusCard } from './PlatformStatusCard'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
@@ -23,7 +23,21 @@ it('shows all three states and highlights the logged-out platform with a relogin
   const relogin = screen.getByRole('button', { name: '重新登录智联招聘' })
   expect(relogin.closest('div')?.className).toContain('bg-danger-soft')
   fireEvent.click(relogin)
-  expect(openSpy).toHaveBeenCalledWith('https://www.zhaopin.com/', '_blank', 'noopener,noreferrer')
+  // openPlatformLogin 先走后端 /api/browser/open：这里没 mock fetch，
+  // 相对地址的请求会被拒，再异步回退到 window.open。
+  await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://www.zhaopin.com/', '_blank', 'noopener,noreferrer'))
+})
+
+it('shows one shared detail once instead of repeating it on all four platforms', () => {
+  const shared = '浏览器还没连上，先点“一键启动浏览器”。'
+  render(<PlatformStatusCard platformLogin={{
+    boss: { status: 'unknown' as const, detail: shared },
+    zhilian: { status: 'unknown' as const, detail: shared },
+    '51job': { status: 'unknown' as const, detail: shared },
+    liepin: { status: 'unknown' as const, detail: shared },
+  }} />)
+  expect(screen.getAllByText(shared)).toHaveLength(1)
+  expect(screen.getAllByText('还没查过')).toHaveLength(4)
 })
 
 it('shows “not checked yet” for every platform when the backend has no login data', () => {

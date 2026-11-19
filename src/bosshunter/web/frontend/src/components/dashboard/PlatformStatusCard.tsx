@@ -13,6 +13,9 @@ export function PlatformStatusCard({ platformLogin }: {
   platformLogin?: Partial<Record<string, PlatformLoginInfo>> | null
 }) {
   const loggedOut = PLATFORM_IDS.filter(platform => statusOf(platformLogin?.[platform]) === 'logged_out')
+  // 四个平台提示完全一样时（比如都没连上浏览器），只在卡片顶部显示一次。
+  const allDetails = PLATFORM_IDS.map(platform => platformLogin?.[platform]?.detail)
+  const sharedDetail = allDetails.every(detail => detail && detail === allDetails[0]) ? allDetails[0] as string : null
   return (
     <section aria-label="各平台登录状态" className="animate-fade-up rounded-2xl border border-card-border bg-card p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -23,6 +26,7 @@ export function PlatformStatusCard({ platformLogin }: {
           </span>
         )}
       </div>
+      {sharedDetail && <p className="mt-2 text-[11px] leading-4 text-muted">{sharedDetail}</p>}
       <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
         {PLATFORM_IDS.map(platform => {
           const info = platformLogin?.[platform]
@@ -47,7 +51,7 @@ export function PlatformStatusCard({ platformLogin }: {
                   {getPlatformLoginStatusLabel(status)}
                 </span>
               </div>
-              {info?.detail && <p className="mt-1 text-[11px] leading-4 text-muted">{info.detail}</p>}
+              {!sharedDetail && info?.detail && <p className="mt-1 text-[11px] leading-4 text-muted">{info.detail}</p>}
               {info?.checked_at && status !== 'unknown' && (
                 <p className="mt-1 text-[11px] text-muted">
                   {new Date(info.checked_at).toLocaleString('zh-CN', { hour12: false })}查的
@@ -56,7 +60,7 @@ export function PlatformStatusCard({ platformLogin }: {
               {isOut && (
                 <button
                   type="button"
-                  onClick={() => openPlatformLogin(platform as PlatformId)}
+                  onClick={() => { void openPlatformLogin(platform as PlatformId) }}
                   className="mt-2 w-full rounded-lg bg-danger px-2 py-1.5 text-xs font-bold text-white hover:opacity-90"
                 >
                   重新登录{PLATFORM_LABELS[platform]}
@@ -65,7 +69,7 @@ export function PlatformStatusCard({ platformLogin }: {
               {status === 'unknown' && (
                 <button
                   type="button"
-                  onClick={() => openPlatformLogin(platform as PlatformId)}
+                  onClick={() => { void openPlatformLogin(platform as PlatformId) }}
                   className="mt-2 w-full rounded-lg border border-card-border bg-card px-2 py-1.5 text-xs font-bold text-primary hover:border-primary/40"
                 >
                   去{PLATFORM_LABELS[platform]}登录

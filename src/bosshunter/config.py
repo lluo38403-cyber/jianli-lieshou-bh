@@ -319,6 +319,10 @@ DEFAULTS: dict[str, Any] = {
         "auto_start_proxy": True,
         "enable_port_guard": True,
         "site_patterns": True,
+        # 没连上可调试浏览器时，程序自己拉一个带调试端口的浏览器实例
+        # （专用配置目录，不动用户日常 Chrome）；关掉就只连现成的，
+        # 不替用户开新窗口。后台巡检也不拉起。
+        "auto_launch_browser": True,
         # 用户手动选的浏览器启动文件完整路径（POST /api/browser/select 写入）：
         # 为空时按系统默认查找 Chrome / Edge；填了就优先用它。
         "executable_path": "",

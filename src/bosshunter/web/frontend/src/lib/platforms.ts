@@ -42,6 +42,21 @@ export const PLATFORM_LOGIN_URL_IS_HOMEPAGE: Record<PlatformId, boolean> = {
   liepin: true,
 }
 
-export function openPlatformLogin(platform: PlatformId) {
-  window.open(PLATFORM_LOGIN_URLS[platform], '_blank', 'noopener,noreferrer')
+export async function openPlatformLogin(platform: PlatformId): Promise<boolean> {
+  const url = PLATFORM_LOGIN_URLS[platform]
+  try {
+    // 先走后端：在运行组件连着的浏览器（程序拉起的专用配置目录）里开
+    // 登录页，登录态才能被检测到；后端没接通才回退到当前浏览器打开。
+    const res = await fetch('/api/browser/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (res.ok && (data as { ok?: boolean }).ok) return true
+  } catch {
+    // 掉下去用老办法在当前浏览器里打开。
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
+  return false
 }

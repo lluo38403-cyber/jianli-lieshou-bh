@@ -50,18 +50,21 @@ function activePortFiles() {
       path.join(home, 'Library/Application Support/Google/Chrome/DevToolsActivePort'),
       path.join(home, 'Library/Application Support/Google/Chrome Canary/DevToolsActivePort'),
       path.join(home, 'Library/Application Support/Chromium/DevToolsActivePort'),
+      path.join(home, 'Library/Application Support/Microsoft Edge/DevToolsActivePort'),
     ];
   }
   if (os.platform() === 'linux') {
     return [
       path.join(home, '.config/google-chrome/DevToolsActivePort'),
       path.join(home, '.config/chromium/DevToolsActivePort'),
+      path.join(home, '.config/microsoft-edge/DevToolsActivePort'),
     ];
   }
   if (os.platform() === 'win32') {
     return [
       path.join(localAppData, 'Google/Chrome/User Data/DevToolsActivePort'),
       path.join(localAppData, 'Chromium/User Data/DevToolsActivePort'),
+      path.join(localAppData, 'Microsoft/Edge/User Data/DevToolsActivePort'),
     ];
   }
   return [];

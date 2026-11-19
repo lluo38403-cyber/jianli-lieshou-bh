@@ -232,12 +232,36 @@ def _runtime_env(config: dict[str, Any] | None = None) -> dict[str, str]:
     return env
 
 
-def start_runtime(config: dict[str, Any] | None = None, node_executable: str = "node") -> subprocess.Popen:
-    """Start the bundled Node.js browser runtime."""
-    global _runtime_process
-    script_path = get_runtime_script_path()
+def get_browser_profile_dir() -> Path:
+    """Return the dedicated profile dir for the browser we launch ourselves.
+
+    专用配置目录（不是用户日常 Chrome 的默认配置）：用户日常 Chrome
+    可能已经在运行，单实例机制下再拉一个 chrome.exe 只会在已有实例里
+    开窗口，--remote-debugging-port 不生效；专用目录保证每次都能拉起
+    一个真正带调试端口的实例。登录态就存在这个目录里，重启仍在。
+    """
+    override = os.environ.get("BOSSHUNTER_BROWSER_PROFILE_DIR")
+    if override:
+        return Path(os.path.expandvars(override))
+    return Path.home() / ".jianli-lieshou" / "browser-profile"
+
+
+def _chrome_debug_version(port: int) -> dict[str, Any] | None:
+    """Return /json/version when a debuggable Chrome answers on this port."""
+    try:
+        response = httpx.get(f"http://127.0.0.1:{port}/json/version", timeout=2, trust_env=False)
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, dict) and data.get("webSocketDebuggerUrl"):
+                return data
+    except (httpx.HTTPError, ValueError):
+        return None
+    return None
+
+
+def _launch_kwargs() -> dict[str, Any]:
+    """Detached-process kwargs shared by the proxy and the browser launch."""
     kwargs: dict[str, Any] = {
-        "env": _runtime_env(config),
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "stdin": subprocess.DEVNULL,
@@ -246,27 +270,114 @@ def start_runtime(config: dict[str, Any] | None = None, node_executable: str = "
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
     else:
         kwargs["start_new_session"] = True
+    return kwargs
+
+
+def launch_debuggable_browser(config: dict[str, Any] | None = None) -> bool:
+    """Launch Chrome/Edge with a debug port when nothing debuggable is up.
+
+    先看配置的 chrome_ports 有没有已经在监听的调试端口（用户自己拉的
+    也认）；没有才按 discovered 的启动文件拉一个：专用配置目录 +
+    --remote-debugging-port + --disable-blink-features=AutomationControlled。
+    拉起后等调试端口应答才算成功。用户关了自动拉起
+    （browser.auto_launch_browser=false）或运行组件本身就不自启时不动。
+    """
+    browser = get_browser_config(config)
+    if browser.get("runtime") != "builtin" or not browser.get("auto_start_proxy", True):
+        return False
+    if not browser.get("auto_launch_browser", True):
+        return False
+    ports = [int(port) for port in browser.get("chrome_ports", [9222, 9229, 9333])]
+    for port in ports:
+        if _chrome_debug_version(port) is not None:
+            return True
+    # diagnostics.py 在模块层 import 本模块，模块层反向 import 会循环；
+    # 调用时两边都已加载完成，函数内 import 安全。
+    from bosshunter.browser.diagnostics import discover_browsers
+
+    discovered = discover_browsers(config)
+    executable = discovered.get("chrome") or discovered.get("edge")
+    if not executable:
+        return False
+    port = None
+    for candidate in ports:
+        if _is_port_available("127.0.0.1", candidate):
+            port = candidate
+            break
+    if port is None:
+        return False
+    profile_dir = get_browser_profile_dir()
+    try:
+        profile_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    try:
+        subprocess.Popen(
+            [
+                executable,
+                f"--remote-debugging-port={port}",
+                "--disable-blink-features=AutomationControlled",
+                f"--user-data-dir={profile_dir}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "about:blank",
+            ],
+            **_launch_kwargs(),
+        )
+    except OSError:
+        return False
+    deadline = time.time() + 15.0
+    while True:
+        if _chrome_debug_version(port) is not None:
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.5)
+
+
+def start_runtime(config: dict[str, Any] | None = None, node_executable: str = "node") -> subprocess.Popen:
+    """Start the bundled Node.js browser runtime."""
+    global _runtime_process
+    script_path = get_runtime_script_path()
+    kwargs: dict[str, Any] = {
+        "env": _runtime_env(config),
+        **_launch_kwargs(),
+    }
     _runtime_process = subprocess.Popen([node_executable, str(script_path)], **kwargs)
     return _runtime_process
 
 
-def ensure_runtime(config: dict[str, Any] | None = None, wait_seconds: float = 15.0) -> bool:
+def _wait_for_targets(browser: dict[str, Any], wait_seconds: float) -> bool:
+    """Poll the runtime until Chrome targets appear (at least one probe)."""
+    deadline = time.time() + wait_seconds
+    while True:
+        if runtime_targets(browser) is not None:
+            set_browser_config(browser)
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.5)
+
+
+def ensure_runtime(config: dict[str, Any] | None = None, wait_seconds: float = 15.0, allow_launch: bool = True) -> bool:
     """Ensure the local Browser Runtime is ready for page operations.
 
     启动连接失败时自动重试一次（重试间隔 3 秒），重试仍失败才返回错误；
     端口回退逻辑不变。配置本身就不允许自启（runtime 非 builtin 或
     auto_start_proxy 关闭）时不重试——那不是一次可以恢复的失败。
+    allow_launch=False 时只连已有的可调试浏览器，绝不替用户拉新窗口
+    （后台巡检用）；重试那次也不再重复拉起，刚拉起的浏览器还在启动中。
     """
-    if _ensure_runtime_attempt(config, wait_seconds):
+    if _ensure_runtime_attempt(config, wait_seconds, allow_launch):
         return True
     browser = get_browser_config(config)
     if browser.get("runtime") != "builtin" or not browser.get("auto_start_proxy", True):
         return False
     time.sleep(3)
-    return _ensure_runtime_attempt(config, wait_seconds)
+    return _ensure_runtime_attempt(config, wait_seconds, False)
 
 
-def _ensure_runtime_attempt(config: dict[str, Any] | None = None, wait_seconds: float = 15.0) -> bool:
+def _ensure_runtime_attempt(config: dict[str, Any] | None = None, wait_seconds: float = 15.0, allow_launch: bool = True) -> bool:
     """One attempt to bring the local Browser Runtime up."""
     browser = get_browser_config(config)
     if runtime_targets(browser) is not None:
@@ -296,16 +407,13 @@ def _ensure_runtime_attempt(config: dict[str, Any] | None = None, wait_seconds: 
         _switch_runtime_port(config, browser, fallback_port)
 
     start_runtime(browser, str(node.get("executable") or "node"))
-    deadline = time.time() + wait_seconds
-    # Probe at least once even when a short startup window has just expired.
-    # Selected from #227; no change to runtime identity or port validation.
-    while True:
-        if runtime_targets(browser) is not None:
-            set_browser_config(browser)
-            return True
-        if time.time() >= deadline:
-            break
-        time.sleep(0.5)
+    # 本来就要拉浏览器时不等满 15 秒：等 5 秒看有没有现成可调试的，
+    # 没有就直接拉起；不拉时保持原来的等待时长。
+    first_wait = wait_seconds if (not allow_launch or wait_seconds <= 0) else min(wait_seconds, 5.0)
+    if _wait_for_targets(browser, first_wait):
+        return True
+    if allow_launch and launch_debuggable_browser(browser):
+        return _wait_for_targets(browser, wait_seconds)
     return False
 
 
@@ -314,6 +422,8 @@ __all__ = [
     "get_browser_config",
     "get_runtime_url",
     "get_runtime_script_path",
+    "get_browser_profile_dir",
+    "launch_debuggable_browser",
     "check_node_available",
     "runtime_health",
     "is_bosshunter_runtime",

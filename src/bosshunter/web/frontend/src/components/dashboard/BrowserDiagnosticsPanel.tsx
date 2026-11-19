@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ChevronDown, RefreshCw } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export interface BrowserDiagnostics {
@@ -17,7 +17,6 @@ export function BrowserDiagnosticsPanel({ diagnostics, onRefresh }: {
   diagnostics: BrowserDiagnostics | null
   onRefresh: () => void
 }) {
-  const [expanded, setExpanded] = useState(false)
   const [pathInput, setPathInput] = useState('')
   const [selecting, setSelecting] = useState(false)
   const [selectMessage, setSelectMessage] = useState('')
@@ -32,7 +31,10 @@ export function BrowserDiagnosticsPanel({ diagnostics, onRefresh }: {
   const title = isNotFound ? '没找到能用的浏览器' : '浏览器连不上了'
   const fallbackMessage = isNotFound
     ? '电脑上没找到 Chrome 或 Edge，简历猎手要用你的 Chrome 打开招聘网站。'
-    : '浏览器在运行，但简历猎手连不上它，可能是远程调试没开，或者浏览器刚被关掉。'
+    : '浏览器已经装好了，但是现在连不上，点“一键启动浏览器”就行。'
+  // 连不上时主按钮就是一键启动：后端会自动拉起带调试端口的浏览器，
+  // 不用用户自己排错；没找到浏览器时只能重新检测。
+  const primaryLabel = checking ? '正在启动…' : isNotFound ? '重新检测' : '一键启动浏览器'
 
   const handleFilePick = (file: File | undefined) => {
     if (!file) return
@@ -85,16 +87,16 @@ export function BrowserDiagnosticsPanel({ diagnostics, onRefresh }: {
 
   const handleCopy = async () => {
     try {
+      // 完整诊断只在后台复制，不在页面上平铺代码。
       await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2))
       setCopied(true)
       window.setTimeout(() => setCopied(false), 2000)
     } catch {
       setCopied(false)
-      setSelectMessage('复制失败了，点开“看看诊断详情”手动复制。')
+      setSelectMessage('没复制上，再点一次试试。')
     }
   }
 
-  const discovered = diagnostics.discovered || {}
   return (
     <div role="region" aria-label="浏览器诊断" className={cn(
       'mt-2 rounded-lg border px-2 text-xs',
@@ -105,46 +107,24 @@ export function BrowserDiagnosticsPanel({ diagnostics, onRefresh }: {
         <span className="min-w-0 flex-1 text-muted">{diagnostics.message || fallbackMessage}</span>
         <Button variant="ghost" size="sm" className="h-7 shrink-0 px-1" onClick={handleRecheck} disabled={checking}>
           <RefreshCw className={cn('mr-1 h-3 w-3', checking && 'animate-spin')} />
-          {checking ? '检测中' : '重新检测'}
+          {primaryLabel}
         </Button>
         <Button variant="ghost" size="sm" className="h-7 shrink-0 px-1" onClick={handleCopy}>
-          {copied ? '已复制' : '一键复制诊断日志'}
+          {copied ? '已复制' : '一键复制诊断信息'}
         </Button>
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => setExpanded(value => !value)}
-          className="flex h-7 shrink-0 items-center gap-1 rounded px-1 text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-        >
-          {expanded ? '收起来' : '看看诊断详情'}<ChevronDown className={cn('h-3 w-3', expanded && 'rotate-180')} />
-        </button>
       </div>
       {diagnostics.next_steps?.length ? (
         <ul className="list-disc space-y-1 border-t border-current/10 py-2 pl-5 leading-5 text-foreground">
           {diagnostics.next_steps.map((step, index) => <li key={index}>{step}</li>)}
         </ul>
-      ) : (
-        <p className="border-t border-current/10 py-2 leading-5 text-foreground">
-          {isNotFound
-            ? '下一步：先确认电脑上装了 Chrome 或 Edge；装好了还报这个，就点下面“手动选一下浏览器”。'
-            : '下一步：把 Chrome 完全关掉再重新打开，确认它能正常上网，再点“重新检测”。'}
-        </p>
-      )}
-      <div hidden={!expanded} className="space-y-2 border-t border-current/10 py-2">
-        {(discovered.chrome || discovered.edge) && (
-          <p className="leading-5 text-muted">
-            找到的浏览器：{discovered.chrome ? `Chrome：${discovered.chrome}` : '没找到 Chrome'}
-            {discovered.edge ? `；Edge：${discovered.edge}` : '；没找到 Edge'}
-          </p>
-        )}
-        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-card p-2 text-[11px] leading-4 text-muted">
-          {JSON.stringify(diagnostics.diagnostics ?? diagnostics, null, 2)}
-        </pre>
-        <div className="space-y-2">
+      ) : null}
+      {selectMessage && <p className="border-t border-current/10 py-2 text-xs leading-5 text-muted">{selectMessage}</p>}
+      {isNotFound && (
+        <div className="space-y-2 border-t border-current/10 py-2">
           <label className="block text-xs font-bold text-foreground">
             手动选一下浏览器（chrome.exe / msedge.exe）
             <span className="mt-1 flex gap-2">
-              <Input value={pathInput} onChange={event => setPathInput(event.target.value)} placeholder="比如：C:\Program Files\Google\Chrome\Application\chrome.exe" />
+              <Input value={pathInput} onChange={event => setPathInput(event.target.value)} placeholder="填入浏览器程序的完整路径，例如 Chrome 的安装路径" />
               <label className="flex h-9 shrink-0 cursor-pointer items-center rounded-md border border-card-border bg-card px-3 text-xs font-bold text-primary hover:border-primary/40">
                 选文件
                 <input
@@ -160,9 +140,8 @@ export function BrowserDiagnosticsPanel({ diagnostics, onRefresh }: {
               </Button>
             </span>
           </label>
-          {selectMessage && <p className="text-xs leading-5 text-muted">{selectMessage}</p>}
         </div>
-      </div>
+      )}
     </div>
   )
 }

@@ -153,6 +153,7 @@ class BrowserRuntimeManagerTests(unittest.TestCase):
         start_runtime.assert_called_once()
         self.assertEqual(start_runtime.call_args.args[1], "node")
 
+    @patch("bosshunter.browser.runtime.launch_debuggable_browser", return_value=False)
     @patch("bosshunter.browser.runtime.time.sleep")
     @patch("bosshunter.browser.runtime._is_port_available", return_value=True)
     @patch("bosshunter.browser.runtime.runtime_health", return_value=None)
@@ -160,7 +161,7 @@ class BrowserRuntimeManagerTests(unittest.TestCase):
     @patch("bosshunter.browser.runtime.start_runtime")
     @patch("bosshunter.browser.runtime.check_node_available", return_value={"available": True})
     def test_startup_probes_once_per_attempt_even_when_deadline_has_expired(
-        self, check_node, start_runtime, runtime_targets, runtime_health, available, sleep
+        self, check_node, start_runtime, runtime_targets, runtime_health, available, sleep, launch
     ):
         from bosshunter.browser.runtime import ensure_runtime
 

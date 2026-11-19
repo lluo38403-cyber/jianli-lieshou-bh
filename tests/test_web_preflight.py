@@ -221,7 +221,9 @@ class BrowserPreflightTests(unittest.TestCase):
 
 		chrome_check = next(check for check in checks if check["id"] == "chrome_connection")
 		self.assertEqual(chrome_check["status"], "error")
-		self.assertIn("chrome://inspect/#remote-debugging", chrome_check["detail"])
+		self.assertIn("一键启动浏览器", chrome_check["detail"])
+		self.assertNotIn("chrome://inspect", chrome_check["detail"])
+		self.assertNotIn("bosshunter connect", chrome_check["detail"])
 
 	@patch("bosshunter.web.preflight.run_browser_diagnostics")
 	def test_edge_browser_passes_like_chrome(self, diagnostics):

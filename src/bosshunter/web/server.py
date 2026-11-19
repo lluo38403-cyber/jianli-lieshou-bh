@@ -298,7 +298,7 @@ def _login_patrol_once() -> dict | None:
 		config = load_config(CONFIG_PATH)
 		if runtime_targets(config) is None:
 			return None
-		result = run_browser_diagnostics(config)
+		result = run_browser_diagnostics(config, allow_launch=False)
 		if not result.get("chrome"):
 			return None
 		db = get_db(DATA_DIR / "bosshunter.db")
@@ -1817,13 +1817,14 @@ def api_workbench_preflight():
 		return _json_response({"ok": False, "messages": [str(e)]}, 500)
 
 
-def _browser_diagnostics_payload(config: dict) -> dict:
+def _browser_diagnostics_payload(config: dict, allow_launch: bool = True) -> dict:
 	"""把 run_browser_diagnostics 结果包成前端要的信封。
 
 	diagnostics 字段是原始结果原样；顶层同时放 discovered /
 	error_kind / message / next_steps，ok 表示浏览器已连上。
+	allow_launch=False 时只做被动检查，不替用户拉新浏览器窗口。
 	"""
-	result = run_browser_diagnostics(config)
+	result = run_browser_diagnostics(config, allow_launch=allow_launch)
 	return {
 		"ok": bool(result.get("chrome")),
 		"diagnostics": result,
@@ -1836,15 +1837,20 @@ def _browser_diagnostics_payload(config: dict) -> dict:
 
 @app.route("/api/browser/diagnostics")
 def api_browser_diagnostics():
+	# 首页被动刷新：只做检查，不替用户拉新浏览器窗口。
 	try:
-		return _json_response(_browser_diagnostics_payload(load_config(CONFIG_PATH)))
+		return _json_response(_browser_diagnostics_payload(load_config(CONFIG_PATH), allow_launch=False))
 	except Exception as e:
 		return _json_response({"ok": False, "error": str(e)}, 500)
 
 
 @app.route("/api/browser/diagnostics", method="POST")
 def api_browser_diagnostics_refresh():
-	"""重新执行一次诊断；第一次没连上浏览器时内部再试一次。"""
+	"""重新执行一次诊断；第一次没连上浏览器时内部再试一次。
+
+	用户点的重新检测 / 一键启动浏览器：程序会自动拉起带调试端口的
+	浏览器实例，不用用户自己排错。
+	"""
 	try:
 		config = load_config(CONFIG_PATH)
 		payload = _browser_diagnostics_payload(config)
@@ -1853,6 +1859,33 @@ def api_browser_diagnostics_refresh():
 		return _json_response(payload)
 	except Exception as e:
 		return _json_response({"ok": False, "error": str(e)}, 500)
+
+
+@app.route("/api/browser/open", method="POST")
+def api_browser_open():
+	"""在运行组件连着的浏览器里打开一个网址（去登录走这里）。
+
+	登录页必须开在程序拉起的那个浏览器窗口里（专用配置目录），
+	不能用 window.open 开在面板自己的浏览器里，否则登录态落在
+	另一个配置目录，运行组件永远检测不到。只认 http(s) 网址。
+	"""
+	try:
+		try:
+			body = request.json
+		except Exception:
+			body = None
+		body = body if isinstance(body, dict) else {}
+		url = str(body.get("url") or "").strip()
+		if not url.startswith(("http://", "https://")):
+			return _json_response({"error": "这个网址打不开，请重新点一次。"}, 400)
+		from bosshunter.browser import new_tab
+
+		target_id = new_tab(url)
+		if not target_id:
+			return _json_response({"error": "浏览器还没连上，点“一键启动浏览器”后再试一次。"}, 503)
+		return _json_response({"ok": True, "target_id": target_id})
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
 
 
 @app.route("/api/browser/select", method="POST")

@@ -140,6 +140,52 @@ class BrowserDiagnosticsApiTests(_ServerTestBase):
         self.assertTrue(status.startswith("200"), body)
         diagnostics.assert_called_once()
 
+    def test_get_diagnostics_does_not_launch_browser(self):
+        # 首页被动刷新：只做检查，不替用户拉新浏览器窗口。
+        with patch.object(
+            server, "run_browser_diagnostics", return_value=_fake_diagnostics()
+        ) as diagnostics:
+            status, body = self._request("/api/browser/diagnostics")
+        self.assertTrue(status.startswith("200"), body)
+        diagnostics.assert_called_once()
+        self.assertEqual(diagnostics.call_args.kwargs, {"allow_launch": False})
+
+    def test_post_diagnostics_launches_browser(self):
+        # 用户点的重新检测 / 一键启动浏览器：允许自动拉起。
+        with patch.object(
+            server, "run_browser_diagnostics", return_value=_fake_diagnostics()
+        ) as diagnostics:
+            status, body = self._request("/api/browser/diagnostics", "POST")
+        self.assertTrue(status.startswith("200"), body)
+        diagnostics.assert_called_once()
+        self.assertEqual(diagnostics.call_args.kwargs, {"allow_launch": True})
+
+    def test_browser_open_opens_url_in_runtime_browser(self):
+        with patch("bosshunter.browser.new_tab", return_value="target-1") as new_tab:
+            status, body = self._request(
+                "/api/browser/open", "POST", {"url": "https://www.zhipin.com/web/user/login"}
+            )
+        self.assertTrue(status.startswith("200"), body)
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["target_id"], "target-1")
+        new_tab.assert_called_once_with("https://www.zhipin.com/web/user/login")
+
+    def test_browser_open_returns_503_when_runtime_not_connected(self):
+        with patch("bosshunter.browser.new_tab", return_value=None):
+            status, body = self._request(
+                "/api/browser/open", "POST", {"url": "https://www.zhipin.com/web/user/login"}
+            )
+        self.assertTrue(status.startswith("503"), body)
+        error = json.loads(body)["error"]
+        self.assertIn("浏览器还没连上", error)
+        self.assertNotIn("new_tab", error)
+
+    def test_browser_open_rejects_non_http_url(self):
+        status, body = self._request("/api/browser/open", "POST", {"url": "file:///etc/passwd"})
+        self.assertTrue(status.startswith("400"), body)
+        self.assertIn("error", json.loads(body))
+
     def test_select_valid_browser_path_is_saved(self):
         chrome_path = Path(self._tmp.name) / "chrome.exe"
         chrome_path.write_bytes(b"fake exe")

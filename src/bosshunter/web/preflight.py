@@ -391,7 +391,7 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 			detail = "请停止占用本地 Runtime 端口的程序，或修改 browser.proxy_port 后重启。"
 		else:
 			message = "BossHunter 浏览器运行组件未启动"
-			detail = "请重新启动 BossHunter；若仍失败，运行 bosshunter connect 查看终端诊断。"
+			detail = "点“一键启动浏览器”，程序会自动打开浏览器并连上；还不行就点“再检查一次”。"
 		checks.append(_check("browser_runtime", "浏览器运行组件", "error", message, detail, "browser"))
 
 	if result.get("runtime") and not result.get("chrome"):
@@ -401,7 +401,7 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 				"Chrome 远程调试",
 				"error",
 				"没有连接到开启远程调试的 Google Chrome",
-				"请打开 Google Chrome，访问 chrome://inspect/#remote-debugging，并开启 Allow remote debugging，然后重新检测。",
+				"点“一键启动浏览器”，程序会自动打开一个能连接的浏览器窗口，再点一次检查。",
 				"browser",
 			)
 		)
@@ -422,7 +422,7 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 					"浏览器类型",
 					"error",
 					f"当前连接的不是 Google Chrome 或 Microsoft Edge（{detected_browser}）",
-					"请关闭当前调试连接，改用 Google Chrome 或 Microsoft Edge 开启远程调试后重新检测。",
+					"请关掉现在这个浏览器窗口，再点“一键启动浏览器”。",
 					"browser",
 				)
 			)

@@ -20,15 +20,18 @@ class EnsureRuntimeRetryTests(unittest.TestCase):
             patch("bosshunter.browser.runtime.start_runtime"),
             patch("bosshunter.browser.runtime.check_node_available",
                   return_value={"available": True, "version": "v22.1.0"}),
+            # 拉起新浏览器是 ensure_runtime 的新行为：失败重试的测试里
+            # 不真的拉，只验证重试本身；拉起行为由 test_browser_autolaunch 覆盖。
+            patch("bosshunter.browser.runtime.launch_debuggable_browser", return_value=False),
         ]
         mocks = [p.start() for p in patches]
         for p in patches:
             testcase.addCleanup(p.stop)
-        # 返回顺序与 patches 列表一致：sleep, port, health, targets, start, node
+        # 返回顺序与 patches 列表一致：sleep, port, health, targets, start, node, launch
         return mocks
 
     def test_failure_retries_once_after_three_seconds(self):
-        sleep, _port, _health, targets, start, _node = self._patches(self)
+        sleep, _port, _health, targets, start, _node, _launch = self._patches(self)
         from bosshunter.browser.runtime import ensure_runtime
 
         targets.return_value = None
@@ -39,7 +42,7 @@ class EnsureRuntimeRetryTests(unittest.TestCase):
         sleep.assert_called_once_with(3)
 
     def test_retry_success_recovers(self):
-        sleep, _port, _health, targets, start, _node = self._patches(self)
+        sleep, _port, _health, targets, start, _node, _launch = self._patches(self)
         from bosshunter.browser.runtime import ensure_runtime
 
         calls = {"n": 0}
@@ -58,7 +61,7 @@ class EnsureRuntimeRetryTests(unittest.TestCase):
         sleep.assert_called_once_with(3)
 
     def test_success_on_first_attempt_does_not_retry(self):
-        sleep, _port, _health, targets, start, _node = self._patches(self)
+        sleep, _port, _health, targets, start, _node, _launch = self._patches(self)
         from bosshunter.browser.runtime import ensure_runtime
 
         targets.side_effect = [None, [{"targetId": "abc"}]]
@@ -69,7 +72,7 @@ class EnsureRuntimeRetryTests(unittest.TestCase):
         sleep.assert_not_called()
 
     def test_already_running_runtime_does_not_retry(self):
-        sleep, _port, _health, targets, start, _node = self._patches(self)
+        sleep, _port, _health, targets, start, _node, _launch = self._patches(self)
         from bosshunter.browser.runtime import ensure_runtime
 
         targets.return_value = [{"targetId": "abc"}]
@@ -80,7 +83,7 @@ class EnsureRuntimeRetryTests(unittest.TestCase):
         sleep.assert_not_called()
 
     def test_auto_start_disabled_does_not_retry(self):
-        sleep, _port, _health, targets, start, _node = self._patches(self)
+        sleep, _port, _health, targets, start, _node, _launch = self._patches(self)
         from bosshunter.browser.runtime import ensure_runtime
 
         targets.return_value = None
@@ -91,7 +94,7 @@ class EnsureRuntimeRetryTests(unittest.TestCase):
         sleep.assert_not_called()
 
     def test_non_builtin_runtime_does_not_retry(self):
-        sleep, _port, _health, targets, start, _node = self._patches(self)
+        sleep, _port, _health, targets, start, _node, _launch = self._patches(self)
         from bosshunter.browser.runtime import ensure_runtime
 
         targets.return_value = None

@@ -62,7 +62,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         config = {"browser": {"proxy_port": 3456}}
         check_node.return_value = {"available": True, "version": "v22.1.0"}
-        ensure_runtime.side_effect = lambda cfg: cfg["browser"].update({"proxy_port": 3457}) or True
+        ensure_runtime.side_effect = lambda cfg, **kwargs: cfg["browser"].update({"proxy_port": 3457}) or True
         runtime_health.return_value = {"status": "ok", "runtime": "bosshunter"}
         runtime_targets.return_value = [{"targetId": "1", "url": "https://www.zhipin.com"}]
         find_boss_tab.return_value = {"targetId": "1", "title": "BOSS直聘"}

@@ -229,14 +229,19 @@ def _browser_problem(chrome_connected: bool, discovered: dict[str, str | None]) 
     return (
         "connection_failed",
         "浏览器已经装好了，但是现在连不上。",
-        ["请把浏览器完全关掉，再重新打开。", "打开后确认已经登录要用的招聘网站，再点重新检测。"],
+        ["点“一键启动浏览器”，程序会自动打开一个能连接的浏览器窗口。", "在打开的浏览器里登录要用的招聘网站，再点“检查一下能不能跑”。"],
     )
 
 
-def run_browser_diagnostics(config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Collect Browser Runtime readiness state."""
+def run_browser_diagnostics(config: dict[str, Any] | None = None, allow_launch: bool = True) -> dict[str, Any]:
+    """Collect Browser Runtime readiness state.
+
+    allow_launch=False 时只连已有的可调试浏览器，绝不替用户拉新窗口
+    （首页被动刷新、后台巡检用）；用户点的重新检测、检查、去登录走
+    默认 True，程序会自动拉起带调试端口的浏览器实例。
+    """
     node = check_node_available()
-    runtime_ready = ensure_runtime(config)
+    runtime_ready = ensure_runtime(config, allow_launch=allow_launch)
     runtime_url = get_runtime_url(config)
     health = runtime_health(config)
     targets = runtime_targets(config) if runtime_ready else None
