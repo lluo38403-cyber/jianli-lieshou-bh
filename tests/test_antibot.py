@@ -452,3 +452,16 @@ def test_webdriver_flag_helper_reports_undefined_as_false():
 
 def test_stealth_launch_arg_present():
     assert "--disable-blink-features=AutomationControlled" in antibot.CHROME_STEALTH_ARGS
+
+
+def test_stealth_arg_reaches_every_chrome_launch_path(tmp_path):
+    """反检测第一层要落到用户真正用的启动路径上：exe 本身不拉 Chrome，
+    用户按启动脚本、QUICKSTART 命令或面板诊断提示手动起 Chrome——
+    三处都要带上抹除参数，缺一处就等于这层没上线。"""
+    repo = Path(__file__).resolve().parents[1]
+    flag = "--disable-blink-features=AutomationControlled"
+    assert flag in (repo / "scripts" / "windows" / "start_bosshunter.ps1").read_text(encoding="utf-8")
+    assert flag in (repo / "scripts" / "macos" / "start_bosshunter.sh").read_text(encoding="utf-8")
+    assert flag in (repo / "src" / "bosshunter" / "browser" / "diagnostics.py").read_text(encoding="utf-8")
+    quickstart = (repo / "docs" / "QUICKSTART.md").read_text(encoding="utf-8")
+    assert quickstart.count(flag) >= 3, "QUICKSTART 三条手动启动命令都要带抹除参数"

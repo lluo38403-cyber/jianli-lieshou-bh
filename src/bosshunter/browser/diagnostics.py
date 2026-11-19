@@ -152,7 +152,7 @@ def print_browser_diagnostics(config: dict[str, Any] | None = None, console: Con
     else:
         out.print("[red]✗[/red] 未发现 Chrome 调试端口。")
         out.print("  请打开 Chrome，访问 chrome://inspect/#remote-debugging，勾选 Allow remote debugging。")
-        out.print("  或使用: chrome.exe --remote-debugging-port=9222")
+        out.print("  或使用: chrome.exe --remote-debugging-port=9222 --disable-blink-features=AutomationControlled")
 
     if result["boss_tab"]:
         out.print(f"[green]✓[/green] 发现 BOSS直聘 页面: {result['boss_tab'].get('title', '')}")

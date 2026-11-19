@@ -95,16 +95,16 @@ Windows 桌面快捷方式已经完成远程调试启动，不需要再次运行
 
 ```bash
 # macOS
-open -na "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir="$HOME/.bosshunter-chrome"
+open -na "Google Chrome" --args --remote-debugging-port=9222 --disable-blink-features=AutomationControlled --user-data-dir="$HOME/.bosshunter-chrome"
 
 # Linux
-google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.bosshunter-chrome"
+google-chrome --remote-debugging-port=9222 --disable-blink-features=AutomationControlled --user-data-dir="$HOME/.bosshunter-chrome"
 ```
 
 Windows 手动启动（PowerShell；Chrome 安装位置不同时调整可执行文件路径）：
 
 ```powershell
-& "$env:ProgramFiles\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 "--user-data-dir=$env:LOCALAPPDATA\BossHunterChrome"
+& "$env:ProgramFiles\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --disable-blink-features=AutomationControlled "--user-data-dir=$env:LOCALAPPDATA\BossHunterChrome"
 ```
 
 使用启动参数时会打开一个独立 Chrome 窗口。请在这个窗口中登录要使用的招聘平台，并在任务期间保持窗口开启；其他 Chrome 窗口的登录状态不会自动复用。
