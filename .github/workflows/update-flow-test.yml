@@ -8,6 +8,13 @@
 # 67MB 的新版包、还会真的换文件重开，只在手动点的时候跑。
 # 不登录任何真实招聘平台、不投递真实简历、不填 AI Key、
 # 不用真机器码薅试用（脚本启动时设 JIANLI_NO_AUTH_SYNC=1）。
+#
+# actions: read 必不可少：要从另一个 run（旧版产物）下载 artifact，
+# 默认 GITHUB_TOKEN 没这个权限会 403（首跑 44549353221 实测）。
+permissions:
+  contents: read
+  actions: read
+
 name: 更新全流程测试
 
 on:
