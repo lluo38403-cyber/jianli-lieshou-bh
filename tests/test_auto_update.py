@@ -105,7 +105,7 @@ class VersionCompareTests(unittest.TestCase):
 class UpdateStubHandler(BaseHTTPRequestHandler):
     """Stub for the relay update contract: /api/version + /download/latest."""
 
-    version_payload = {"version": "1.1.4", "size": 0, "sha256": "0" * 64, "notes": ""}
+    version_payload = {"version": "1.1.5", "size": 0, "sha256": "0" * 64, "notes": ""}
     zip_bytes = b""
     status = 200
     requests: list = []
@@ -160,7 +160,7 @@ class UpdateCheckTests(unittest.TestCase):
     def setUp(self):
         _reset_update_state()
         UpdateStubHandler.version_payload = {
-            "version": "1.1.4",
+            "version": "1.1.5",
             "size": 123,
             "sha256": hashlib.sha256(_make_zip()).hexdigest(),
             "notes": "更快更稳",
@@ -193,7 +193,7 @@ class UpdateCheckTests(unittest.TestCase):
         info = check_for_update(self._config())
         self.assertIsNotNone(info)
         assert info is not None
-        self.assertEqual(info["version"], "1.1.4")
+        self.assertEqual(info["version"], "1.1.5")
         self.assertEqual(info["current_version"], __version__)
         self.assertEqual(info["size"], 123)
         self.assertEqual(info["notes"], "更快更稳")
@@ -222,9 +222,9 @@ class UpdateCheckTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         for bad in (
             {"size": 1, "sha256": "a" * 64},
-            {"version": "1.1.4", "size": 1},
-            {"version": "1.1.4", "size": 1, "sha256": "not-a-hash"},
-            {"version": "1.1.4", "size": 1, "sha256": "a" * 64, "notes": 5},
+            {"version": "1.1.5", "size": 1},
+            {"version": "1.1.5", "size": 1, "sha256": "not-a-hash"},
+            {"version": "1.1.5", "size": 1, "sha256": "a" * 64, "notes": 5},
         ):
             with self.subTest(bad=bad):
                 UpdateStubHandler.version_payload = bad
@@ -262,7 +262,7 @@ class UpdateDownloadTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.4",
+            "version": "1.1.5",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -290,7 +290,7 @@ class UpdateDownloadTests(unittest.TestCase):
 
     def _info(self):
         return {
-            "version": "1.1.4",
+            "version": "1.1.5",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -391,7 +391,7 @@ class UpdateDownloadTests(unittest.TestCase):
         bad = buf.getvalue()
         UpdateStubHandler.zip_bytes = bad
         UpdateStubHandler.version_payload = {
-            "version": "1.1.4",
+            "version": "1.1.5",
             "size": len(bad),
             "sha256": hashlib.sha256(bad).hexdigest(),
             "notes": "",
@@ -675,6 +675,52 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertNotIn("tasklist", script.lower())
         self.assertNotIn("|", script)
 
+    def test_batch_strips_trailing_backslash_from_dirs(self):
+        # 回归：INSTALL_DIR=%~dp0 自带末尾反斜杠，robocopy "%INSTALL_DIR%"
+        # 变成 "%...\"——CommandLineToArgvW 把 \" 当转义引号，开关全被
+        # 吞进路径里，robocopy 0.22 秒就报错回滚（v16→v17 全流程测试
+        # run 44625451318：等待循环已修好，换文件那步瞬间失败，日志
+        # 里只有 5 行 echo、两次 robocopy 的输出都没进来）。设好目录
+        # 后立刻去掉末尾反斜杠，之后拼路径都显式加反斜杠。
+        script = build_update_script()
+        self.assertIn(
+            'if "%INSTALL_DIR:~-1%"=="\\" set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"',
+            script,
+        )
+        self.assertIn(
+            'if "%STAGING:~-1%"=="\\" set "STAGING=%STAGING:~0,-1%"',
+            script,
+        )
+        # 去掉反斜杠后，拼路径必须显式加反斜杠，不许再出现靠末尾
+        # 反斜杠拼出来的路径。
+        self.assertNotIn('"%INSTALL_DIR%%EXE_NAME%"', script)
+        self.assertNotIn('"%INSTALL_DIR%%BACKUP%"', script)
+        self.assertNotIn('"%INSTALL_DIR%_internal"', script)
+        self.assertIn('"%INSTALL_DIR%\\%EXE_NAME%"', script)
+        self.assertIn('"%INSTALL_DIR%\\%BACKUP%"', script)
+        self.assertIn('"%INSTALL_DIR%\\_internal"', script)
+        self.assertIn('set "LOG=%INSTALL_DIR%\\update.log"', script)
+        self.assertIn('set "RESULT=%INSTALL_DIR%\\update-result.json"', script)
+
+    def test_batch_logs_robocopy_exit_code(self):
+        # 回归：v16→v17 测试里 robocopy 0.22 秒失败，但它的输出没进
+        # update.log，失败原因只能猜。每条 robocopy 之后立刻把退出
+        # 码写进日志（先 set RC 再写、再判断，判断本身不改码）。
+        script = build_update_script()
+        lines = script.splitlines()
+        rc_lines = [
+            i
+            for i, line in enumerate(lines)
+            if line.strip().lower().startswith("robocopy")
+        ]
+        self.assertEqual(len(rc_lines), 4)
+        for i in rc_lines:
+            following = "\n".join(lines[i + 1 : i + 3])
+            self.assertIn('set "RC=%errorlevel%"', following)
+            self.assertIn("robocopy", following)
+            self.assertIn("退出码", following)
+            self.assertIn('>> "%LOG%"', following)
+
     def test_batch_waits_for_pid_and_imagename_together(self):
         # 回归：只按 PID 等，Windows 把退出进程的 PID 很快分给别
         # 的进程后循环一直看到“还在”而永远不退出（v12→v13 全流程
@@ -778,15 +824,15 @@ class UpdateScriptTests(unittest.TestCase):
         script = build_update_script()
         self.assertIn('if not exist "%STAGING%\\%EXE_NAME%"', script)
         self.assertIn('if not exist "%STAGING%\\_internal\\"', script)
-        self.assertIn('robocopy "%STAGING%\\_internal" "%INSTALL_DIR%_internal" /MIR', script)
+        self.assertIn('robocopy "%STAGING%\\_internal" "%INSTALL_DIR%\\_internal" /MIR', script)
         self.assertIn("/R:5 /W:3", script)
 
     def test_batch_restores_backup_on_copy_failure(self):
         # 回归：旧 bat 复制失败就扔下半新半旧的安装目录走人。
         # 现在必须从备份恢复（包括 _internal 的 /MIR 还原），再报错。
         script = build_update_script()
-        self.assertIn('robocopy "%INSTALL_DIR%%BACKUP%" "%INSTALL_DIR%"', script)
-        self.assertIn('"%INSTALL_DIR%%BACKUP%\\_internal"', script)
+        self.assertIn('robocopy "%INSTALL_DIR%\\%BACKUP%" "%INSTALL_DIR%"', script)
+        self.assertIn('"%INSTALL_DIR%\\%BACKUP%\\_internal"', script)
         self.assertIn("%EXPECTED%", script)
 
 
@@ -810,7 +856,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.4"},
+                "info": {"version": "1.1.5"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -830,7 +876,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(Path(tmp) / "empty-staging"),
-                "info": {"version": "1.1.4"},
+                "info": {"version": "1.1.5"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -850,7 +896,7 @@ class UpdateRouteTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.4",
+            "version": "1.1.5",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "更快更稳",
@@ -942,7 +988,7 @@ class UpdateRouteTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             data = json.loads(body)
             self.assertTrue(data["update_available"])
-            self.assertEqual(data["version"], "1.1.4")
+            self.assertEqual(data["version"], "1.1.5")
             self.assertEqual(data["current_version"], __version__)
             self.assertEqual(data["notes"], "更快更稳")
 
@@ -952,9 +998,9 @@ class UpdateRouteTests(unittest.TestCase):
         # 后才能重新查到新版。
         with tempfile.TemporaryDirectory() as tmp:
             base = self._base_dir(tmp)
-            updater.write_pending_update(base, "1.1.4")
+            updater.write_pending_update(base, "1.1.5")
             updater.write_update_result(
-                base, {"status": "failed", "expected_version": "1.1.4", "reason_code": "copy"}
+                base, {"status": "failed", "expected_version": "1.1.5", "reason_code": "copy"}
             )
             original_get_install_dir = updater.get_install_dir
             updater.get_install_dir = lambda: base
@@ -973,7 +1019,7 @@ class UpdateRouteTests(unittest.TestCase):
                 self.assertTrue(status.startswith("200"), body)
                 data = json.loads(body)
                 self.assertTrue(data["update_available"])
-                self.assertEqual(data["version"], "1.1.4")
+                self.assertEqual(data["version"], "1.1.5")
             finally:
                 updater.get_install_dir = original_get_install_dir
 

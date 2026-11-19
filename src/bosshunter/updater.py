@@ -451,6 +451,20 @@ def build_update_script() -> str:
     file itself holds no literal Chinese in the probe lines: it is
     written as UTF-8 without BOM and cmd.exe reads it in the local
     code page.
+
+    The install dir from %~dp0 always ends with a backslash, and
+    passing "%INSTALL_DIR%" bare to robocopy turns that trailing
+    backslash into an escaped closing quote (CommandLineToArgvW
+    treats \" as a literal quote): robocopy then swallows every
+    switch into the destination path and fails instantly
+    (update-flow v16→v17 run 44625451318: the wait loop was fixed,
+    the copy failed in 0.22s and rolled back, with no robocopy
+    output in update.log). The batch strips the trailing backslash
+    right after setting INSTALL_DIR (and STAGING for safety) and
+    every path join below spells the backslash out. Every robocopy
+    also logs its exit code to update.log immediately (captured
+    before the errorlevel check), so the next copy failure names
+    its cause in the log instead of guessing.
     """
     return (
         "@echo off\r\n"
@@ -474,13 +488,16 @@ def build_update_script() -> str:
         "rem 1 秒，60 次上限仍在一到两分钟里。\r\n"
         "setlocal\r\n"
         'set "STAGING=%~1"\r\n'
+        'if "%STAGING:~-1%"=="\\" set "STAGING=%STAGING:~0,-1%"\r\n'
         'set "EXE_NAME=%~2"\r\n'
         'set "PID=%~3"\r\n'
         'set "EXPECTED=%~4"\r\n'
         'set "BACKUP=%~5"\r\n'
         'set "INSTALL_DIR=%~dp0"\r\n'
-        'set "LOG=%INSTALL_DIR%update.log"\r\n'
-        'set "RESULT=%INSTALL_DIR%update-result.json"\r\n'
+        'rem dp0 自带末尾反斜杠：INSTALL_DIR 传给 robocopy 时，末尾反斜杠会把收尾引号转义掉，开关全被吞进路径里、robocopy 瞬间报错（v16 到 v17 全流程测试 run 44625451318：等待已修好，换文件 0.22 秒失败回滚）。先去掉末尾反斜杠，之后拼路径都显式加反斜杠。\r\n'
+        'if "%INSTALL_DIR:~-1%"=="\\" set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"\r\n'
+        'set "LOG=%INSTALL_DIR%\\update.log"\r\n'
+        'set "RESULT=%INSTALL_DIR%\\update-result.json"\r\n'
         'echo [%date% %time%] 开始更新，正在等主程序退出... > "%LOG%"\r\n'
         "set /a WAITED=0\r\n"
         ":waitloop\r\n"
@@ -510,20 +527,30 @@ def build_update_script() -> str:
         ":copy\r\n"
         'echo [%date% %time%] 主程序已退出，正在换上新版本... >> "%LOG%"\r\n'
         'robocopy "%STAGING%" "%INSTALL_DIR%" /E /IS /R:5 /W:3 /XD data /XF config.yaml >> "%LOG%" 2>&1\r\n'
-        "if errorlevel 8 goto :rollback\r\n"
-        'robocopy "%STAGING%\\_internal" "%INSTALL_DIR%_internal" /MIR /R:3 /W:2 >> "%LOG%" 2>&1\r\n'
-        "if errorlevel 8 goto :rollback\r\n"
-        'if not exist "%INSTALL_DIR%%EXE_NAME%" goto :rollback\r\n'
+        'set "RC=%errorlevel%"\r\n'
+        'echo [%date% %time%] robocopy 换主文件退出码 %RC% >> "%LOG%"\r\n'
+        'if %RC% geq 8 goto :rollback\r\n'
+        'robocopy "%STAGING%\\_internal" "%INSTALL_DIR%\\_internal" /MIR /R:3 /W:2 >> "%LOG%" 2>&1\r\n'
+        'set "RC=%errorlevel%"\r\n'
+        'echo [%date% %time%] robocopy 换 _internal 退出码 %RC% >> "%LOG%"\r\n'
+        'if %RC% geq 8 goto :rollback\r\n'
+        'if not exist "%INSTALL_DIR%\\%EXE_NAME%" goto :rollback\r\n'
         'echo [%date% %time%] 换好了，正在重新打开... >> "%LOG%"\r\n'
         '> "%RESULT%" echo {"status": "applied", "expected_version": "%EXPECTED%", "reason_code": ""}\r\n'
         'rmdir /s /q "%STAGING%"\r\n'
-        'start "" "%INSTALL_DIR%%EXE_NAME%"\r\n'
+        'start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
         '(goto) 2>nul & del "%~f0"\r\n'
         ":rollback\r\n"
         'echo [%date% %time%] 复制失败，正在用备份恢复旧版本... >> "%LOG%"\r\n'
         'if "%BACKUP%"=="" goto :fail_copy\r\n'
-        'robocopy "%INSTALL_DIR%%BACKUP%" "%INSTALL_DIR%" /E /IS /R:3 /W:2 /XD data /XF config.yaml >> "%LOG%" 2>&1\r\n'
-        'if exist "%INSTALL_DIR%%BACKUP%\\_internal\\" robocopy "%INSTALL_DIR%%BACKUP%\\_internal" "%INSTALL_DIR%_internal" /MIR /R:3 /W:2 >> "%LOG%" 2>&1\r\n'
+        'robocopy "%INSTALL_DIR%\\%BACKUP%" "%INSTALL_DIR%" /E /IS /R:3 /W:2 /XD data /XF config.yaml >> "%LOG%" 2>&1\r\n'
+        'set "RC=%errorlevel%"\r\n'
+        'echo [%date% %time%] robocopy 恢复主文件退出码 %RC% >> "%LOG%"\r\n'
+        'if not exist "%INSTALL_DIR%\\%BACKUP%\\_internal\\" goto :rollback_after_internal\r\n'
+        'robocopy "%INSTALL_DIR%\\%BACKUP%\\_internal" "%INSTALL_DIR%\\_internal" /MIR /R:3 /W:2 >> "%LOG%" 2>&1\r\n'
+        'set "RC=%errorlevel%"\r\n'
+        'echo [%date% %time%] robocopy 恢复 _internal 退出码 %RC% >> "%LOG%"\r\n'
+        ":rollback_after_internal\r\n"
         'echo [%date% %time%] 已恢复旧版本。 >> "%LOG%"\r\n'
         "goto :fail_copy\r\n"
         ":fail_stuck\r\n"
@@ -540,7 +567,7 @@ def build_update_script() -> str:
         '> "%RESULT%" echo {"status": "failed", "expected_version": "%EXPECTED%", "reason_code": "%FAIL_CODE%"}\r\n'
         'powershell -NoProfile -NonInteractive -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
         "if %errorlevel% equ 0 goto :fail_exit\r\n"
-        'if exist "%INSTALL_DIR%%EXE_NAME%" start "" "%INSTALL_DIR%%EXE_NAME%"\r\n'
+        'if exist "%INSTALL_DIR%\\%EXE_NAME%" start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
         ":fail_exit\r\n"
         '(goto) 2>nul & del "%~f0"\r\n'
     )
