@@ -509,9 +509,9 @@ try {
 Measure-Stage 'stop' {
   $conns = Get-NetTCPConnection -LocalPort $RestartPort -State Listen -ErrorAction SilentlyContinue
   if ($conns) {
-    $pids = $conns | Select-Object -ExpandProperty OwningProcess -Unique
-    foreach ($pid in $pids) {
-      Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+    $listenerPids = $conns | Select-Object -ExpandProperty OwningProcess -Unique
+    foreach ($listenerPid in $listenerPids) {
+      Stop-Process -Id $listenerPid -Force -ErrorAction SilentlyContinue
     }
     $deadline = (Get-Date).AddSeconds(10)
     while ((Get-Date) -lt $deadline) {
