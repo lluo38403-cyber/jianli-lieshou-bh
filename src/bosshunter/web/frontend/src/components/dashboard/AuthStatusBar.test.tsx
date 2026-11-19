@@ -69,6 +69,22 @@ describe('AuthStatusBar', () => {
     expect(screen.getByText('网络断了，先用上次的状态顶着')).toBeTruthy()
   })
 
+  it('长期有效不数天数，直接显示长期有效', () => {
+    const auth = fakeAuth({
+      snapshot: {
+        machineIdShort: 'a1b2c3d4e5f6',
+        status: 'active',
+        remainingSeconds: 315360000,
+        offline: false,
+        error: '',
+      },
+      remainingSeconds: 315360000,
+    })
+    render(<AuthStatusBar auth={auth} />)
+    expect(screen.getByText('长期有效')).toBeTruthy()
+    expect(screen.queryByText(/剩余/)).toBeNull()
+  })
+
   it('点激活把卡密交过去，成功显示好了', async () => {
     const auth = fakeAuth()
     render(<AuthStatusBar auth={auth} />)
@@ -78,6 +94,18 @@ describe('AuthStatusBar', () => {
     fireEvent.click(screen.getByTestId('auth-activate'))
     expect(auth.activate).toHaveBeenCalledWith('JL-D-AAAA-BBBB-CCCC')
     expect(await screen.findByText('好了，有效期加上了。')).toBeTruthy()
+  })
+
+  it('长期权限的卡激活成功显示已开通长期权限', async () => {
+    const auth = fakeAuth({
+      activate: vi.fn(async () => ({ ok: true, cardType: 'master' })),
+    })
+    render(<AuthStatusBar auth={auth} />)
+    fireEvent.change(screen.getByTestId('auth-card-input'), {
+      target: { value: 'JL-MASTER-TEST' },
+    })
+    fireEvent.click(screen.getByTestId('auth-activate'))
+    expect(await screen.findByText('已开通长期权限。')).toBeTruthy()
   })
 
   it('激活失败显示后端的大白话错误', async () => {

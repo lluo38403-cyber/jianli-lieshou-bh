@@ -23,17 +23,21 @@ export interface AuthHook {
   remainingSeconds: number
   loading: boolean
   refresh: () => Promise<void>
-  activate: (cardCode: string) => Promise<{ ok: boolean; error?: string }>
+  activate: (cardCode: string) => Promise<{ ok: boolean; cardType?: string; error?: string }>
 }
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0')
 }
 
-/** 倒计时文案：试用中（剩余 01:45:20）/ VIP有效（剩余 6天 14小时）/ 已过期，请激活。 */
+/** 剩余超过 365 天就是长期有效，不再数具体天数。 */
+const LONG_TERM_SECONDS = 365 * 86400
+
+/** 倒计时文案：试用中（剩余 01:45:20）/ VIP有效（剩余 6天 14小时）/ 长期有效 / 已过期，请激活。 */
 export function formatRemaining(seconds: number, status: AuthStatus): string {
   if (status === 'unknown') return '正在看授权状态…'
   if (status === 'expired' || seconds <= 0) return '已过期，请激活'
+  if (seconds >= LONG_TERM_SECONDS) return '长期有效'
   const label = status === 'trial' ? '试用中' : 'VIP有效'
   if (seconds < 86400) {
     const h = Math.floor(seconds / 3600)
@@ -169,7 +173,7 @@ export function useAuth(): AuthHook {
   }, [applySnapshot, fetchStatus])
 
   const activate = useCallback(
-    async (cardCode: string): Promise<{ ok: boolean; error?: string }> => {
+    async (cardCode: string): Promise<{ ok: boolean; cardType?: string; error?: string }> => {
       const code = cardCode.trim()
       if (!code) return { ok: false, error: '先把卡密填上。' }
       try {
@@ -178,10 +182,13 @@ export function useAuth(): AuthHook {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ card_code: code }),
         })
-        const data = (await res.json().catch(() => ({}))) as { error?: string }
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string
+          card_type?: string
+        }
         if (!res.ok) return { ok: false, error: String(data?.error || '这张卡用不了。') }
         await fetchStatus()
-        return { ok: true }
+        return { ok: true, cardType: String(data?.card_type || '') || undefined }
       } catch {
         return { ok: false, error: '现在连不上，检查网络后重试。' }
       }

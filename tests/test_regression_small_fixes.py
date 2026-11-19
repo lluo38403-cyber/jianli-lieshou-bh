@@ -57,8 +57,8 @@ class VersionMetadataTests(unittest.TestCase):
             / "Sidebar.tsx"
         ).read_text(encoding="utf-8")
 
-        # 简历猎手自有版本号（v2 改版定为 1.0.0，自动更新版升到 1.0.1，卡密鉴权版升到 1.0.2，不再沿用上游 BossHunter 的 2.4.0）。
-        version = "1.0.2"
+        # 简历猎手自有版本号（v2 改版定为 1.0.0，自动更新版升到 1.0.1，卡密鉴权版升到 1.0.2，万能卡显示版升到 1.0.3，不再沿用上游 BossHunter 的 2.4.0）。
+        version = "1.0.3"
         frontend = ROOT / "src" / "bosshunter" / "web" / "frontend"
         package = json.loads((frontend / "package.json").read_text(encoding="utf-8"))
         lock = json.loads((frontend / "package-lock.json").read_text(encoding="utf-8"))

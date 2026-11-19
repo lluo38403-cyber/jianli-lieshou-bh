@@ -51,7 +51,8 @@ export function AuthStatusBar({ auth }: AuthStatusBarProps) {
     try {
       const result = await auth.activate(cardCode)
       if (result.ok) {
-        setMessage('好了，有效期加上了。')
+        // 长期权限的卡：只说“长期权限”，不提卡的种类。
+        setMessage(result.cardType === 'master' ? '已开通长期权限。' : '好了，有效期加上了。')
         setCardCode('')
       } else {
         setMessage(result.error || '这张卡用不了。')

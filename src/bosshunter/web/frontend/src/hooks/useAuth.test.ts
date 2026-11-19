@@ -34,6 +34,13 @@ describe('formatRemaining', () => {
     expect(formatRemaining(86400, 'active')).toBe('VIP有效（剩余 1天 0小时）')
   })
 
+  it('剩余 365 天及以上显示长期有效，364 天仍按天数显示', () => {
+    expect(formatRemaining(365 * 86400, 'active')).toBe('长期有效')
+    expect(formatRemaining(366 * 86400, 'active')).toBe('长期有效')
+    expect(formatRemaining(315360000, 'active')).toBe('长期有效')
+    expect(formatRemaining(364 * 86400 + 5 * 3600, 'active')).toBe('VIP有效（剩余 364天 5小时）')
+  })
+
   it('过期与未知状态的文案', () => {
     expect(formatRemaining(0, 'expired')).toBe('已过期，请激活')
     expect(formatRemaining(100, 'expired')).toBe('已过期，请激活')
@@ -64,7 +71,8 @@ describe('useAuth', () => {
       if (url === '/api/auth/refresh') return jsonResponse(TRIAL_STATUS)
       if (url === '/api/auth/activate') {
         const body = JSON.parse(String(init?.body || '{}')) as { card_code?: string }
-        if (body.card_code === 'JL-D-AAAA-BBBB-CCCC') return jsonResponse({ ok: true })
+        if (body.card_code === 'JL-D-AAAA-BBBB-CCCC') return jsonResponse({ ok: true, card_type: 'day' })
+        if (body.card_code === 'JL-MASTER-TEST') return jsonResponse({ ok: true, card_type: 'master' })
         return jsonResponse({ error: '这个卡密不对，请检查有没有输错。' }, false)
       }
       return jsonResponse({})
@@ -87,18 +95,30 @@ describe('useAuth', () => {
     expect(result.current.display.buyUrl).toBe('https://example.com/shop')
   })
 
-  it('激活成功后刷新状态', async () => {
+  it('激活成功后刷新状态，卡的种类带回来', async () => {
     const { result } = renderHook(() => useAuth())
     await waitFor(() => expect(result.current.snapshot).not.toBeNull())
-    let outcome: { ok: boolean; error?: string } | undefined
+    let outcome: { ok: boolean; cardType?: string; error?: string } | undefined
     await act(async () => {
       outcome = await result.current.activate('JL-D-AAAA-BBBB-CCCC')
     })
     expect(outcome?.ok).toBe(true)
+    expect(outcome?.cardType).toBe('day')
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/auth/activate',
       expect.objectContaining({ method: 'POST' }),
     )
+  })
+
+  it('长期权限的卡激活后卡的种类是 master', async () => {
+    const { result } = renderHook(() => useAuth())
+    await waitFor(() => expect(result.current.snapshot).not.toBeNull())
+    let outcome: { ok: boolean; cardType?: string; error?: string } | undefined
+    await act(async () => {
+      outcome = await result.current.activate('JL-MASTER-TEST')
+    })
+    expect(outcome?.ok).toBe(true)
+    expect(outcome?.cardType).toBe('master')
   })
 
   it('激活失败返回大白话错误', async () => {
