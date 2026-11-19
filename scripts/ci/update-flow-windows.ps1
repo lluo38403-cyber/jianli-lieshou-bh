@@ -95,6 +95,120 @@ function Show-StuckProcesses {
   }
 }
 
+function Show-BatDiagnostics {
+  # restart 失败时的深挖诊断：两次失败现场一模一样（update.log 只有
+  # 第一行、bat 的 cmd.exe 还在、无 exe 在跑），v14 的 PID+进程名
+  # 双重匹配已被证实确实在跑的 bat 里，说明问题不在退出条件，而
+  # 是某条命令本身在一次迭代里就不返回（tasklist / findstr / ping
+  # 三者之一）。这里查 bat 进程的子进程、CPU 时间，再实测 ping
+  # 和 tasklist 各要多久，直接定性卡在哪条命令。
+  # 每项探针都有超时保护，诊断本身绝不能把测试再卡住；任何探针
+  # 失败只打印一行，不抛异常。
+  try {
+    $cmds = Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.CommandLine -match 'update\.bat' }
+    if (-not $cmds) {
+      Write-Host '  diag-bat: 没有跑 update.bat 的 cmd.exe（bat 已退出或已死）'
+    } else {
+      foreach ($c in $cmds) {
+        $batPid = $c.ProcessId
+        Write-Host "  diag-bat: bat cmd.exe PID $batPid，启动于 $($c.CreationDate)"
+        try {
+          $p = Get-Process -Id $batPid -ErrorAction SilentlyContinue
+          if ($p) {
+            Write-Host "  diag-bat: bat cmd.exe CPU 累计 $($p.CPU) 秒（CPU 高=循环空转，CPU 低=卡在一个调用上）"
+          }
+        } catch {
+          Write-Host "  diag-bat: 查 CPU 时间失败：$($_.Exception.Message)"
+        }
+        try {
+          $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $batPid" -ErrorAction SilentlyContinue
+          if ($children) {
+            foreach ($child in $children) {
+              Write-Host "  diag-bat: bat 的子进程还活着：$($child.Name) PID $($child.ProcessId)，$($child.CommandLine)"
+            }
+          } else {
+            Write-Host '  diag-bat: bat 没有活着的子进程（tasklist/ping/findstr 都已返回，卡在循环本身）'
+          }
+        } catch {
+          Write-Host "  diag-bat: 查子进程失败：$($_.Exception.Message)"
+        }
+        try {
+          $batPath = $null
+          if ($c.CommandLine -match '([A-Za-z]:\\[^\s"]+\.bat)') { $batPath = $Matches[1] }
+          if (-not $batPath -or -not (Test-Path $batPath)) {
+            foreach ($cand in @((Join-Path $ExeDir 'update.bat'), (Join-Path $env:RUNNER_TEMP 'update-run\update.bat'), (Join-Path $env:TEMP 'update-run\update.bat'))) {
+              if ($cand -and (Test-Path $cand)) { $batPath = $cand; break }
+            }
+          }
+          if ($batPath -and (Test-Path $batPath)) {
+            Write-Host "  diag-bat: update.bat 路径 $batPath，内容如下："
+            Get-Content $batPath -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  diag-bat: $_" }
+          } else {
+            Write-Host '  diag-bat: 找不到 update.bat 文件（命令行和默认位置都没找到）'
+          }
+        } catch {
+          Write-Host "  diag-bat: dump update.bat 失败：$($_.Exception.Message)"
+        }
+      }
+    }
+  } catch {
+    Write-Host "  diag-bat: 诊断失败：$($_.Exception.Message)"
+  }
+  # ping 探针：bat 每次循环都跑 ping -n 2，实测它在当前机器上要多久。
+  try {
+    $t0 = Get-Date
+    $job = Start-Job -ScriptBlock { ping.exe -n 2 127.0.0.1 } -ErrorAction SilentlyContinue
+    if ($job) {
+      $done = Wait-Job $job -Timeout 15
+      $elapsed = ((Get-Date) - $t0).TotalSeconds
+      if ($done) {
+        $null = Receive-Job $job -ErrorAction SilentlyContinue
+        Write-Host "  diag-ping: ping -n 2 127.0.0.1 用了 $($elapsed.ToString('0.0')) 秒，正常返回"
+      } else {
+        Write-Host "  diag-ping: TIMEOUT，ping -n 2 127.0.0.1 在 15 秒内没返回（bat 可能就卡在 ping 上）"
+      }
+      Stop-Job $job -ErrorAction SilentlyContinue | Out-Null
+      Remove-Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+    } else {
+      Write-Host '  diag-ping: 启动探针作业失败'
+    }
+  } catch {
+    Write-Host "  diag-ping: 探针失败：$($_.Exception.Message)"
+  }
+  # tasklist 探针：bat 里同款双过滤，实测它要多久、返回什么。
+  try {
+    $oldPid = $null
+    if ($proc) { $oldPid = $proc.Id }
+    if ($oldPid) {
+      $t0 = Get-Date
+      $job = Start-Job -ScriptBlock {
+        param($OldPid)
+        tasklist /FI "PID eq $OldPid" /FI "IMAGENAME eq 简历猎手.exe"
+      } -ArgumentList $oldPid -ErrorAction SilentlyContinue
+      if ($job) {
+        $done = Wait-Job $job -Timeout 15
+        $elapsed = ((Get-Date) - $t0).TotalSeconds
+        if ($done) {
+          $out = Receive-Job $job -ErrorAction SilentlyContinue
+          Write-Host "  diag-tasklist: 双过滤 tasklist 用了 $($elapsed.ToString('0.0')) 秒，输出如下："
+          $out | ForEach-Object { Write-Host "  diag-tasklist: $_" }
+        } else {
+          Write-Host "  diag-tasklist: TIMEOUT，双过滤 tasklist 在 15 秒内没返回（bat 可能就卡在 tasklist 上）"
+        }
+        Stop-Job $job -ErrorAction SilentlyContinue | Out-Null
+        Remove-Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+      } else {
+        Write-Host '  diag-tasklist: 启动探针作业失败'
+      }
+    } else {
+      Write-Host '  diag-tasklist: 旧进程 PID 未知（$proc 为空），跳过探针'
+    }
+  } catch {
+    Write-Host "  diag-tasklist: 探针失败：$($_.Exception.Message)"
+  }
+}
+
 function Stop-ListeningProcess {
   param([int]$ListenPort)
   $conns = Get-NetTCPConnection -LocalPort $ListenPort -State Listen -ErrorAction SilentlyContinue
@@ -380,6 +494,7 @@ try {
   Show-UpdateLogTail
   Show-UpdateResult
   Show-StuckProcesses
+  Show-BatDiagnostics
   if ($proc -and -not $proc.HasExited) {
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
   }
