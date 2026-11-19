@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import ConfigPage from './ConfigPage'
 
 afterEach(() => {
@@ -110,4 +110,95 @@ it('has no AI settings section on the user page', async () => {
   expect(screen.queryByText('测试连接')).toBeNull()
   expect(screen.queryByText('AI 生成招呼语')).toBeNull()
   expect(screen.queryByText('招呼语质量提醒')).toBeNull()
+})
+
+it('shows city names without internal codes and offers hot-city quick picks', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    const body = url === '/api/config'
+      ? { platforms: { boss: { enabled: true, search: { keywords: ['人力'], cities: ['北京'] } } }, profile: { target_cities: ['北京'] } }
+      : url.startsWith('/api/cities') ? { ok: true, cities: [{ name: '北京', code: '010000' }, { name: '上海', code: '020000' }, { name: '深圳', code: '030000' }] } : {}
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<ConfigPage />)
+  // 页面有两个城市选择器（BOSS 平台、全局过滤），都只显示城市名。
+  expect((await screen.findAllByPlaceholderText('搜索城市名')).length).toBeGreaterThan(0)
+  expect(document.body.textContent).not.toContain('010000')
+  expect(document.body.textContent).not.toContain('020000')
+  expect(screen.queryByText('刷新城市列表')).toBeNull()
+  expect(screen.getAllByRole('button', { name: '刷新城市列表' }).length).toBeGreaterThan(0)
+  fireEvent.click(screen.getAllByRole('button', { name: '上海' })[0])
+  expect((await screen.findAllByText('已选 2 个')).length).toBeGreaterThan(0)
+})
+
+it('warns explicitly instead of silently dropping a city without a code', async () => {
+  let saved: Record<string, any> = {}
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    let body: unknown = {}
+    if (url === '/api/config') {
+      if (init?.method === 'POST') { saved = JSON.parse(String(init.body)); body = { success: true } }
+      else body = {
+        platforms: {
+          boss: { enabled: true, search: { keywords: ['人力'], cities: ['北京'] } },
+          zhilian: { enabled: true, search: { keywords: [], cities: [] } },
+        },
+        profile: { target_cities: ['北京'] },
+      }
+    }
+    if (url.startsWith('/api/cities')) body = { ok: true, cities: [{ name: '北京', code: '010000' }, { name: '上海', code: '020000' }] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<ConfigPage />)
+  await screen.findByText('人力')
+  fireEvent.click(screen.getByRole('tab', { name: '智联' }))
+  const cityInput = await screen.findByPlaceholderText('如：深圳')
+  fireEvent.change(cityInput, { target: { value: '喀什' } })
+  expect(await screen.findByText(/这几个城市还没认出来：喀什/)).toBeTruthy()
+  // 没认出来的城市还留着，没被偷偷丢掉。
+  expect(screen.getByText('喀什', { exact: true })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+  await screen.findByText('设置已经保存了')
+  expect(saved.platforms.zhilian.search.cities).toEqual(['喀什'])
+  expect(saved.platforms.zhilian.search.city_codes).toEqual({ '喀什': '' })
+})
+
+it('adds a keyword with the Add button and no longer shows the stale warning', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    const body = url === '/api/config'
+      ? { platforms: { boss: { enabled: true, search: { keywords: [], cities: ['北京'] } } }, profile: { target_cities: ['北京'] } }
+      : url.startsWith('/api/cities') ? { ok: true, cities: [{ name: '北京', code: '010000' }] } : {}
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<ConfigPage />)
+  const keywordInput = await screen.findByPlaceholderText('比如：人力、产品运营')
+  expect(screen.queryByText(/不然保存不了/)).toBeNull()
+  const tagsBox = keywordInput.closest('div')!.parentElement as HTMLElement
+  fireEvent.change(keywordInput, { target: { value: '产品经理' } })
+  fireEvent.click(within(tagsBox).getByRole('button', { name: '添加' }))
+  expect(within(tagsBox).getByText('产品经理')).toBeTruthy()
+})
+
+it('switches platform tabs and only shows the selected platform config', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    const body = url === '/api/config'
+      ? { platforms: {
+        boss: { enabled: true, search: { keywords: ['人力'], cities: ['北京'] } },
+        zhilian: { enabled: true, search: { keywords: ['运营'], cities: ['深圳'] } },
+      }, profile: { target_cities: ['北京'] } }
+      : url.startsWith('/api/cities') ? { ok: true, cities: [{ name: '北京', code: '010000' }, { name: '深圳', code: '030000' }] } : {}
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<ConfigPage />)
+  await screen.findByText('人力')
+  expect(screen.getByText('人力')).toBeTruthy()
+  expect(screen.queryByText('运营')).toBeNull()
+  fireEvent.click(screen.getByRole('tab', { name: '智联' }))
+  await waitFor(() => expect(screen.getByText('运营')).toBeTruthy())
+  expect(screen.queryByText('人力')).toBeNull()
+  // 底部固定保存栏与顶部共用同一保存逻辑。
+  expect(screen.getByRole('button', { name: '保存设置' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: '保存' })).toBeTruthy()
 })

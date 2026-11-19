@@ -224,7 +224,27 @@ class BrowserPreflightTests(unittest.TestCase):
 		self.assertIn("chrome://inspect/#remote-debugging", chrome_check["detail"])
 
 	@patch("bosshunter.web.preflight.run_browser_diagnostics")
-	def test_non_google_browser_is_reported(self, diagnostics):
+	def test_edge_browser_passes_like_chrome(self, diagnostics):
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Microsoft Edge",
+			"browser_product": "Edg/138.0",
+			"boss_tab": None,
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+
+		checks = check_browser_connection({})
+
+		chrome_check = next(check for check in checks if check["id"] == "chrome_connection")
+		self.assertEqual(chrome_check["status"], "pass")
+		self.assertIn("Microsoft Edge", chrome_check["message"])
+		self.assertFalse(any(check["id"] == "chrome_product" for check in checks))
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_edge_product_without_browser_name_passes(self, diagnostics):
 		diagnostics.return_value = {
 			"node": {"available": True, "version": "v22"},
 			"runtime": True,
@@ -237,9 +257,91 @@ class BrowserPreflightTests(unittest.TestCase):
 
 		checks = check_browser_connection({})
 
-		product_check = next(check for check in checks if check["id"] == "chrome_product")
-		self.assertEqual(product_check["status"], "error")
-		self.assertIn("不是 Google Chrome", product_check["message"])
+		chrome_check = next(check for check in checks if check["id"] == "chrome_connection")
+		self.assertEqual(chrome_check["status"], "pass")
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_51job_login_required_is_reported(self, diagnostics):
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": None,
+			"job51_tab": {"targetId": "3", "url": "https://we.51job.com/pc/search"},
+			"job51_page": {"status": "login_required", "message": "前程无忧页面要求登录"},
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+
+		checks = check_browser_connection({}, {"platform_order": ["51job"]})
+
+		login_check = next(check for check in checks if check["id"] == "51job_login")
+		self.assertEqual(login_check["status"], "error")
+		self.assertIn("要求登录", login_check["message"])
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_51job_ready_page_passes(self, diagnostics):
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": None,
+			"job51_tab": {"targetId": "3", "url": "https://we.51job.com/pc/search"},
+			"job51_page": {"status": "ready", "message": "已发现前程无忧搜索框，未发现登录墙"},
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+
+		checks = check_browser_connection({}, {"platform_order": ["51job"]})
+
+		tab_check = next(check for check in checks if check["id"] == "51job_tab")
+		self.assertEqual(tab_check["status"], "pass")
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_liepin_missing_tab_is_reported(self, diagnostics):
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": None,
+			"liepin_tab": None,
+			"liepin_page": None,
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+
+		checks = check_browser_connection({}, {"platform_order": ["liepin"]})
+
+		tab_check = next(check for check in checks if check["id"] == "liepin_tab")
+		self.assertEqual(tab_check["status"], "error")
+		self.assertIn("未发现已打开的猎聘页面", tab_check["message"])
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_liepin_login_required_is_reported(self, diagnostics):
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": None,
+			"liepin_tab": {"targetId": "4", "url": "https://www.liepin.com/zhaopin/"},
+			"liepin_page": {"status": "login_required", "message": "猎聘页面要求登录"},
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+
+		checks = check_browser_connection({}, {"platform_order": ["liepin"]})
+
+		login_check = next(check for check in checks if check["id"] == "liepin_login")
+		self.assertEqual(login_check["status"], "error")
+		self.assertIn("要求登录", login_check["message"])
 
 	@patch("bosshunter.web.preflight.run_browser_diagnostics")
 	def test_chromium_name_is_rejected_even_when_product_looks_like_chrome(self, diagnostics):

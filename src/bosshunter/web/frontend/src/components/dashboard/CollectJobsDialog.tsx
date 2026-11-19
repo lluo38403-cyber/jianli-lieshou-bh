@@ -103,6 +103,7 @@ function draftFromConfig(config: Record<string, any> | null, platform: PlatformI
 
 export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose, onStart }: CollectJobsDialogProps) {
   const [drafts, setDrafts] = useState(initialDrafts)
+  const [activeTab, setActiveTab] = useState<PlatformId>('boss')
   const [order, setOrder] = useState<PlatformId[]>(['boss'])
   const [autoScore, setAutoScore] = useState(false)
   const [cityPolicy, setCityPolicy] = useState({ enabled: true, warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5 })
@@ -289,8 +290,8 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-label="找新岗位">
-      <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-3xl border border-card-border bg-card p-6 shadow-2xl">
-        <div className="flex items-start justify-between gap-4">
+      <div className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-card-border bg-card shadow-2xl">
+        <div className="flex items-start justify-between gap-4 px-6 pt-6">
           <div>
             <div className="text-xs font-black tracking-[0.18em] text-primary">COLLECT JOBS</div>
             <h2 className="mt-1 text-2xl font-black">{mode === 'full' ? '找新岗位的设置' : '岗位采集'}</h2>
@@ -298,6 +299,8 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
           </div>
           <Button variant="ghost" size="sm" onClick={onClose} disabled={starting} aria-label="关闭"><X className="h-5 w-5" /></Button>
         </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
 
         {mode === 'collect' && <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="text-sm font-black">接着上次没找完的 BOSS 继续找</div>
@@ -331,42 +334,58 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
           </div>
         )}
 
-        <div className="mt-5 grid gap-4 lg:grid-cols-2">
-          {(['boss', 'zhilian', '51job', 'liepin'] as PlatformId[]).map(platform => {
-            const draft = drafts[platform]
-            const label = PLATFORM_LABELS[platform]
-            const platformCities = platform === 'zhilian' ? zhilianCities : platform === '51job' ? job51Cities : liepinCities
-            return (
-              <section key={platform} className={`rounded-2xl border p-4 ${draft.enabled ? 'border-primary/30 bg-surface' : 'border-card-border bg-card opacity-70'}`}>
-                <div className="flex items-center justify-between gap-3">
-                  <label className="flex items-center gap-2 text-lg font-black"><input type="checkbox" checked={draft.enabled} disabled={mode === 'full' && platform !== 'boss'} onChange={event => togglePlatform(platform, event.target.checked)} className="h-4 w-4 accent-primary" />{label}</label>
-                  {draft.enabled && <div className="text-xs font-bold text-primary">排队 {enabledOrder.indexOf(platform) + 1}</div>}
-                </div>
-                {draft.enabled && <div className="mt-4 space-y-3">
-                  <label className="block text-xs font-bold text-muted">想找的岗位（逗号或换行隔开）<Input value={draft.keywords} onChange={event => updateDraft(platform, 'keywords', event.target.value)} placeholder="产品经理, 产品运营" /></label>
-                  <label className="block text-xs font-bold text-muted">城市（逗号或换行隔开）<Input list={platform !== 'boss' ? `${platform}-city-options` : undefined} value={draft.cities} onChange={event => updateDraft(platform, 'cities', event.target.value)} placeholder={platform === '51job' ? '上海' : '北京'} /></label>
-                  {platform !== 'boss' ? <>
-                    <datalist id={`${platform}-city-options`}>{platformCities.map(city => <option key={city.code} value={city.name} />)}</datalist>
-                    <div className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs text-muted">
-                      <div className="font-bold text-foreground">城市编号</div>
-                      <p className="mt-1">只用里面有的{PLATFORM_SHORT_LABELS[platform]}城市编号，不会瞎猜。</p>
-                      {!!splitValues(draft.cities).length && <div className="mt-2 flex flex-wrap gap-1">
-                        {splitValues(draft.cities).map(city => <span key={city} className={`rounded-full px-2 py-1 ${findPlatformCity(city, platformCities) ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'}`}>
-                          {city} · {findPlatformCity(city, platformCities) ? '已经认出来了' : '里面没有'}
-                        </span>)}
-                      </div>}
-                    </div>
-                  </> : <p className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs text-muted">BOSS 城市编号系统自己会配，不用你填。</p>}
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="text-xs font-bold text-muted">最多翻几页<Input type="number" min={1} max={10} value={draft.maxPages} onChange={event => updateDraft(platform, 'maxPages', event.target.value)} /></label>
-                    <label className="text-xs font-bold text-muted">按什么排<Select value={draft.sort} onChange={event => updateDraft(platform, 'sort', event.target.value)}><option value="default">默认</option>{platform !== '51job' && <option value="newest">最新</option>}</Select></label>
-                  </div>
-                </div>}
-                {!draft.enabled && mode === 'full' && platform !== 'boss' && <p className="mt-3 text-xs text-muted">现在只支持“岗位采集”，不会顺便投出去。</p>}
-              </section>
-            )
-          })}
+        <div className="mt-5" role="tablist" aria-label="选一个平台来设置">
+          <div className="flex gap-1 rounded-full border border-card-border bg-surface p-1">
+            {(['boss', 'zhilian', '51job', 'liepin'] as PlatformId[]).map(platform => (
+              <button
+                key={platform}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === platform}
+                onClick={() => setActiveTab(platform)}
+                className={`min-w-0 flex-1 rounded-full px-2 py-1.5 text-xs font-black transition ${activeTab === platform ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted hover:text-primary'}`}
+              >
+                {PLATFORM_SHORT_LABELS[platform]}{drafts[platform].enabled ? '' : '（没用）'}
+              </button>
+            ))}
+          </div>
         </div>
+
+        {(['boss', 'zhilian', '51job', 'liepin'] as PlatformId[]).filter(platform => platform === activeTab).map(platform => {
+          const draft = drafts[platform]
+          const label = PLATFORM_LABELS[platform]
+          const platformCities = platform === 'zhilian' ? zhilianCities : platform === '51job' ? job51Cities : liepinCities
+          return (
+            <section key={platform} className={`mt-3 rounded-2xl border p-4 ${draft.enabled ? 'border-primary/30 bg-surface' : 'border-card-border bg-card opacity-70'}`}>
+              <div className="flex items-center justify-between gap-3">
+                <label className="flex items-center gap-2 text-lg font-black"><input type="checkbox" checked={draft.enabled} disabled={mode === 'full' && platform !== 'boss'} onChange={event => togglePlatform(platform, event.target.checked)} className="h-4 w-4 accent-primary" />{label}</label>
+                {draft.enabled && <div className="text-xs font-bold text-primary">排队 {enabledOrder.indexOf(platform) + 1}</div>}
+              </div>
+              {draft.enabled && <div className="mt-4 space-y-3">
+                <label className="block text-xs font-bold text-muted">想找的岗位（逗号或换行隔开）<Input value={draft.keywords} onChange={event => updateDraft(platform, 'keywords', event.target.value)} placeholder="产品经理, 产品运营" /></label>
+                <label className="block text-xs font-bold text-muted">城市（逗号或换行隔开）<Input list={platform !== 'boss' ? `${platform}-city-options` : undefined} value={draft.cities} onChange={event => updateDraft(platform, 'cities', event.target.value)} placeholder={platform === '51job' ? '上海' : '北京'} /></label>
+                {platform !== 'boss' ? <>
+                  <datalist id={`${platform}-city-options`}>{platformCities.map(city => <option key={city.code} value={city.name} />)}</datalist>
+                  <div className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs text-muted">
+                    <div className="font-bold text-foreground">城市编号</div>
+                    <p className="mt-1">只用里面有的{PLATFORM_SHORT_LABELS[platform]}城市编号，不会瞎猜。</p>
+                    {!!splitValues(draft.cities).length && <div className="mt-2 flex flex-wrap gap-1">
+                      {splitValues(draft.cities).map(city => <span key={city} className={`rounded-full px-2 py-1 ${findPlatformCity(city, platformCities) ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'}`}>
+                        {city} · {findPlatformCity(city, platformCities) ? '已经认出来了' : '里面没有'}
+                      </span>)}
+                    </div>}
+                  </div>
+                </> : <p className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs text-muted">BOSS 城市编号系统自己会配，不用你填。</p>}
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="text-xs font-bold text-muted">最多翻几页<Input type="number" min={1} max={10} value={draft.maxPages} onChange={event => updateDraft(platform, 'maxPages', event.target.value)} /></label>
+                  <label className="text-xs font-bold text-muted">按什么排<Select value={draft.sort} onChange={event => updateDraft(platform, 'sort', event.target.value)}><option value="default">默认</option>{platform !== '51job' && <option value="newest">最新</option>}</Select></label>
+                </div>
+              </div>}
+              {!draft.enabled && mode === 'full' && platform !== 'boss' && <p className="mt-3 text-xs text-muted">现在只支持“岗位采集”，不会顺便投出去。</p>}
+              {!draft.enabled && !(mode === 'full' && platform !== 'boss') && <p className="mt-3 text-xs text-muted">这个平台现在没勾上，勾上才会找。</p>}
+            </section>
+          )
+        })}
 
         <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="flex items-center justify-between gap-3"><div><div className="text-sm font-black">先找哪个</div><p className="mt-1 text-xs text-muted">平台一个一个找；智联、前程无忧、猎聘这次不投、也不盯着。</p></div><div className="flex gap-2">{enabledOrder.map((platform, index) => <div key={platform} className="flex items-center gap-1 rounded-full bg-card px-3 py-1 text-xs font-black text-primary"><span>{index + 1}. {PLATFORM_SHORT_LABELS[platform]}</span><button type="button" onClick={() => move(platform, -1)} disabled={index === 0} aria-label="往上"><ArrowUp className="h-3 w-3" /></button><button type="button" onClick={() => move(platform, 1)} disabled={index === enabledOrder.length - 1} aria-label="往下"><ArrowDown className="h-3 w-3" /></button></div>)}</div></div>
@@ -386,7 +405,8 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         </section>}
         <label className="mt-4 flex items-center justify-between border-t border-card-border py-4"><span className="text-sm font-black">{mode === 'full' ? '找完自动打分' : continuous ? '找完再打分' : '找到就打分'}</span><Switch checked={mode === 'full' || autoScore} onChange={mode === 'full' ? () => undefined : setAutoScore} disabled={mode === 'full'} /></label>
         {error && <div className="mt-3 rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
-        <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={starting}>取消</Button><Button onClick={() => void start()} disabled={Boolean(activeTask) || starting}>{starting ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" />正在开始…</span> : mode === 'full' ? '开始自动找工作' : '重新采集'}</Button></div>
+        </div>
+        <div className="sticky bottom-0 flex shrink-0 justify-end gap-2 border-t border-card-border bg-card px-6 py-3"><Button variant="secondary" onClick={onClose} disabled={starting}>取消</Button><Button onClick={() => void start()} disabled={Boolean(activeTask) || starting}>{starting ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" />正在开始…</span> : mode === 'full' ? '开始自动找工作' : '重新采集'}</Button></div>
       </div>
     </div>
   )

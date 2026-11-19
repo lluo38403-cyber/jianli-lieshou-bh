@@ -553,3 +553,79 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
     expect(screen.getByText('开始打分')).toBeTruthy()
   })
 })
+
+describe('DashboardPage persisted preflight and platform login status', () => {
+  beforeEach(() => {
+    workbenchPayload = baseWorkbench()
+    preflightResponse = () => jsonResponse({})
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockClear()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('reuses the last preflight result instead of showing “not checked yet”', async () => {
+    workbenchPayload = baseWorkbench({
+      last_preflight: {
+        ran_at: '2026-11-19T08:00:00',
+        checks: [{
+          id: 'resume', title: '简历文件', status: 'error', message: '尚未配置有效简历',
+          detail: '打开“配置 → 个人信息”，上传简历。', action: 'config',
+        }],
+      },
+    })
+    render(<DashboardPage view="workbench" />)
+    const guide = await screen.findByRole('region', { name: '开始使用' })
+    const results = await within(guide).findByRole('region', { name: '启动检查结果' })
+    expect(within(results).getByRole('status').textContent).toContain('尚未配置有效简历')
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/workbench/preflight?mode=full')
+  })
+
+  it('shows the always-on platform login status and a relogin shortcut for the logged-out one', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    workbenchPayload = baseWorkbench({
+      platform_login: {
+        boss: { status: 'logged_in', checked_at: '2026-11-19T08:00:00', detail: '' },
+        zhilian: { status: 'logged_out', checked_at: '2026-11-19T08:00:00', detail: '登录过期了' },
+        '51job': { status: 'unknown' },
+        liepin: { status: 'logged_in', checked_at: '2026-11-19T08:00:00', detail: '' },
+      },
+    })
+    render(<DashboardPage view="workbench" />)
+    const statusCard = await screen.findByRole('region', { name: '各平台登录状态' })
+    expect(within(statusCard).getByText('已掉线')).toBeTruthy()
+    expect(within(statusCard).getByText('还没查过')).toBeTruthy()
+    fireEvent.click(within(statusCard).getByRole('button', { name: '重新登录智联招聘' }))
+    expect(openSpy).toHaveBeenCalledWith('https://www.zhaopin.com/', '_blank', 'noopener,noreferrer')
+  })
+
+  it('offers one-tap login jumps for all four platforms in the getting-started card', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    render(<DashboardPage view="workbench" />)
+    const guide = await screen.findByRole('region', { name: '开始使用' })
+    fireEvent.click(within(guide).getByRole('button', { name: '去BOSS 直聘登录' }))
+    expect(openSpy).toHaveBeenCalledWith('https://www.zhipin.com/web/user/login', '_blank', 'noopener,noreferrer')
+    fireEvent.click(within(guide).getByRole('button', { name: '去猎聘登录' }))
+    expect(openSpy).toHaveBeenCalledWith('https://www.liepin.com/', '_blank', 'noopener,noreferrer')
+  })
+
+  it('tells the not-found and connection-failed browser cases apart', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/browser/diagnostics') {
+        return jsonResponse({ ok: false, error_kind: 'not_found', message: '电脑上没找到 Chrome 或 Edge。', next_steps: ['先装一个 Chrome 再回来。'] })
+      }
+      return fetchMock(input, init)
+    }))
+    render(<DashboardPage view="workbench" />)
+    const panel = await screen.findByRole('region', { name: '浏览器诊断' })
+    expect(within(panel).getByText('没找到能用的浏览器')).toBeTruthy()
+    expect(within(panel).getByText('先装一个 Chrome 再回来。')).toBeTruthy()
+    expect(within(panel).getByRole('button', { name: '重新检测' })).toBeTruthy()
+    expect(within(panel).getByRole('button', { name: '一键复制诊断日志' })).toBeTruthy()
+  })
+})

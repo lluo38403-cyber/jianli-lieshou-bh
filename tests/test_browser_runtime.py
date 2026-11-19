@@ -159,7 +159,7 @@ class BrowserRuntimeManagerTests(unittest.TestCase):
     @patch("bosshunter.browser.runtime.runtime_targets")
     @patch("bosshunter.browser.runtime.start_runtime")
     @patch("bosshunter.browser.runtime.check_node_available", return_value={"available": True})
-    def test_startup_probes_once_even_when_deadline_has_expired(
+    def test_startup_probes_once_per_attempt_even_when_deadline_has_expired(
         self, check_node, start_runtime, runtime_targets, runtime_health, available, sleep
     ):
         from bosshunter.browser.runtime import ensure_runtime
@@ -167,11 +167,25 @@ class BrowserRuntimeManagerTests(unittest.TestCase):
         for ready in ([], None):
             with self.subTest(ready=ready):
                 runtime_targets.reset_mock()
-                runtime_targets.side_effect = [None, ready]
+                sleep.reset_mock()
+                calls = {"n": 0}
+
+                def _targets(browser=None, _ready=ready, _calls=calls):
+                    # Attempt 1: initial check None, probe returns ready.
+                    # On failure ensure_runtime retries once (3s gap) and
+                    # probes the same way again.
+                    _calls["n"] += 1
+                    return None if _calls["n"] % 2 == 1 else _ready
+
+                runtime_targets.side_effect = _targets
                 result = ensure_runtime({"browser": {"auto_start_proxy": True}}, wait_seconds=0)
                 self.assertEqual(result, ready is not None)
-                self.assertEqual(runtime_targets.call_count, 2)
-                sleep.assert_not_called()
+                if ready is None:
+                    self.assertEqual(runtime_targets.call_count, 4)
+                    sleep.assert_called_once_with(3)
+                else:
+                    self.assertEqual(runtime_targets.call_count, 2)
+                    sleep.assert_not_called()
 
     @patch("bosshunter.browser.runtime.time.sleep")
     @patch("bosshunter.browser.runtime._is_port_available")

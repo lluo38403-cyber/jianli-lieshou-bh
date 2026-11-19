@@ -12,11 +12,13 @@ from ipaddress import ip_address
 from urllib.parse import urlsplit
 import math
 import mimetypes
+import os
 import random
 import secrets
 import threading
 import time
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from threading import Event, Lock
@@ -59,6 +61,7 @@ from bosshunter.db import (
 	count_sent_today_by_platform,
 	count_unresolved_monitor_items,
 	get_active_platform_safety_lock,
+	get_all_platform_login_states,
 	get_daily_activity,
 	get_db,
 	get_funnel_stats,
@@ -111,8 +114,10 @@ from bosshunter.scoring_run_store import (
 	update_scoring_run,
 )
 from bosshunter.scoring_selection import preview_scoring, select_scoring_jobs, validate_options
+from bosshunter.browser.diagnostics import run_browser_diagnostics
+from bosshunter.browser.runtime import runtime_targets, set_browser_config
 from bosshunter.web.greeting_activity import GreetingActivityRegistry
-from bosshunter.web.preflight import check_ai_connection, collect_preflight_checks, error_messages
+from bosshunter.web.preflight import check_ai_connection, collect_preflight_checks, error_messages, refresh_platform_login_states
 from bosshunter.web.resume_info import (
 	build_resume_info_payload,
 	is_default_resume_placeholder,
@@ -231,6 +236,96 @@ def _get_web_db():
 	except Exception:
 		db.close()
 		raise
+
+
+# ─── 最近一次 preflight 结果（服务端内存，供首页持久展示） ───
+# 之前只放前端本地 state，路由一切换就丢；现在服务端记一份，首页
+# 切回来直接用它恢复展示。服务重启后清空（下次跑 preflight 再记）。
+_LAST_PREFLIGHT: dict | None = None
+_LAST_PREFLIGHT_LOCK = Lock()
+
+
+def _get_last_preflight() -> dict | None:
+	with _LAST_PREFLIGHT_LOCK:
+		return deepcopy(_LAST_PREFLIGHT) if _LAST_PREFLIGHT is not None else None
+
+
+def _record_last_preflight(checks: list[dict]) -> None:
+	global _LAST_PREFLIGHT
+	with _LAST_PREFLIGHT_LOCK:
+		_LAST_PREFLIGHT = {
+			"checks": deepcopy(checks),
+			"ran_at": datetime.now(timezone.utc).isoformat(),
+		}
+
+
+# ─── 平台登录态巡检（后台低频，4 分钟一次，写死不可调） ──────────
+_LOGIN_PATROL_INTERVAL_SECONDS = 240
+_LOGIN_PATROL_STARTED = False
+_LOGIN_PATROL_LOCK = Lock()
+
+
+def _maybe_refresh_login_states(config: dict) -> None:
+	"""preflight 跑完后把登录态写库；运行组件没起来时跳过。
+
+	只在运行组件已经在跑（preflight 的浏览器检查刚连上它）时才写，
+	不为了一次写库去拉起新进程；写库失败不拦 preflight 返回。
+	"""
+	try:
+		if runtime_targets(config) is None:
+			return
+		result = run_browser_diagnostics(config)
+		db = get_db(DATA_DIR / "bosshunter.db")
+		try:
+			refresh_platform_login_states(db, config, result)
+		finally:
+			db.close()
+	except Exception:
+		pass
+
+
+def _login_patrol_once() -> dict | None:
+	"""巡检一轮各平台登录态并写库；不满足条件时什么都不做，返回 None。
+
+	- 有采集/投递任务在跑时不巡检（不跟任务抢浏览器）。
+	- 浏览器运行组件没起来、或没连上浏览器时不写库：登录态保持原样，
+	  绝不把“连不上”误标成掉线（掉线会触发熔断挂起当天任务）。
+	- 只读已打开标签页的 DOM，不新开页面、不触发额外请求。
+	"""
+	try:
+		if task_runner.status()["active"] is not None:
+			return None
+		config = load_config(CONFIG_PATH)
+		if runtime_targets(config) is None:
+			return None
+		result = run_browser_diagnostics(config)
+		if not result.get("chrome"):
+			return None
+		db = get_db(DATA_DIR / "bosshunter.db")
+		try:
+			return refresh_platform_login_states(db, config, result)
+		finally:
+			db.close()
+	except Exception:
+		return None
+
+
+def _login_patrol_loop() -> None:
+	"""后台巡检循环：每 4 分钟一轮，频率写死，不做成可调配置。"""
+	while True:
+		time.sleep(_LOGIN_PATROL_INTERVAL_SECONDS)
+		_login_patrol_once()
+
+
+def start_login_patrol() -> bool:
+	"""启动后台登录态巡检线程（重复调用只启动一次）。"""
+	global _LOGIN_PATROL_STARTED
+	with _LOGIN_PATROL_LOCK:
+		if _LOGIN_PATROL_STARTED:
+			return False
+		_LOGIN_PATROL_STARTED = True
+	threading.Thread(target=_login_patrol_loop, daemon=True).start()
+	return True
 
 
 def _json_response(data, status_code=200):
@@ -1665,6 +1760,10 @@ def api_workbench():
 			"open_hold": get_open_verification_hold(db),
 			"task": status["active"],
 			"last_task": status["last_task"],
+			# 四平台登录态（DB 持久化，无记录时 unknown）与最近一次
+			# preflight 结果（服务端内存），供首页持久展示。
+			"platform_login": get_all_platform_login_states(db),
+			"last_preflight": _get_last_preflight(),
 		})
 	finally:
 		db.close()
@@ -1695,11 +1794,87 @@ def api_workbench_preflight():
 		options = _resolve_collection_resume(mode, options)
 		checks = collect_preflight_checks(mode, config, options)
 		messages = error_messages(checks)
+		_record_last_preflight(checks)
+		# 登录态持久化：不拦 preflight 返回，失败静默。
+		_maybe_refresh_login_states(config)
 		return _json_response({"ok": not messages, "messages": messages, "checks": checks})
 	except ValueError as e:
 		return _json_response({"ok": False, "messages": [str(e)]}, 400)
 	except Exception as e:
 		return _json_response({"ok": False, "messages": [str(e)]}, 500)
+
+
+def _browser_diagnostics_payload(config: dict) -> dict:
+	"""把 run_browser_diagnostics 结果包成前端要的信封。
+
+	diagnostics 字段是原始结果原样；顶层同时放 discovered /
+	error_kind / message / next_steps，ok 表示浏览器已连上。
+	"""
+	result = run_browser_diagnostics(config)
+	return {
+		"ok": bool(result.get("chrome")),
+		"diagnostics": result,
+		"discovered": result.get("discovered") or {"chrome": None, "edge": None},
+		"error_kind": result.get("error_kind"),
+		"message": result.get("message") or "",
+		"next_steps": result.get("next_steps") or [],
+	}
+
+
+@app.route("/api/browser/diagnostics")
+def api_browser_diagnostics():
+	try:
+		return _json_response(_browser_diagnostics_payload(load_config(CONFIG_PATH)))
+	except Exception as e:
+		return _json_response({"ok": False, "error": str(e)}, 500)
+
+
+@app.route("/api/browser/diagnostics", method="POST")
+def api_browser_diagnostics_refresh():
+	"""重新执行一次诊断；第一次没连上浏览器时内部再试一次。"""
+	try:
+		config = load_config(CONFIG_PATH)
+		payload = _browser_diagnostics_payload(config)
+		if not payload["ok"]:
+			payload = _browser_diagnostics_payload(config)
+		return _json_response(payload)
+	except Exception as e:
+		return _json_response({"ok": False, "error": str(e)}, 500)
+
+
+@app.route("/api/browser/select", method="POST")
+def api_browser_select():
+	"""记住用户手动选的浏览器启动文件路径，下次优先用它。"""
+	try:
+		try:
+			body = request.json
+		except Exception:
+			body = None
+		body = body if isinstance(body, dict) else {}
+		raw_path = str(body.get("path") or "").strip()
+		if not raw_path:
+			return _json_response({"error": "请先填一下浏览器在哪，比如 Chrome 或 Edge 的完整路径。"}, 400)
+		path = Path(os.path.expandvars(raw_path))
+		if not path.is_file():
+			return _json_response({"error": "找不到这个浏览器文件，请检查路径是不是写错了，再重新选一次。"}, 400)
+		name = path.name.lower()
+		if not any(token in name for token in ("chrome", "chromium", "msedge", "edge")):
+			return _json_response({"error": "这个文件看起来不是浏览器，请选择 Chrome 或 Edge 的启动文件。"}, 400)
+		config = load_config(CONFIG_PATH)
+		browser_cfg = config.get("browser")
+		if not isinstance(browser_cfg, dict):
+			browser_cfg = {}
+			config["browser"] = browser_cfg
+		browser_cfg["executable_path"] = str(path)
+		_write_config(config)
+		set_browser_config(config)
+		return _json_response({
+			"ok": True,
+			"executable_path": str(path),
+			"message": "已经记住了，下次就用这个浏览器。点“重新检测”确认一下。",
+		})
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
 
 
 @app.route("/api/diagnostics/ai")
@@ -3880,6 +4055,10 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 		_background_auth_sync()
 
 	threading.Thread(target=_startup_auth_sync, daemon=True).start()
+
+	# 后台低频巡检各平台登录态：每 4 分钟一轮，只在无任务时查已打开的
+	# 标签页；浏览器连不上时不写库、不误标掉线。
+	start_login_patrol()
 
 	app.run(
 		host=host,

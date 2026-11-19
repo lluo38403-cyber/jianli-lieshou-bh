@@ -35,6 +35,7 @@ from bosshunter.db import (
     get_db, get_jobs_ready_to_send, update_job_status, update_job_last_error,
     add_history, add_risk_event, set_platform_safety_lock,
     count_sent_today, count_sent_today_by_platform,
+    record_platform_login_state,
 )
 from bosshunter.collection.capabilities import platform_supports
 from bosshunter.executor.platform_delivery import deliver_job
@@ -758,6 +759,22 @@ def _stagger_range(throttle_config: dict) -> tuple[float, float]:
     return low, max(low, high)
 
 
+def _record_logged_out(throttle_config: dict, platform: str, detail: str) -> None:
+    """投递中发现掉线时记一笔持久登录态（带熔断联动）。
+
+    只写库、不拦投递流程：记库失败（例如测试里没带 _db）时静默跳过，
+    绝不因为一笔记账动作把一次投递搞崩。检测本身仍走 antibot 的
+    handle_page_risk（内含 detect_page_risk），这里只补记账。
+    """
+    db = throttle_config.get("_db") if isinstance(throttle_config, dict) else None
+    if db is None:
+        return
+    try:
+        record_platform_login_state(db, platform, "logged_out", detail)
+    except Exception:
+        pass
+
+
 def _page_risk_result(
     target_id: str, platform: str, throttle_config: dict
 ) -> dict | None:
@@ -772,6 +789,7 @@ def _page_risk_result(
     if risk == "stopped":
         return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}
     if risk == "login_required":
+        _record_logged_out(throttle_config, platform, "投递时页面提示需要先登录")
         return {"success": False, "error": "needs_login", "history_detail": "平台要求先登录，请在浏览器里登录该平台后重试", "skip_backoff": True}
     if risk == "verification_timeout":
         return {"success": False, "error": "verification_timeout", "history_detail": "等待手动验证超时，任务已停止"}

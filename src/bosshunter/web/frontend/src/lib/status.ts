@@ -47,3 +47,18 @@ export function getActionLabel(action: string | null | undefined): string {
   if (!action) return '未知'
   return ACTION_LABELS[action] ?? action
 }
+
+/** 平台登录状态（GET /api/workbench 的 platform_login 字段），大白话。 */
+export type PlatformLoginStatus = 'logged_in' | 'logged_out' | 'unknown'
+
+export const PLATFORM_LOGIN_STATUS_LABELS: Record<PlatformLoginStatus, string> = {
+  logged_in: '已登录',
+  logged_out: '已掉线',
+  unknown: '还没查过',
+}
+
+export function getPlatformLoginStatusLabel(status: string | null | undefined): string {
+  if (status === 'logged_in') return PLATFORM_LOGIN_STATUS_LABELS.logged_in
+  if (status === 'logged_out') return PLATFORM_LOGIN_STATUS_LABELS.logged_out
+  return PLATFORM_LOGIN_STATUS_LABELS.unknown
+}

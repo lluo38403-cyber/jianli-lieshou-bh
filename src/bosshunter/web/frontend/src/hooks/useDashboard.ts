@@ -125,6 +125,24 @@ export interface VerificationState {
   suspended_platforms: string[]
 }
 
+export interface PlatformLoginInfo {
+  status: 'logged_in' | 'logged_out' | 'unknown'
+  checked_at?: string | null
+  detail?: string | null
+}
+
+export interface LastPreflight {
+  checks: Array<{
+    id: string
+    title: string
+    status: 'pass' | 'warning' | 'error'
+    message: string
+    detail: string
+    action?: 'config' | 'browser' | ''
+  }>
+  ran_at?: string | null
+}
+
 interface WorkbenchData {
   funnel: FunnelData
   funnel_today: FunnelData
@@ -143,6 +161,10 @@ interface WorkbenchData {
   open_hold?: VerificationHold | null
   task: WorkbenchTask | null
   last_task: WorkbenchTask | null
+  /** 后端 GET /api/workbench 新增：四平台登录状态（后端未提供时为空）。 */
+  platform_login?: Partial<Record<string, PlatformLoginInfo>> | null
+  /** 后端 GET /api/workbench 新增：最近一次 preflight 结果（后端未提供时为空）。 */
+  last_preflight?: LastPreflight | null
 }
 
 interface HistoryDetailPayload {

@@ -1,5 +1,7 @@
 import { useConfig } from '@/hooks/useConfig'
 import { useUpdate, formatUpdateSize } from '@/hooks/useUpdate'
+import { UpdateModal } from '@/components/dashboard/UpdateModal'
+import { CHECK_UPDATE_EVENT } from '@/lib/updateEvents'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -27,6 +29,7 @@ export default function ConfigPage() {
   const { config, loading, saving, dirty, error, message, updateConfig, saveConfig, resetConfig } = useConfig()
   const update = useUpdate()
   const [updateNote, setUpdateNote] = useState('')
+  const [manualUpdateSignal, setManualUpdateSignal] = useState(0)
   const handleManualUpdateCheck = async () => {
     setUpdateNote('')
     const found = await update.check(true)
@@ -34,14 +37,28 @@ export default function ConfigPage() {
       setUpdateNote('没查到，网络可能断了，稍后再点一次。')
     } else if (found === false) {
       setUpdateNote('已经是最新版，不用换。')
+    } else {
+      // 有新版：让弹窗弹出来（手动检查忽略跳过记录）。
+      setManualUpdateSignal(Date.now())
     }
   }
+  // 侧边栏点版本号：同样走这里的手动检查。
+  useEffect(() => {
+    const onCheckUpdate = () => {
+      void handleManualUpdateCheck()
+    }
+    window.addEventListener(CHECK_UPDATE_EVENT, onCheckUpdate)
+    return () => window.removeEventListener(CHECK_UPDATE_EVENT, onCheckUpdate)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [cityOptions, setCityOptions] = useState<CityOption[]>([])
   const [zhilianCityOptions, setZhilianCityOptions] = useState<CityOption[]>([])
   const [job51CityOptions, setJob51CityOptions] = useState<CityOption[]>([])
   const [liepinCityOptions, setLiepinCityOptions] = useState<CityOption[]>([])
   const [cityRefreshing, setCityRefreshing] = useState(false)
   const [cityMessage, setCityMessage] = useState('')
+  const [activeTab, setActiveTab] = useState<PlatformId | null>(null)
+  const [unrecognizedCities, setUnrecognizedCities] = useState<Partial<Record<PlatformId, string[]>>>({})
 
   useEffect(() => {
     fetch('/api/cities', { cache: 'no-store' })
@@ -104,6 +121,10 @@ export default function ConfigPage() {
     }
   }
 
+  // 写路径：只写平台自有 platforms.<platform>.search。BOSS 额外同步一份到
+  // 顶层 search.*，是因为后端还在读它（agent_api.py / orchestrator.py 用
+  // 顶层 search 做回落，prefilter/scorer 还读 profile.target_cities）；
+  // 后端改掉回落读取后，这里同步就可以删掉。非 BOSS 平台本来就不镜像。
   const updatePlatformSearch = (platform: PlatformId, key: string, value: any) => {
     updateConfig(`platforms.${platform}.search.${key}`, value)
     if (platform === 'boss') updateConfig(`search.${key}`, value)
@@ -117,16 +138,21 @@ export default function ConfigPage() {
     updatePlatformSearch('boss', `filters.${key}`, next)
   }
 
+  // 找不到编码的城市不再静默丢弃：编码为空也保留在 city_codes 里，
+  // 并在界面上明确告诉用户哪个城市没认出来（见下面的提示行）。
   const updatePlatformCities = (platform: PlatformId, cities: string[]) => {
     const platformCityOptions = platform === 'zhilian' ? zhilianCityOptions : platform === 'liepin' ? liepinCityOptions : job51CityOptions
+    const findCode = (city: string, options: CityOption[]) =>
+      options.find(option => option.name.replace(/市$/, '') === city.replace(/市$/, ''))?.code || ''
     const cityCodes = platform !== 'boss'
-      ? Object.fromEntries(cities.map(city => {
-        const found = platformCityOptions.find(option => option.name.replace(/市$/, '') === city.replace(/市$/, ''))
-        return [city, found?.code || '']
-      }).filter(([, code]) => code))
-      : Object.fromEntries(cityOptions.filter(city => cities.includes(city.name)).map(city => [city.name, city.code]))
+      ? Object.fromEntries(cities.map(city => [city, findCode(city, platformCityOptions)]))
+      : Object.fromEntries(cities.map(city => [city, findCode(city, cityOptions)]))
+    const unrecognized = cities.filter(city => !cityCodes[city])
+    setUnrecognizedCities(previous => ({ ...previous, [platform]: unrecognized }))
     updatePlatformSearch(platform, 'cities', cities)
     updatePlatformSearch(platform, 'city_codes', cityCodes)
+    // BOSS 城市同步到 profile.target_cities：后端打分/过滤还在读它
+    //（scorer.py / prefilter.py），后端改掉后这里同步就可以删掉。
     if (platform === 'boss') updateConfig('profile.target_cities', cities)
   }
 
@@ -186,7 +212,7 @@ export default function ConfigPage() {
     .find(platform => config.platforms?.[platform]?.enabled ?? platform === 'boss')
 
   return (
-    <div className="page-sections h-full overflow-y-auto space-y-4 pr-4">
+    <div className="page-sections h-full overflow-y-auto space-y-4 pb-20 pr-4">
         {/* Actions bar */}
         <div className="flex items-center justify-between sticky top-0 bg-background z-10 py-2">
           <div className="flex items-center gap-2">
@@ -259,7 +285,26 @@ export default function ConfigPage() {
             <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
               四个平台都会自动投：BOSS 直聘是发打招呼聊一聊，智联、前程无忧、猎聘是直接点投递；HR 回了消息会统一来看。不想用的平台把勾去掉。
             </p>
-            {(['boss', 'zhilian', '51job', 'liepin'] as PlatformId[]).map(platform => {
+            <div data-tour={!guidePlatform ? 'search-city' : undefined}>
+            <div data-tour={!guidePlatform ? 'search-keywords' : undefined}>
+            <div className="flex gap-1 rounded-full border border-card-border bg-surface p-1" role="tablist" aria-label="选一个平台来设置">
+              {(['boss', 'zhilian', '51job', 'liepin'] as PlatformId[]).map(platform => {
+                const enabled = config.platforms?.[platform]?.enabled ?? platform === 'boss'
+                return (
+                  <button
+                    key={platform}
+                    type="button"
+                    role="tab"
+                    aria-selected={(activeTab ?? guidePlatform ?? 'boss') === platform}
+                    onClick={() => setActiveTab(platform)}
+                    className={`min-w-0 flex-1 rounded-full px-2 py-1.5 text-xs font-black transition ${(activeTab ?? guidePlatform ?? 'boss') === platform ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted hover:text-primary'}`}
+                  >
+                    {PLATFORM_SHORT_LABELS[platform]}{enabled ? '' : '（没用）'}
+                  </button>
+                )
+              })}
+            </div>
+            {(['boss', 'zhilian', '51job', 'liepin'] as PlatformId[]).filter(platform => platform === (activeTab ?? guidePlatform ?? 'boss')).map(platform => {
               const search = platformSearch(platform)
               const label = PLATFORM_LABELS[platform]
               const platformCityOptions = platform === 'zhilian' ? zhilianCityOptions : platform === 'liepin' ? liepinCityOptions : job51CityOptions
@@ -269,8 +314,9 @@ export default function ConfigPage() {
                 : platform === 'boss' ? (config.profile?.target_cities || []) : []
               const cityInput = cities.join(', ')
               const bossFilters = search.filters && typeof search.filters === 'object' ? search.filters : {}
+              const missingCities = unrecognizedCities[platform] || []
               return (
-                <div key={platform} data-tour={!guidePlatform && platform === 'boss' ? 'search-city' : undefined} className={`rounded-2xl border p-4 ${enabled ? 'border-primary/30 bg-surface' : 'border-card-border bg-card opacity-70'}`}>
+                <div key={platform} data-tour={!guidePlatform && platform === 'boss' ? 'search-city' : undefined} className={`mt-3 rounded-2xl border p-4 ${enabled ? 'border-primary/30 bg-surface' : 'border-card-border bg-card opacity-70'}`}>
                   <div data-tour={!guidePlatform && platform === 'boss' ? 'search-keywords' : undefined} className="flex items-center justify-between gap-3">
                     <label className="flex items-center gap-2 text-sm font-black text-foreground">
                       <input type="checkbox" checked={enabled} onChange={event => setPlatformEnabled(platform, event.target.checked)} className="h-4 w-4 accent-primary" />
@@ -279,7 +325,7 @@ export default function ConfigPage() {
                     <span className="text-xs text-muted">{enabled ? '正在用' : '没在用'}</span>
                   </div>
                   {enabled && <div className="mt-4 space-y-3">
-                    <Field label="想找的岗位" dataTour={platform === guidePlatform ? 'search-keywords' : undefined} hint={platform === 'boss' ? '输完岗位按回车确认，多个岗位用","隔开，不然保存不了。' : undefined}>
+                    <Field label="想找的岗位" dataTour={platform === guidePlatform ? 'search-keywords' : undefined} hint={platform === 'boss' ? '输完按回车确认，多个岗位用逗号隔开。' : undefined}>
                       <TagsInput value={Array.isArray(search.keywords) ? search.keywords : []} onChange={value => updatePlatformSearch(platform, 'keywords', value)} placeholder="比如：人力、产品运营" />
                     </Field>
                     <Field label="想在哪个城市找" dataTour={platform === guidePlatform && platform !== 'boss' ? 'search-city' : undefined}>
@@ -297,9 +343,14 @@ export default function ConfigPage() {
                         <p className="mt-1 text-xs text-muted">{PLATFORM_SHORT_LABELS[platform]}只用里面有的城市；现在里面有 {platformCityOptions.length} 个城市。</p>
                         {!!cities.length && <div className="mt-2 flex flex-wrap gap-1">{cities.map((city: string) => {
                           const matched = platformCityOptions.find(option => option.name.replace(/市$/, '') === city.replace(/市$/, ''))
-                          return <span key={city} className={`rounded-full px-2 py-1 text-xs ${matched ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'}`}>{city} · {matched ? '已经认出来了' : '里面没有'}</span>
+                          return <span key={city} title={matched ? '已经认出来了' : '这个城市还没认出来'} className={`rounded-full px-2 py-1 text-xs ${matched ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'}`}>{city}</span>
                         })}</div>}
                       </>}
+                      {missingCities.length > 0 && (
+                        <p className="mt-1 rounded-lg bg-warning-soft px-3 py-2 text-xs text-warning">
+                          这几个城市还没认出来：{missingCities.join('、')}，换个写法或稍后再试；没认出来的城市先留着，不会偷偷丢掉。
+                        </p>
+                      )}
                     </Field>
                     <div className="grid gap-3 md:grid-cols-2">
                       <Field label="最多翻几页">
@@ -367,6 +418,8 @@ export default function ConfigPage() {
                 </div>
               )
             })}
+            </div>
+            </div>
             <div className="grid gap-3 md:grid-cols-2">
               <Field label="先去哪个平台找">
                 <Select value={Array.isArray(config.collection?.default_order) ? config.collection.default_order.join(',') : 'boss'} onChange={event => setCollectionOrder(event.target.value)}>
@@ -388,8 +441,8 @@ export default function ConfigPage() {
           </div>
         </SectionCard>
 
-        {/* Filter Section */}
-        <SectionCard title="只要符合这些的">
+        {/* Filter Section：全局过滤规则，与上面的平台投递配置分开 */}
+        <SectionCard title="全局过滤规则">
           <div className="space-y-4">
             <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
               下面这几项是硬条件：不符合的直接跳过，不打分也不投。
@@ -682,6 +735,17 @@ export default function ConfigPage() {
             <p className="text-xs text-muted">更新时你的设置和投递记录都不会动，换完自动重新打开。</p>
           </div>
         </SectionCard>
+        <UpdateModal update={update} manualCheckSignal={manualUpdateSignal} />
+
+        {/* 底部固定保存栏：与顶部保存栏共用同一 saveConfig 与 dirty 状态 */}
+        <div className="fixed bottom-0 left-0 right-0 z-20 border-t border-card-border bg-card/95 px-4 py-3 backdrop-blur">
+          <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
+            <span className="text-xs text-muted">
+              {dirty ? '改了还没保存' : '设置都保存好了'}
+            </span>
+            <Button size="sm" onClick={saveConfig} disabled={saving || !dirty}><Save className="w-3 h-3 mr-1" />{saving ? '保存中…' : '保存设置'}</Button>
+          </div>
+        </div>
     </div>
   )
 }

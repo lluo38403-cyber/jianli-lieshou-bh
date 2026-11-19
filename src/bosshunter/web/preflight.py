@@ -408,32 +408,37 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 	elif result.get("chrome"):
 		product = str(result.get("browser_product") or "").strip()
 		browser_name = str(result.get("browser_name") or "").strip()
-		is_google_chrome = (
-			browser_name in {"Google Chrome", "Google Chrome Canary"}
+		# Chrome 与 Edge 都可用：Edge 走同一套 CDP 远程调试，不再当错误。
+		supported_browser = (
+			browser_name in {"Google Chrome", "Google Chrome Canary", "Microsoft Edge"}
 			if browser_name
-			else not product or product.startswith("Chrome/")
+			else not product or product.startswith(("Chrome/", "Edg/"))
 		)
-		if not is_google_chrome:
+		if not supported_browser:
 			detected_browser = browser_name or product
 			checks.append(
 				_check(
 					"chrome_product",
 					"浏览器类型",
 					"error",
-					f"当前连接的不是 Google Chrome（{detected_browser}）",
-					"请关闭当前调试连接，改用 Google Chrome 开启远程调试后重新检测。",
+					f"当前连接的不是 Google Chrome 或 Microsoft Edge（{detected_browser}）",
+					"请关闭当前调试连接，改用 Google Chrome 或 Microsoft Edge 开启远程调试后重新检测。",
 					"browser",
 				)
 			)
 		else:
-			browser_text = browser_name or product
-			product_text = f"（{browser_text}）" if browser_text else ""
+			if browser_name:
+				message = f"{browser_name}已连接"
+			elif product:
+				message = f"浏览器已连接（{product}）"
+			else:
+				message = "浏览器已连接"
 			checks.append(
 				_check(
 					"chrome_connection",
-					"Chrome 远程调试",
+					"浏览器远程调试",
 					"pass",
-					f"Google Chrome 已连接{product_text}",
+					message,
 					"远程调试连接正常。",
 				)
 			)
@@ -483,14 +488,108 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 			if state == "ready":
 				checks.append(_check("zhilian_tab", "智联招聘页面", "pass", "智联搜索页可用，未发现登录墙", "采集不会点击投递或申请按钮。"))
 			elif state == "login_required":
-				checks.append(_check("zhilian_login", "智联招聘登录", "error", "智联页面要求登录", "请在已连接的 Google Chrome 中完成智联登录后重新检查。", "browser"))
+				checks.append(_check("zhilian_login", "智联招聘登录", "error", "智联页面要求登录", "请在已连接的浏览器中完成智联登录后重新检查。", "browser"))
 			elif state == "blocked":
 				checks.append(_check("zhilian_blocked", "智联页面状态", "error", "智联页面受到拦截", str(page_state.get("message") or "请人工处理验证码、频率限制或账号异常。"), "browser"))
 			elif state == "missing":
-				checks.append(_check("zhilian_tab", "智联招聘页面", "error", "未发现已打开的智联招聘页面", "请在已连接的 Google Chrome 中打开已登录的智联职位页后重新检查。", "browser"))
+				checks.append(_check("zhilian_tab", "智联招聘页面", "error", "未发现已打开的智联招聘页面", "请在已连接的浏览器中打开已登录的智联职位页后重新检查。", "browser"))
 			else:
 				checks.append(_check("zhilian_page", "智联页面结构", "error", "未识别到智联搜索页", str(page_state.get("message") or "请打开智联职位搜索页后重新检查。"), "browser"))
+		if "51job" in selected_platforms:
+			checks.extend(_platform_page_checks(result, "51job", "前程无忧"))
+		if "liepin" in selected_platforms:
+			checks.extend(_platform_page_checks(result, "liepin", "猎聘"))
 	return checks
+
+
+def _platform_page_checks(result: dict, platform: str, display: str) -> list[dict[str, str]]:
+	"""Login checks for 51job / Liepin, mirroring the Zhilian DOM check.
+
+	只读已打开标签页的 DOM 状态（diagnostics 已查好放在 result 里），
+	不新开页面：ready=已登录可用，login_required=要求登录，
+	block=拦截，missing=没打开该平台页面，其他=结构未识别。
+	"""
+	tab_key = "job51_tab" if platform == "51job" else "liepin_tab"
+	page_key = "job51_page" if platform == "51job" else "liepin_page"
+	tab = result.get(tab_key)
+	page_state = result.get(page_key) or {}
+	state = str(page_state.get("status") or "unknown") if tab else "missing"
+	message = str(page_state.get("message") or "")
+	if state == "ready":
+		return [_check(f"{platform}_tab", f"{display}页面", "pass", f"{display}搜索页可用，未发现登录墙", "采集不会点击投递或申请按钮。")]
+	if state == "login_required":
+		return [_check(f"{platform}_login", f"{display}登录", "error", f"{display}页面要求登录", f"请在已连接的浏览器中完成{display}登录后重新检查。", "browser")]
+	if state == "blocked":
+		return [_check(f"{platform}_blocked", f"{display}页面状态", "error", f"{display}页面受到拦截", message or "请人工处理验证码、频率限制或账号异常。", "browser")]
+	if state == "missing":
+		return [_check(f"{platform}_tab", f"{display}页面", "error", f"未发现已打开的{display}页面", f"请在已连接的浏览器中打开已登录的{display}职位页后重新检查。", "browser")]
+	return [_check(f"{platform}_page", f"{display}页面结构", "error", f"未识别到{display}搜索页", message or f"请打开{display}职位搜索页后重新检查。", "browser")]
+
+
+# ─── 平台登录态：从诊断结果推导并持久化 ─────────────────────────
+
+_PLATFORM_DISPLAY_NAMES = {"boss": "BOSS 直聘", "zhilian": "智联", "51job": "前程无忧", "liepin": "猎聘"}
+
+
+def derive_platform_login_states(result: dict) -> dict[str, dict[str, str | None]]:
+	"""从一次 run_browser_diagnostics 结果推导四平台登录态。
+
+	判定口径：BOSS 看标签页地址是否停在登录页；其余三平台看 DOM
+	检测结果（ready=已登录，login_required=已掉线，blocked/结构未识别/
+	没打开页面=无法判断 unknown）。浏览器未连接时全部 unknown，
+	绝不把“连不上”误标成掉线。
+	"""
+	if not isinstance(result, dict) or not result.get("chrome"):
+		return {
+			platform: {"status": "unknown", "detail": "浏览器未连接，登录态无法判断"}
+			for platform in ("boss", "zhilian", "51job", "liepin")
+		}
+	states: dict[str, dict[str, str | None]] = {}
+	boss_tab = result.get("boss_tab")
+	if isinstance(boss_tab, dict):
+		url = str(boss_tab.get("url") or "")
+		if any(marker in url.lower() for marker in ("/login", "/user/", "signin")):
+			states["boss"] = {"status": "logged_out", "detail": "BOSS 直聘页面停在登录页"}
+		else:
+			states["boss"] = {"status": "logged_in", "detail": "已发现 BOSS 直聘页面，未见登录页"}
+	else:
+		states["boss"] = {"status": "unknown", "detail": "未发现已打开的 BOSS 直聘页面"}
+	for platform, tab_key, page_key in (
+		("zhilian", "zhilian_tab", "zhilian_page"),
+		("51job", "job51_tab", "job51_page"),
+		("liepin", "liepin_tab", "liepin_page"),
+	):
+		display = _PLATFORM_DISPLAY_NAMES[platform]
+		tab = result.get(tab_key)
+		page_state = result.get(page_key) or {}
+		page_status = str(page_state.get("status") or "unknown") if isinstance(page_state, dict) else "unknown"
+		page_message = str(page_state.get("message") or "") if isinstance(page_state, dict) else ""
+		if not isinstance(tab, dict):
+			states[platform] = {"status": "unknown", "detail": f"未发现已打开的{display}页面"}
+		elif page_status == "ready":
+			states[platform] = {"status": "logged_in", "detail": page_message or f"已发现{display}搜索页，未发现登录墙"}
+		elif page_status == "login_required":
+			states[platform] = {"status": "logged_out", "detail": page_message or f"{display}页面要求登录"}
+		else:
+			states[platform] = {"status": "unknown", "detail": page_message or f"{display}页面状态无法判断"}
+	return states
+
+
+def refresh_platform_login_states(db, config: dict | None = None, result: dict | None = None) -> dict[str, dict[str, str | None]]:
+	"""跑一次浏览器诊断并把四平台登录态写入 platform_login_state。
+
+	供 preflight 接口与后台巡检共用。浏览器连不上时全部写 unknown
+	（不误标 logged_out、不触发熔断）；掉线写入时按 db.record_
+	platform_login_state 的联动暂停该平台当天任务。
+	"""
+	from bosshunter.db import record_platform_login_state
+
+	if result is None:
+		result = run_browser_diagnostics(config)
+	states = derive_platform_login_states(result)
+	for platform, state in states.items():
+		record_platform_login_state(db, platform, str(state["status"]), state.get("detail"))
+	return states
 
 
 def error_messages(checks: list[dict[str, str]]) -> list[str]:

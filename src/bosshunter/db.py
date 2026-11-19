@@ -174,6 +174,15 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
+        -- 各平台登录态（持久化：首页展示不再只依赖前端本地 state）。
+        -- status 取值 logged_in / logged_out / unknown；checked_at 为 ISO 时间戳。
+        CREATE TABLE IF NOT EXISTS platform_login_state (
+            platform TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'unknown',
+            checked_at TEXT,
+            detail TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
         CREATE INDEX IF NOT EXISTS idx_jobs_score ON jobs(score);
         CREATE INDEX IF NOT EXISTS idx_history_job_id ON history(job_id);
@@ -1682,6 +1691,90 @@ def breaker_suspended_platforms(conn: sqlite3.Connection) -> list[str]:
         (_breaker_local_now(),),
     ).fetchall()
     return [str(row["platform"]) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# 平台登录态：持久化，供首页 /api/workbench 直接展示。
+# ---------------------------------------------------------------------------
+
+PLATFORMS = ("boss", "zhilian", "51job", "liepin")
+PLATFORM_LOGIN_STATUSES = ("logged_in", "logged_out", "unknown")
+
+
+def _platform_login_now() -> str:
+    """ISO 时间戳（UTC），与 checked_at 字段口径一致。"""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def upsert_platform_login_state(
+    conn: sqlite3.Connection,
+    platform: str,
+    status: str,
+    detail: str | None = None,
+    *,
+    checked_at: str | None = None,
+) -> None:
+    """写入一个平台的登录态（不存在则插入，已存在则覆盖），显式提交。"""
+    if status not in PLATFORM_LOGIN_STATUSES:
+        raise ValueError(f"未知的平台登录状态：{status}")
+    conn.execute(
+        """
+        INSERT INTO platform_login_state (platform, status, checked_at, detail)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(platform) DO UPDATE SET
+            status = excluded.status,
+            checked_at = excluded.checked_at,
+            detail = excluded.detail
+        """,
+        (str(platform), status, checked_at or _platform_login_now(), detail),
+    )
+    conn.commit()
+
+
+def get_platform_login_state(conn: sqlite3.Connection, platform: str) -> dict[str, Any]:
+    """读一个平台的登录态；无记录时返回 unknown 默认值。"""
+    row = conn.execute(
+        "SELECT platform, status, checked_at, detail FROM platform_login_state WHERE platform = ?",
+        (str(platform),),
+    ).fetchone()
+    if row is None:
+        return {"platform": str(platform), "status": "unknown", "checked_at": None, "detail": None}
+    return {
+        "platform": str(row["platform"]),
+        "status": str(row["status"]),
+        "checked_at": row["checked_at"],
+        "detail": row["detail"],
+    }
+
+
+def get_all_platform_login_states(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    """读全部四个平台的登录态；无记录的平台返回 unknown 默认值。"""
+    states = {platform: get_platform_login_state(conn, platform) for platform in PLATFORMS}
+    return states
+
+
+def record_platform_login_state(
+    conn: sqlite3.Connection,
+    platform: str,
+    status: str,
+    detail: str | None = None,
+) -> None:
+    """记录一次平台登录态检查结果，并做熔断联动。
+
+    只在本次检查新发现掉线（上一次不是 logged_out）时才走一次熔断：
+    按现有 breaker 机制暂停该平台当天任务（breaker_record_failure，
+    max_failures=1，即一次掉线就挂起当天），不再另造暂停机制。
+    掉线期间的重复检查只刷新时间戳，不重复记熔断。
+    重新登录（logged_in）只更新登录态本身，不动熔断——熔断挂起的
+    当天任务按原有规则到当天结束才恢复，避免一次误判的登录态
+    把风控挂起悄悄清掉。
+    """
+    platform = str(platform)
+    previous = get_platform_login_state(conn, platform)
+    upsert_platform_login_state(conn, platform, status, detail)
+    if status == "logged_out" and previous.get("status") != "logged_out":
+        breaker_record_failure(conn, platform, max_failures=1)
+
 
 
 def get_funnel_stats(conn: sqlite3.Connection, *, today: bool = False) -> dict[str, int]:

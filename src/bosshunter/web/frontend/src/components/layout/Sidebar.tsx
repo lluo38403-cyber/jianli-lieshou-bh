@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import { Briefcase, Home, Radar, Settings } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { requestManualUpdateCheck } from '@/lib/updateEvents'
 
 const navItems = [
   { to: '/', icon: Home, label: '首页' },
@@ -15,6 +16,23 @@ interface SidebarProps {
 
 export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
   const [pendingReplies, setPendingReplies] = useState(pendingRepliesProp ?? 0)
+  // 版本号从后端取，不写死：后端 __version__ 一升，这里跟着变。
+  const [currentVersion, setCurrentVersion] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    fetch('/api/health')
+      .then(r => r.json())
+      .then(data => {
+        if (alive && typeof data?.version === 'string' && data.version) {
+          setCurrentVersion(data.version)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
 
   useEffect(() => {
     if (pendingRepliesProp !== undefined) {
@@ -45,6 +63,17 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
           <div className="hidden md:block">
             <div className="text-[15px] font-black tracking-tight text-white">简历猎手</div>
             <div className="text-[11px] text-white/60">自动找工作 · 本地运行</div>
+            {currentVersion ? (
+              <button
+                type="button"
+                data-testid="sidebar-version"
+                onClick={requestManualUpdateCheck}
+                title="点一下检查有没有新版本"
+                className="mt-0.5 rounded px-1 py-0.5 text-left text-[11px] text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+              >
+                v{currentVersion} · 检查更新
+              </button>
+            ) : null}
           </div>
         </div>
       </div>

@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
 import { useUpdate } from '@/hooks/useUpdate'
 import { UpdateBanner } from '@/components/dashboard/UpdateBanner'
+import { UpdateModal } from '@/components/dashboard/UpdateModal'
+import { CHECK_UPDATE_EVENT } from '@/lib/updateEvents'
 import { useAuth } from '@/hooks/useAuth'
 import { AuthStatusBar } from '@/components/dashboard/AuthStatusBar'
 import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
@@ -16,6 +18,8 @@ import { ScoreJobsDialog } from '@/components/dashboard/ScoreJobsDialog'
 import { CollectJobsDialog } from '@/components/dashboard/CollectJobsDialog'
 import { VerificationModal } from '@/components/dashboard/VerificationModal'
 import { CollectionSessionsPanel } from '@/components/dashboard/CollectionSessionsPanel'
+import { PlatformStatusCard } from '@/components/dashboard/PlatformStatusCard'
+import { BrowserDiagnosticsPanel, type BrowserDiagnostics } from '@/components/dashboard/BrowserDiagnosticsPanel'
 import { TrendChart } from '@/components/dashboard/TrendChart'
 import { TopCompanies } from '@/components/dashboard/TopCompanies'
 import { PipelineFlow } from '@/components/dashboard/PipelineFlow'
@@ -24,7 +28,7 @@ import type { ActivityData, TopCompany } from '@/hooks/useDashboard'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
 import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
 import { parseHistoryDetail } from '@/lib/historyDetail'
-import { PLATFORM_LABELS } from '@/lib/platforms'
+import { PLATFORM_LABELS, PLATFORM_IDS, openPlatformLogin } from '@/lib/platforms'
 import {
   EMPTY_JOB_FILTERS,
   filterJobs,
@@ -396,26 +400,35 @@ function GettingStartedCard({
   onRetry: () => void
 }) {
   return (
-    <section aria-label="开始使用" className="animate-fade-up rounded-2xl border border-primary/30 bg-card p-4">
-      <div className="flex flex-wrap items-center justify-between gap-4">
+    <section aria-label="开始使用" className="animate-fade-up rounded-2xl border border-primary/30 bg-card p-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="mb-1 flex items-center gap-2">
+          <div className="mb-0.5 flex items-center gap-2">
             <span className="rounded-md bg-primary/15 px-2 py-0.5 text-[11px] font-bold text-primary">第一次用</span>
             <h2 className="text-lg font-black text-foreground">先花 2 分钟准备一下</h2>
           </div>
-          <p className="text-sm text-muted">按提示填好简历和想找的工作，再点一下检查，确认能正常跑起来。</p>
+          <p className="text-sm text-muted">按提示填好简历和想找的工作，再点一下检查，确认能正常跑起来。只想先搜搜岗位，可以先不填简历。</p>
         </div>
         <Button size="sm" onClick={() => window.dispatchEvent(new Event(START_ONBOARDING_EVENT))}>带我走一遍</Button>
       </div>
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-card-border pt-3">
-        <p className="max-w-xl text-xs leading-5 text-muted">如果只想先搜搜岗位，可以先不填简历；要点“开始自动找工作”，就得先把准备做完。</p>
-        <div className="flex flex-wrap items-center gap-3">
-          <span data-tour="chrome-guide" className="text-xs font-semibold text-primary">先在 Chrome 里登录好招聘网站，再回来点检查。</span>
-          <Button data-tour="check-preflight" variant="secondary" size="sm" onClick={onCheck} disabled={checking}>
-            <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
-            {checking ? '检查中' : '检查一下能不能跑'}
-          </Button>
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-card-border pt-3">
+        <span data-tour="chrome-guide" className="text-xs font-semibold text-primary">先在 Chrome 里登录好招聘网站，再回来点检查。</span>
+        <div className="flex flex-wrap gap-1.5" aria-label="去各平台登录">
+          {PLATFORM_IDS.map(platform => (
+            <button
+              key={platform}
+              type="button"
+              onClick={() => openPlatformLogin(platform)}
+              className="rounded-full border border-card-border bg-surface px-2.5 py-1 text-xs font-bold text-primary hover:border-primary/40"
+            >
+              去{PLATFORM_LABELS[platform]}登录
+            </button>
+          ))}
         </div>
+        <Button data-tour="check-preflight" variant="secondary" size="sm" onClick={onCheck} disabled={checking}>
+          <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+          {checking ? '检查中' : '检查一下能不能跑'}
+        </Button>
       </div>
       {notice && <CompactNotice message={notice} />}
       {checks.some(check => check.status !== 'pass') && (
@@ -446,6 +459,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const update = useUpdate()
   const auth = useAuth()
   const [updateNote, setUpdateNote] = useState('')
+  const [manualUpdateSignal, setManualUpdateSignal] = useState(0)
   const handleManualUpdateCheck = useCallback(async () => {
     setUpdateNote('')
     const found = await update.check(true)
@@ -453,8 +467,20 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       setUpdateNote('没查到，网络可能断了，稍后再点一次。')
     } else if (found === false) {
       setUpdateNote('已经是最新版，不用换。')
+    } else {
+      // 有新版：让弹窗弹出来（手动检查忽略跳过记录）。
+      setManualUpdateSignal(Date.now())
     }
   }, [update])
+
+  // 侧边栏点版本号：同样走这里的手动检查。
+  useEffect(() => {
+    const onCheckUpdate = () => {
+      void handleManualUpdateCheck()
+    }
+    window.addEventListener(CHECK_UPDATE_EVENT, onCheckUpdate)
+    return () => window.removeEventListener(CHECK_UPDATE_EVENT, onCheckUpdate)
+  }, [handleManualUpdateCheck])
 
   // Dashboard visualization state
   const [activityData, setActivityData] = useState<ActivityData[]>([])
@@ -481,6 +507,33 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const [collectDialogMode, setCollectDialogMode] = useState<'collect' | 'full'>('collect')
   const [preflightRunning, setPreflightRunning] = useState(false)
   const [generatingGreetings, setGeneratingGreetings] = useState(false)
+  const [browserDiag, setBrowserDiag] = useState<BrowserDiagnostics | null>(null)
+  const [preflightSeeded, setPreflightSeeded] = useState(false)
+
+  // 浏览器诊断：后端没提供该接口时静默，不挡首页。
+  const fetchBrowserDiagnostics = useCallback(async () => {
+    try {
+      const res = await fetch('/api/browser/diagnostics', { cache: 'no-store' })
+      if (!res.ok) return
+      const data = await res.json()
+      // 只认契约里的形状；后端没提供该接口、返回空对象时不误报。
+      if (typeof data.ok === 'boolean' || data.error_kind) setBrowserDiag(data)
+    } catch {
+      // 忽略：诊断只是辅助信息。
+    }
+  }, [])
+  useEffect(() => { void fetchBrowserDiagnostics() }, [fetchBrowserDiagnostics])
+
+  // 首页 preflight 结果优先用后端保存的最近一次结果：路由切换回来
+  // 不再显示“未检查过”，本地刚跑过的结果优先。
+  useEffect(() => {
+    if (preflightSeeded) return
+    const last = workbench.last_preflight
+    if (last?.checks?.length && preflightChecks.length === 0) {
+      setPreflightChecks(last.checks)
+      setPreflightSeeded(true)
+    }
+  }, [workbench.last_preflight, preflightChecks.length, preflightSeeded])
   const startedGreetTaskIdRef = useRef<string | null>(null)
 
   const todayJobs = useMemo(
@@ -887,6 +940,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     <div className="space-y-4">
       <AuthStatusBar auth={auth} />
       <UpdateBanner update={update} />
+      <UpdateModal update={update} manualCheckSignal={manualUpdateSignal} />
       {showGettingStarted && (
         <GettingStartedCard
           onCheck={runStandalonePreflight}
@@ -896,6 +950,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           onRetry={retryPreflight}
         />
       )}
+      <PlatformStatusCard platformLogin={workbench.platform_login} />
+      <BrowserDiagnosticsPanel diagnostics={browserDiag} onRefresh={fetchBrowserDiagnostics} />
       <section id="today-workbench" className="animate-fade-up scroll-mt-6 rounded-2xl border border-card-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
           <h2 className="text-lg font-bold tracking-tight">今天要做的事</h2>

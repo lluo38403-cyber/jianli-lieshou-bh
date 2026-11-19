@@ -74,6 +74,29 @@ CITY_CODES: dict[str, str] = {
 }
 
 
+# 各平台登录入口（“去登录”按钮打开的地址）。
+# 核实情况（2026-11-19）：BOSS 的登录页是任务给定的
+# https://www.zhipin.com/web/user/login；智联 / 前程无忧 / 猎聘用公开搜索
+# 与官网首页抓取都没能确认到一个专用的登录页直链（51job 首页实测只有
+# “登录/注册”按钮、无链接目标），按要求不凭空编 URL，这里先用已验证的
+# 官网首页作入口，点开后在首页点“登录”即可；以后核实到专用登录页再换。
+PLATFORM_LOGIN_URLS: dict[str, str] = {
+    "boss": "https://www.zhipin.com/web/user/login",
+    "zhilian": "https://www.zhaopin.com/",
+    "51job": "https://www.51job.com/",
+    "liepin": "https://www.liepin.com/",
+}
+
+# 与 PLATFORM_LOGIN_URLS 一一对应：True 表示该项是官网首页入口
+# （不是专用登录页直链），前端据此决定是否提示“在首页点登录”。
+PLATFORM_LOGIN_URL_IS_HOMEPAGE: dict[str, bool] = {
+    "boss": False,
+    "zhilian": True,
+    "51job": True,
+    "liepin": True,
+}
+
+
 SUPPORTED_AI_PROVIDERS = {"anthropic", "openai_compatible", "local", "relay"}
 SUPPORTED_AI_SERVICES = {"anthropic", "deepseek", "doubao", "zhipu", "custom", "local", "relay"}
 AI_SERVICE_PRESETS: dict[str, dict[str, str]] = {
@@ -296,6 +319,9 @@ DEFAULTS: dict[str, Any] = {
         "auto_start_proxy": True,
         "enable_port_guard": True,
         "site_patterns": True,
+        # 用户手动选的浏览器启动文件完整路径（POST /api/browser/select 写入）：
+        # 为空时按系统默认查找 Chrome / Edge；填了就优先用它。
+        "executable_path": "",
     },
 }
 

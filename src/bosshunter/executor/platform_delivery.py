@@ -20,6 +20,7 @@ from typing import Any
 
 from bosshunter.antibot import handle_page_risk, human_browse, micro_pause
 from bosshunter.browser import close_tab, evaluate, new_tab, wait_for_load
+from bosshunter.db import record_platform_login_state
 from bosshunter.platform_safety import PlatformAccessGuard, PlatformSafetyStop
 
 # 命中任一即视为岗位已关闭/下架（与 sender.JOB_CLOSED_MARKERS 同义，独立一份
@@ -211,6 +212,22 @@ def _micro_delay_range(throttle_config: dict) -> tuple[float, float]:
     return low, max(low, high)
 
 
+def _record_logged_out(throttle_config: dict, platform: str, detail: str) -> None:
+    """投递中发现掉线时记一笔持久登录态（带熔断联动）。
+
+    只写库、不拦投递流程：记库失败（例如测试里没带 _db）时静默跳过。
+    检测本身仍走 antibot 的 handle_page_risk（内含 detect_page_risk），
+    这里只补记账。
+    """
+    db = throttle_config.get("_db") if isinstance(throttle_config, dict) else None
+    if db is None:
+        return
+    try:
+        record_platform_login_state(db, platform, "logged_out", detail)
+    except Exception:
+        pass
+
+
 def _page_risk_result(
     target_id: str, platform: str, throttle_config: dict
 ) -> dict | None:
@@ -225,6 +242,7 @@ def _page_risk_result(
     if risk == "stopped":
         return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}
     if risk == "login_required":
+        _record_logged_out(throttle_config, platform, "投递时页面提示需要先登录")
         return {"success": False, "error": "needs_login", "history_detail": "平台要求先登录，请在浏览器里登录该平台后重试", "skip_backoff": True}
     if risk == "verification_timeout":
         return {"success": False, "error": "verification_timeout", "history_detail": "等待手动验证超时，任务已停止"}
@@ -274,6 +292,7 @@ def _deliver_via_detail_page(job: dict, throttle_config: dict, platform: str) ->
         close_tab(target_id)
         return {"success": False, "error": "job_page_unavailable", "history_detail": "岗位已关闭或下架", "skip_backoff": True}, None
     if state.get("state") == "login_wall":
+        _record_logged_out(throttle_config, platform, "详情页出现登录墙")
         close_tab(target_id)
         return {"success": False, "error": "needs_login", "history_detail": "平台要求先登录，请在浏览器里登录该平台后重试", "skip_backoff": True}, None
 
@@ -308,6 +327,7 @@ def _deliver_via_detail_page(job: dict, throttle_config: dict, platform: str) ->
         state = _parse_js_result(evaluate(target_id, _page_state_js()))
         close_tab(target_id)
         if state.get("state") == "login_wall":
+            _record_logged_out(throttle_config, platform, "详情页出现登录墙")
             return {"success": False, "error": "needs_login", "history_detail": "平台要求先登录，请在浏览器里登录该平台后重试", "skip_backoff": True}, None
         return {"success": False, "error": "no_apply_button", "history_detail": "详情页没找到投递按钮（页面结构可能变了）", "skip_backoff": True}, None
 

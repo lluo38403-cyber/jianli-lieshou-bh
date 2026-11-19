@@ -251,7 +251,23 @@ def start_runtime(config: dict[str, Any] | None = None, node_executable: str = "
 
 
 def ensure_runtime(config: dict[str, Any] | None = None, wait_seconds: float = 15.0) -> bool:
-    """Ensure the local Browser Runtime is ready for page operations."""
+    """Ensure the local Browser Runtime is ready for page operations.
+
+    启动连接失败时自动重试一次（重试间隔 3 秒），重试仍失败才返回错误；
+    端口回退逻辑不变。配置本身就不允许自启（runtime 非 builtin 或
+    auto_start_proxy 关闭）时不重试——那不是一次可以恢复的失败。
+    """
+    if _ensure_runtime_attempt(config, wait_seconds):
+        return True
+    browser = get_browser_config(config)
+    if browser.get("runtime") != "builtin" or not browser.get("auto_start_proxy", True):
+        return False
+    time.sleep(3)
+    return _ensure_runtime_attempt(config, wait_seconds)
+
+
+def _ensure_runtime_attempt(config: dict[str, Any] | None = None, wait_seconds: float = 15.0) -> bool:
+    """One attempt to bring the local Browser Runtime up."""
     browser = get_browser_config(config)
     if runtime_targets(browser) is not None:
         set_browser_config(browser)

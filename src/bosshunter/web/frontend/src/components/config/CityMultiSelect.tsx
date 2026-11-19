@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { Button } from '@/components/ui/button'
+import { useMemo, useRef, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
 
 export interface CityOption {
   name: string
@@ -26,23 +26,63 @@ export function CityMultiSelect({
   tourTarget?: string
 }) {
   const [query, setQuery] = useState('')
-  const visible = useMemo(() => {
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  // 只显示城市名，不显示内部编码。
+  const suggestions = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    return options.filter(city => !needle || city.name.toLowerCase().includes(needle) || city.code.includes(needle)).slice(0, 80)
-  }, [options, query])
-  const toggle = (name: string) => onChange(value.includes(name) ? value.filter(item => item !== name) : [...value, name])
+    if (!needle) return []
+    return options
+      .filter(city => city.name.toLowerCase().includes(needle) && !value.includes(city.name))
+      .slice(0, 8)
+  }, [options, query, value])
+  const hotCities = useMemo(() => {
+    const hot = options.filter(city => city.hot)
+    return (hot.length ? hot : options).slice(0, 8)
+  }, [options])
+  const toggle = (name: string) => {
+    onChange(value.includes(name) ? value.filter(item => item !== name) : [...value, name])
+    setQuery('')
+    inputRef.current?.focus()
+  }
   return (
     <div className="space-y-2">
-      <div data-tour={tourTarget} className="flex gap-2">
-        <input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索城市名或 BOSS 编码" className="min-w-0 flex-1 rounded-xl border border-card-border bg-surface px-3 py-2 text-xs outline-none focus:border-primary" />
-        <Button type="button" variant="secondary" size="sm" onClick={onRefresh} disabled={refreshing}>{refreshing ? '刷新中...' : '刷新城市列表'}</Button>
-      </div>
-      <div className="flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-xl border border-card-border bg-surface p-2">
-        {visible.map(city => {
-          const selected = value.includes(city.name)
-          return <button key={city.code} type="button" onClick={() => toggle(city.name)} className={`rounded-lg border px-2 py-1 text-xs transition-colors ${selected ? 'border-primary/50 bg-primary/20 text-primary' : 'border-card-border bg-card text-muted hover:border-primary/40 hover:text-foreground'}`}>{city.name} · {city.code}</button>
-        })}
-        {!visible.length && <span className="p-2 text-xs text-muted">没有匹配的城市。</span>}
+      <div data-tour={tourTarget} className="relative flex gap-2">
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={event => { setQuery(event.target.value); setDropdownOpen(true) }}
+          onFocus={() => setDropdownOpen(true)}
+          onBlur={() => window.setTimeout(() => setDropdownOpen(false), 150)}
+          placeholder="搜索城市名"
+          aria-label="搜索城市"
+          className="min-w-0 flex-1 rounded-xl border border-card-border bg-surface px-3 py-2 text-xs outline-none focus:border-primary"
+        />
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={refreshing}
+          aria-label="刷新城市列表"
+          title="刷新城市列表"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-card-border bg-surface text-muted hover:border-primary/40 hover:text-primary disabled:opacity-45"
+        >
+          <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+        </button>
+        {dropdownOpen && suggestions.length > 0 && (
+          <ul className="absolute left-0 right-12 top-full z-20 mt-1 overflow-hidden rounded-xl border border-card-border bg-card shadow-lg">
+            {suggestions.map(city => (
+              <li key={city.code}>
+                <button
+                  type="button"
+                  onMouseDown={event => { event.preventDefault(); toggle(city.name) }}
+                  className="w-full px-3 py-2 text-left text-xs text-foreground hover:bg-surface"
+                >
+                  {city.name}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
         <span>已选 {value.length} 个</span>
@@ -51,7 +91,30 @@ export function CityMultiSelect({
             {name} ×
           </button>
         ))}
+        {!value.length && <span>还没选城市。</span>}
       </div>
+      {hotCities.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted">热门：</span>
+          {hotCities.map(city => {
+            const selected = value.includes(city.name)
+            return (
+              <button
+                key={city.code}
+                type="button"
+                onClick={() => toggle(city.name)}
+                aria-pressed={selected}
+                className={`rounded-full border px-2.5 py-1 text-xs font-bold ${selected ? 'border-primary bg-secondary text-primary' : 'border-card-border bg-card text-muted hover:border-primary/40'}`}
+              >
+                {city.name}
+              </button>
+            )
+          })}
+        </div>
+      )}
+      {query.trim() && !suggestions.length && (
+        <p className="text-xs text-muted">没找到“{query.trim()}”，换个写法试试。</p>
+      )}
       {message && <p className="rounded-lg bg-warning-soft px-3 py-2 text-xs text-warning">{message}</p>}
     </div>
   )

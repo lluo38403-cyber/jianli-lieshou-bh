@@ -61,6 +61,24 @@ def find_zhilian_tab() -> dict | None:
     return None
 
 
+def find_51job_tab() -> dict | None:
+    """Find a 前程无忧 51job tab in Chrome without opening or logging in."""
+    for target in get_page_targets():
+        url = str(target.get("url", ""))
+        if "51job.com" in url:
+            return target
+    return None
+
+
+def find_liepin_tab() -> dict | None:
+    """Find a 猎聘 tab in Chrome without opening or logging in."""
+    for target in get_page_targets():
+        url = str(target.get("url", ""))
+        if "liepin.com" in url:
+            return target
+    return None
+
+
 def new_tab(url: str, background: bool = False) -> str | None:
     """Open a tab and return its target ID."""
     if not _ready():
