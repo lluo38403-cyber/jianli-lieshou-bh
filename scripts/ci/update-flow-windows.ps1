@@ -323,7 +323,7 @@ try {
       if (-not $content) { throw "stage=resume 上传 $($case.file) 后解析内容为空" }
       foreach ($expect in $case.expects) {
         if ($content -notmatch [regex]::Escape($expect)) {
-          throw "stage=resume 上传 $($case.file) 后解析内容缺失“$expect”（解析出 $($content.Length) 字）"
+          throw "stage=resume 上传 $($case.file) 后解析内容缺失 $expect（解析出 $($content.Length) 字）"
         }
       }
       if ($content.Length -lt $case.minLen) {
