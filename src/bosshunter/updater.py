@@ -426,15 +426,15 @@ def build_update_script() -> str:
     The batch file takes five arguments at launch: staging dir, exe
     file name, pid of the process to wait for, expected new version,
     backup directory name. It waits for the given pid to exit (up to
-    120s, then force-kills the whole process tree), makes sure no
-    other copy of the exe is still running (a second instance would
-    hold the exe/_internal files locked and robocopy would fail
-    halfway), checks the staged payload actually holds the exe and
-    _internal, then copies staging over the install directory (never
-    touching config.yaml or data/), purges files the new release
-    removed from _internal, verifies the new exe exists, and only
-    then relaunches it. Every step is logged to update.log next to
-    the exe. On any failure it restores the backup, writes
+    60 wait rounds of ~1-2s each, then force-kills the whole process
+    tree), makes sure no other copy of the exe is still running (a
+    second instance would hold the exe/_internal files locked and
+    robocopy would fail halfway), checks the staged payload actually
+    holds the exe and _internal, then copies staging over the install
+    directory (never touching config.yaml or data/), purges files the
+    new release removed from _internal, verifies the new exe exists,
+    and only then relaunches it. Every step is logged to update.log
+    next to the exe. On any failure it restores the backup, writes
     update-result.json (ASCII reason code; the restarted program
     turns it into a plain-language message), relaunches the old exe
     when nothing is running, and deletes itself — it never leaves a
@@ -448,6 +448,12 @@ def build_update_script() -> str:
         "rem 重开的程序看到这次失败会直接告诉你，不会马上又弹更新。\r\n"
         "rem 等待不用 timeout 命令：它在无控制台的 detached 进程里不返回，\r\n"
         "rem bat 会卡在等主程序退出的循环里走不到复制；改用 ping 延时。\r\n"
+        "rem 等待不能只按 PID 匹配：Windows 会把退出进程的 PID 很快分给\r\n"
+        "rem 别的进程，只认 PID 的循环会一直看到“还在”而永远不退出\r\n"
+        "rem （v12→v13 全流程测试复现：PID 2684 被重用，循环 184 秒没\r\n"
+        "rem 退出，连强制结束那一步都没走到）；所以 PID 和进程名一起\r\n"
+        "rem 匹配，重用的 PID 名字对不上就立刻退出循环。上限 60 次\r\n"
+        "rem （约一到两分钟），再久就强制结束整棵进程树。\r\n"
         "setlocal\r\n"
         'set "STAGING=%~1"\r\n'
         'set "EXE_NAME=%~2"\r\n'
@@ -460,17 +466,17 @@ def build_update_script() -> str:
         'echo [%date% %time%] 开始更新，正在等主程序退出... > "%LOG%"\r\n'
         "set /a WAITED=0\r\n"
         ":waitloop\r\n"
-        'tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul\r\n'
+        'tasklist /FI "PID eq %PID%" /FI "IMAGENAME eq %EXE_NAME%" 2>nul | findstr /I /C:"%EXE_NAME%" >nul\r\n'
         "if %errorlevel% neq 0 goto :procsweep\r\n"
         "set /a WAITED+=1\r\n"
-        "if %WAITED% geq 120 goto :killtree\r\n"
+        "if %WAITED% geq 60 goto :killtree\r\n"
         "ping -n 2 127.0.0.1 >nul\r\n"
         "goto :waitloop\r\n"
         ":killtree\r\n"
-        'echo [%date% %time%] 等了 120 秒主程序还没退出，正在强制结束它和它打开的子程序... >> "%LOG%"\r\n'
+        'echo [%date% %time%] 等了 60 次（约一分钟）主程序还没退出，正在强制结束它和它打开的子程序... >> "%LOG%"\r\n'
         'taskkill /PID %PID% /T /F >> "%LOG%" 2>&1\r\n'
         "ping -n 6 127.0.0.1 >nul\r\n"
-        'tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul\r\n'
+        'tasklist /FI "PID eq %PID%" /FI "IMAGENAME eq %EXE_NAME%" 2>nul | findstr /I /C:"%EXE_NAME%" >nul\r\n'
         "if %errorlevel% equ 0 goto :fail_stuck\r\n"
         ":procsweep\r\n"
         'tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>nul | findstr /I /C:"%EXE_NAME%" >nul\r\n'
