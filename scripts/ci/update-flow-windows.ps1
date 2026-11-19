@@ -68,6 +68,33 @@ function Show-UpdateResult {
   }
 }
 
+function Show-StuckProcesses {
+  # 换文件失败时看看 bat 还在不在、旧版 exe 还有没有残留：
+  # bat 还在 + exe 已死 = bat 卡在等退出的循环里（timeout 不返回）；
+  # 两个都不在 = bat 已经死了。两种原因的修法不一样，先分清。
+  try {
+    $cmds = Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.CommandLine -match 'update\.bat' }
+    if ($cmds) {
+      foreach ($c in $cmds) { Write-Host "  stuck-proc: 跑 update.bat 的 cmd.exe 还在：PID $($c.ProcessId)，$($c.CommandLine)" }
+    } else {
+      Write-Host '  stuck-proc: 没有跑 update.bat 的 cmd.exe（bat 已退出或已死）'
+    }
+  } catch {
+    Write-Host "  stuck-proc: 查 cmd.exe 失败：$($_.Exception.Message)"
+  }
+  try {
+    $exes = Get-Process -Name '简历猎手' -ErrorAction SilentlyContinue
+    if ($exes) {
+      foreach ($e in $exes) { Write-Host "  stuck-proc: 简历猎手.exe 还在跑：PID $($e.Id)" }
+    } else {
+      Write-Host '  stuck-proc: 没有简历猎手.exe 在跑'
+    }
+  } catch {
+    Write-Host "  stuck-proc: 查简历猎手.exe 失败：$($_.Exception.Message)"
+  }
+}
+
 function Stop-ListeningProcess {
   param([int]$ListenPort)
   $conns = Get-NetTCPConnection -LocalPort $ListenPort -State Listen -ErrorAction SilentlyContinue
@@ -352,6 +379,7 @@ try {
   Show-LogTail $logErr
   Show-UpdateLogTail
   Show-UpdateResult
+  Show-StuckProcesses
   if ($proc -and -not $proc.HasExited) {
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
   }
