@@ -92,11 +92,21 @@ REVIEW_PROMPT = """请评估以下{platform}招呼语的质量。
 
 
 def _get_resume_text(config: dict) -> str:
-    """Read the full resume for local-only validation."""
+    """Read the full resume for local-only validation.
+
+    配置里可能直接指到 .pdf/.docx，复用 ai/resume 的按后缀分发读取，
+    避免二进制文件按 UTF-8 硬读而报错。读不出来时返回空文本，不让
+    招呼语流程崩掉（与文件不存在时的行为一致）。
+    """
     resume_path = Path(config.get("profile", {}).get("resume_path", "./resume.md"))
     if not resume_path.exists():
         return ""
-    return resume_path.read_text(encoding="utf-8")
+    try:
+        from bosshunter.ai.resume import _read_base_resume_text
+
+        return _read_base_resume_text(resume_path)
+    except (OSError, ValueError):
+        return ""
 
 
 def _get_resume_summary(config: dict) -> str:

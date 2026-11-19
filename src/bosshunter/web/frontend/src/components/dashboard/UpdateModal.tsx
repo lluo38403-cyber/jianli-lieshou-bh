@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { formatUpdateSize, type UpdateState } from '@/hooks/useUpdate'
+import { formatUpdateSize, getUpdateErrorCopy, type UpdateState } from '@/hooks/useUpdate'
 import { Button } from '@/components/ui/button'
 
 /** “跳过此版本”记在这里：只存版本号字符串，下次启动见到同一版就不再弹。 */
@@ -33,7 +33,7 @@ interface UpdateModalProps {
  * 与首页横幅共用同一份 useUpdate 状态，不另起检查/下载流程。
  */
 export function UpdateModal({ update, manualCheckSignal = 0 }: UpdateModalProps) {
-  const { info, currentVersion, phase, progress, error, dismissed, checking } = update
+  const { info, currentVersion, phase, progress, error, errorKind, manualDownloadUrl, dismissed, checking } = update
   const [open, setOpen] = useState(false)
   const [closedForVersion, setClosedForVersion] = useState('')
   const autoOpenedForRef = useRef('')
@@ -77,6 +77,8 @@ export function UpdateModal({ update, manualCheckSignal = 0 }: UpdateModalProps)
     setOpen(false)
   }
 
+  // 失败按下载 / 校验 / 替换三步给说法；分不出来的才直接显示原话。
+  const errorCopy = phase === 'error' ? getUpdateErrorCopy(errorKind ?? 'other') : null
   const phaseText =
     phase === 'downloading'
       ? `正在下载新版本…${progress > 0 ? ` ${progress}%` : ''}`
@@ -87,7 +89,7 @@ export function UpdateModal({ update, manualCheckSignal = 0 }: UpdateModalProps)
           : phase === 'applying'
             ? '正在换上新版本，面板马上重新打开…'
             : phase === 'error'
-              ? error || '这次没换上，稍后再试。'
+              ? errorCopy?.title || error || '这次没换上，稍后再试。'
               : null
 
   return (
@@ -118,6 +120,20 @@ export function UpdateModal({ update, manualCheckSignal = 0 }: UpdateModalProps)
       </p>
       {phaseText ? (
         <p className="mt-2 text-sm font-medium text-foreground">{phaseText}</p>
+      ) : null}
+      {phase === 'error' && errorCopy?.reason ? (
+        <p className="mt-1 text-sm text-muted">{errorCopy.reason}</p>
+      ) : null}
+      {phase === 'error' ? (
+        <p className="mt-1 text-sm text-muted">
+          {errorCopy?.tip || '点“再试一次”。'}
+          {manualDownloadUrl
+            ? '也可以点“手动下载”去店铺拿最新安装包。'
+            : '也可以去群里或店铺拿最新安装包。'}
+        </p>
+      ) : null}
+      {phase === 'error' && !manualDownloadUrl ? (
+        <p className="mt-1 text-xs text-muted">手动换：下载后解压，覆盖安装目录，别动 config.yaml 和 data 文件夹。</p>
       ) : null}
       {(phase === 'downloading' || phase === 'verifying') && (
         <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface">
@@ -153,9 +169,20 @@ export function UpdateModal({ update, manualCheckSignal = 0 }: UpdateModalProps)
           </span>
         ) : null}
         {phase === 'error' ? (
-          <Button variant="secondary" onClick={() => void update.retry()}>
-            再试一次
-          </Button>
+          <>
+            <Button variant="secondary" onClick={() => void update.retry()}>
+              再试一次
+            </Button>
+            {manualDownloadUrl ? (
+              <Button
+                variant="secondary"
+                data-testid="update-modal-manual-download"
+                onClick={() => window.open(manualDownloadUrl, '_blank', 'noopener,noreferrer')}
+              >
+                手动下载
+              </Button>
+            ) : null}
+          </>
         ) : null}
         {(phase === 'idle' || phase === 'checking') && (
           <Button variant="secondary" onClick={skipVersion}>

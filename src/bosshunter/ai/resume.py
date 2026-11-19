@@ -14,6 +14,7 @@ from bosshunter.ai.credentials import call_ai_text, get_ai_service
 from bosshunter.browser import close_tab, evaluate, new_tab, print_pdf, screenshot, wait_for_load
 from bosshunter.cancellation import OperationCancelled, run_cancellable, stop_requested
 from bosshunter.db import get_db
+from bosshunter.web.resume_upload import ResumeUploadError
 
 console = Console()
 
@@ -615,6 +616,26 @@ def _positive_int(value: object, default: int) -> int:
     return number if number > 0 else default
 
 
+def _read_base_resume_text(resume_path: Path) -> str:
+	"""Read the master resume as text, converting PDF/DOCX when needed.
+
+	上传流程一定存 .md，但用户也可能在配置里直接指到 .pdf/.docx；这里按后缀
+	分发，避免二进制文件直接按 UTF-8 读而报错。ResumeUploadError 是 ValueError
+	的子类，调用方按失败原因原样上报即可。
+	"""
+	from bosshunter.web.resume_upload import ResumeUploadError, docx_to_markdown, pdf_to_markdown
+
+	suffix = resume_path.suffix.lower()
+	if suffix == ".pdf":
+		return pdf_to_markdown(resume_path.read_bytes())
+	if suffix == ".docx":
+		return docx_to_markdown(resume_path.read_bytes())
+	try:
+		return resume_path.read_text(encoding="utf-8")
+	except UnicodeDecodeError as exc:
+		raise ResumeUploadError("基础简历不是文字格式，请重新上传 .md、.docx 或 .pdf 简历") from exc
+
+
 def _pdf_page_count(pdf_path: Path) -> int | None:
     """Return PDF page count when it can be determined."""
     if not pdf_path.exists():
@@ -1074,7 +1095,7 @@ def save_resume_draft(
         base_path = Path(str(config.get("profile", {}).get("resume_path") or ""))
         if not base_path.exists():
             raise ValueError("基础简历文件不存在")
-        base_resume = base_path.read_text(encoding="utf-8")
+        base_resume = _read_base_resume_text(base_path)
         blocking_issues = _find_blocking_integrity_issues(candidate, base_resume)
         if blocking_issues:
             raise ValueError("；".join(blocking_issues))
@@ -1132,7 +1153,9 @@ def generate_tailored_resume(job_id: str, config: dict) -> Path | None:
         return fail(f"基础简历文件不存在：{resume_path}")
 
     try:
-        resume_text = resume_path.read_text(encoding="utf-8")
+        resume_text = _read_base_resume_text(resume_path)
+    except ResumeUploadError as exc:
+        return fail(str(exc))
     except OSError as exc:
         return fail(f"无法读取基础简历：{exc}")
     resume_max_pages = _resume_max_pages_from_config(config)

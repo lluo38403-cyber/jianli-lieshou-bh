@@ -150,7 +150,26 @@ describe('useAuth', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const { result } = renderHook(() => useAuth())
-    await waitFor(() => expect(result.current.loading).toBe(false))
+    // 请求层会先退避重试几次（约 3.5 秒），等它耗尽再断言。
+    await waitFor(() => expect(result.current.loading).toBe(false), { timeout: 10000 })
     expect(result.current.snapshot).toBeNull()
+  })
+
+  it('本地服务刚起来时联不上，重试几次后拿到状态', async () => {
+    let statusCalls = 0
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/auth/config') return jsonResponse(DISPLAY_CONFIG)
+      if (url === '/api/auth/status') {
+        statusCalls += 1
+        if (statusCalls <= 2) throw new TypeError('Failed to fetch')
+        return jsonResponse(TRIAL_STATUS)
+      }
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useAuth())
+    await waitFor(() => expect(result.current.snapshot?.status).toBe('trial'), { timeout: 10000 })
+    expect(statusCalls).toBeGreaterThanOrEqual(3)
   })
 })

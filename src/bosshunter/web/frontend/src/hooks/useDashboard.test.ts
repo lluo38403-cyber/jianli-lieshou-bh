@@ -44,6 +44,70 @@ describe('greeting save and dashboard refresh', () => {
 })
 
 
+describe('dashboard waits for the local service and recovers', () => {
+  it('retries a refused connection and loads once the service is up', async () => {
+    const workbench = {
+      pending_confirmation: [], pending_greetings: [], send_errors: [], needs_resume: [],
+    }
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockImplementation(() => Promise.resolve(jsonResponse(workbench)))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result, unmount } = renderHook(() => useDashboard('workbench'))
+    // 前两次联不上：先撤掉骨架屏、给等服务的提示，而不是一直干等。
+    await waitFor(() => expect(result.current.loading).toBe(false), { timeout: 10000 })
+    // 服务起来后数据自动补上，报错清掉。
+    await waitFor(() => expect(result.current.workbench.pending_greetings).toEqual([]), { timeout: 10000 })
+    await waitFor(() => expect(result.current.error).toBe(''), { timeout: 10000 })
+    expect(result.current.waitingForService).toBe(false)
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(3)
+    unmount()
+  })
+
+  it('service stays down: shows a waiting error, then recovers when it comes back', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const workbench = {
+      pending_confirmation: [], pending_greetings: [], send_errors: [], needs_resume: [],
+    }
+    const fetchMock = vi.fn(async (): Promise<Response> => {
+      throw new TypeError('Failed to fetch')
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { result, unmount } = renderHook(() => useDashboard('workbench'))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20000)
+    })
+    expect(result.current.loading).toBe(false)
+    expect(result.current.waitingForService).toBe(true)
+    expect(result.current.error).toContain('本地服务还没起来')
+    // 服务起来后，下一轮自动刷新就把数据补上，不用手动点。
+    // 注意：每次调用都要返回新的 Response，复用同一个会被 .json() 消费掉。
+    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse(workbench)))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20000)
+    })
+    expect(result.current.error).toBe('')
+    expect(result.current.waitingForService).toBe(false)
+    unmount()
+  })
+
+  it('a 500 from the service is treated as not ready, not a data error', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fetchMock = vi.fn(async (): Promise<Response> => new Response('{}', { status: 500 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result, unmount } = renderHook(() => useDashboard('workbench'))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30000)
+    })
+    expect(result.current.waitingForService).toBe(true)
+    expect(result.current.error).toContain('本地服务还没起来')
+    unmount()
+  })
+})
+
 describe('verification state', () => {
   it('surfaces an open hold and suspended platforms from the workbench payload', async () => {
     const workbench = {

@@ -19,11 +19,12 @@ def resolve_configured_resume_files(configured_path: Path) -> tuple[Path, Path]:
 	"""Map a configured resume path to (markdown_path, pdf_path) candidates. Pure.
 
 	- ``resume.pdf`` → (``resume.md``, ``resume.pdf``)
+	- ``resume.docx`` → (``resume.md``, ``resume.pdf``)
 	- ``resume.md``  → (``resume.md``, ``resume.pdf``)
 	"""
 	path = Path(configured_path)
-	if path.suffix.lower() == ".pdf":
-		return path.with_suffix(".md"), path
+	if path.suffix.lower() in {".pdf", ".docx"}:
+		return path.with_suffix(".md"), path.with_suffix(".pdf")
 	return path, path.with_suffix(".pdf")
 
 

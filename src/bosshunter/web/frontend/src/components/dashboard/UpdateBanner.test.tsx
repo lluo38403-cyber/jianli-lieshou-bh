@@ -18,6 +18,8 @@ function fakeUpdate(overrides: Partial<UpdateState> = {}): UpdateState {
     phase: 'idle',
     progress: 0,
     error: '',
+    errorKind: null,
+    manualDownloadUrl: '',
     dismissed: false,
     checking: false,
     check: vi.fn(),
@@ -70,12 +72,56 @@ describe('UpdateBanner', () => {
     expect(update.apply).toHaveBeenCalledTimes(1)
   })
 
-  it('shows the error and a retry button when the update fails', () => {
-    const update = fakeUpdate({ phase: 'error', error: '下载失败了，稍后再试。' })
+  it('shows which step failed and a retry button when the download fails', () => {
+    const update = fakeUpdate({ phase: 'error', error: '新版本没下载下来，请检查网络后重试。', errorKind: 'download' })
     render(<UpdateBanner update={update} />)
-    expect(screen.getByText('下载失败了，稍后再试。')).toBeTruthy()
+    expect(screen.getByText('新版本没下载下来')).toBeTruthy()
+    expect(screen.getByText(/旧版本还能正常用/)).toBeTruthy()
     fireEvent.click(screen.getByText('再试一次'))
     expect(update.retry).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the verify failure copy when the file does not match', () => {
+    render(<UpdateBanner update={fakeUpdate({ phase: 'error', error: '下载的文件对不上，怕文件坏了，这次先不换。', errorKind: 'verify' })} />)
+    expect(screen.getByText('下载的文件对不上')).toBeTruthy()
+    expect(screen.getByText(/怕文件坏了/)).toBeTruthy()
+    expect(screen.getByText('再试一次')).toBeTruthy()
+  })
+
+  it('shows the apply failure copy and that settings were not touched', () => {
+    render(<UpdateBanner update={fakeUpdate({ phase: 'error', error: '找不到现在用的程序文件，这次先不换。', errorKind: 'apply' })} />)
+    expect(screen.getByText('这次没换上')).toBeTruthy()
+    expect(screen.getByText(/设置和投递记录都没动/)).toBeTruthy()
+  })
+
+  it('shows the raw message when the failure kind is unknown', () => {
+    render(<UpdateBanner update={fakeUpdate({ phase: 'error', error: '不知道出了什么问题', errorKind: 'other' })} />)
+    expect(screen.getByText('不知道出了什么问题')).toBeTruthy()
+    expect(screen.getByText('再试一次')).toBeTruthy()
+  })
+
+  it('offers manual download through the shop link when one is known', () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    render(<UpdateBanner update={fakeUpdate({
+      phase: 'error',
+      error: '新版本没下载下来，请检查网络后重试。',
+      errorKind: 'download',
+      manualDownloadUrl: 'https://example.com/shop',
+    })} />)
+    fireEvent.click(screen.getByTestId('update-manual-download'))
+    expect(openSpy).toHaveBeenCalledWith('https://example.com/shop', '_blank', 'noopener,noreferrer')
+    openSpy.mockRestore()
+  })
+
+  it('without a shop link, tells the user where to get the package instead of a dead link', () => {
+    render(<UpdateBanner update={fakeUpdate({
+      phase: 'error',
+      error: '新版本没下载下来，请检查网络后重试。',
+      errorKind: 'download',
+      manualDownloadUrl: '',
+    })} />)
+    expect(screen.queryByTestId('update-manual-download')).toBeNull()
+    expect(screen.getByText(/去群里或店铺拿最新安装包/)).toBeTruthy()
   })
 
   it('shows the applying state while the new version is being swapped in', () => {

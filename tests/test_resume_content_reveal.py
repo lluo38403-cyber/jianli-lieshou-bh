@@ -570,19 +570,21 @@ class ResumeApiPreviewRouteTests(unittest.TestCase):
 			self.assertTrue(status.startswith("400"), body)
 			self.assertIn("10MB", payload["error"])
 
-	def test_upload_rejects_non_utf8_markdown(self):
+	def test_upload_accepts_gbk_markdown_as_utf8(self):
+		# GBK 编码的中文简历以前会被判“必须使用 UTF-8 编码”；现在转码后按 UTF-8 存，
+		# 只有两种编码都解不开的字节才拒绝。
 		with tempfile.TemporaryDirectory() as tmp:
 			base_dir = Path(tmp)
 			(base_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
 			server.set_base_dir(base_dir)
 			status, _, body = self._upload_resume(
-				"bad.md",
+				"gbk.md",
 				"简历".encode("gbk"),
 				"text/markdown",
 			)
 			payload = json.loads(body)
-			self.assertTrue(status.startswith("400"), body)
-			self.assertIn("UTF-8", payload["error"])
+			self.assertTrue(status.startswith("200"), body)
+			self.assertEqual(payload["content"], "简历")
 
 	def test_upload_markdown_strips_embedded_nul_bytes(self):
 		with tempfile.TemporaryDirectory() as tmp:

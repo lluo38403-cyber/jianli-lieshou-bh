@@ -71,6 +71,9 @@ def resolve_active_resume_path(raw_path: str | None, base_dir: Path | None = Non
 		if pdf_path.is_file():
 			# PDF-only (or legacy PDF config): treat the MD stem as active for naming.
 			return markdown_path.resolve()
+		if resolved.suffix.lower() == ".docx":
+			# DOCX-only config: the converted MD stem is the active name.
+			return markdown_path.resolve()
 		if resolved.is_file():
 			return resolved
 	return None

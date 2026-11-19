@@ -25,21 +25,30 @@ import yaml
 
 from bosshunter import __version__, updater
 from bosshunter.updater import (
+    UPDATE_FAILURE_MESSAGES,
     UpdateError,
     apply_update,
     build_update_script,
     check_for_update,
+    clear_update_result,
+    consume_pending_update,
     create_backup,
     download_update,
     extract_update,
     find_payload_root,
+    get_last_update_failure,
     get_status,
     is_newer,
     overlay_staging,
     parse_version,
     prune_old_backups,
+    prune_stale_files,
+    reconcile_pending_update,
     run_check,
     start_download,
+    validate_staged_payload,
+    write_pending_update,
+    write_update_result,
 )
 from bosshunter.web import server
 
@@ -342,6 +351,63 @@ class UpdateDownloadTests(unittest.TestCase):
                     self.assertTrue((root / "简历猎手.exe").is_file())
                     self.assertTrue((root / "_internal" / "app.bin").is_file())
 
+    def test_double_nested_zip_still_finds_inner_root(self):
+        # 回归：zip 里多套了一层文件夹时，旧实现只找一层，root 里
+        # 既无 exe 也无 _internal，换上去的还是旧版、一直弹更新。
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("简历猎手-windows/简历猎手-windows/简历猎手.exe", b"new-exe")
+            zf.writestr("简历猎手-windows/简历猎手-windows/_internal/app.bin", b"new-app")
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "rel.zip"
+            zip_path.write_bytes(buf.getvalue())
+            staging = extract_update(zip_path, Path(tmp) / "staging")
+            root = find_payload_root(staging)
+            self.assertTrue((root / "简历猎手.exe").is_file())
+            self.assertTrue((root / "_internal" / "app.bin").is_file())
+            validate_staged_payload(root)  # 不抛错
+
+    def test_split_layout_is_rejected(self):
+        # 回归：exe 和 _internal 分在两个文件夹时，旧实现只认 exe
+        # 所在目录，_internal 就没换上去（新 exe + 旧 _internal）。
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("简历猎手-windows/sub/简历猎手.exe", b"new-exe")
+            zf.writestr("简历猎手-windows/_internal/app.bin", b"new-app")
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "rel.zip"
+            zip_path.write_bytes(buf.getvalue())
+            staging = extract_update(zip_path, Path(tmp) / "staging")
+            root = find_payload_root(staging)
+            with self.assertRaises(UpdateError):
+                validate_staged_payload(root)
+
+    def test_bad_layout_zip_never_reaches_ready(self):
+        # 回归：zip 里根本没有 exe 时，旧实现照样标 ready，点了更新
+        # 等于白换一遍、版本不变、一直弹更新。
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("简历猎手-windows/readme.txt", b"hi")
+        bad = buf.getvalue()
+        UpdateStubHandler.zip_bytes = bad
+        UpdateStubHandler.version_payload = {
+            "version": "1.0.7",
+            "size": len(bad),
+            "sha256": hashlib.sha256(bad).hexdigest(),
+            "notes": "",
+        }
+        _reset_update_state()
+        run_check(self._config())
+        start_download(self._config())
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if get_status()["status"] == "error":
+                break
+            time.sleep(0.2)
+        state = get_status()
+        self.assertEqual(state["status"], "error", state)
+        self.assertIn("安装包", state["error"])
+
 
 class UpdatePreserveTests(unittest.TestCase):
     def _fake_install(self, base: Path) -> Path:
@@ -393,6 +459,165 @@ class UpdatePreserveTests(unittest.TestCase):
             self.assertFalse((backup / "update-backup-1.0.0").exists())
             self.assertEqual((backup / "other.txt").read_bytes(), b"keep-me")
 
+    def test_overlay_purges_stale_files_from_internal(self):
+        # 回归：旧版 _internal 里新版已删的文件，旧 overlay 会留下来，
+        # 旧代码可能继续被加载，版本号/行为还是旧的。
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            install = self._fake_install(base)
+            (install / "_internal" / "removed-in-new.dll").write_bytes(b"stale")
+            (install / "_internal" / "old-sub").mkdir(exist_ok=True)
+            (install / "_internal" / "old-sub" / "gone.bin").write_bytes(b"stale")
+            staging = self._fake_staging(base)
+            overlay_staging(install, staging)
+            self.assertFalse((install / "_internal" / "removed-in-new.dll").exists())
+            self.assertFalse((install / "_internal" / "old-sub").exists())
+            self.assertEqual((install / "_internal" / "app.bin").read_bytes(), b"new-app")
+            # 顶层用户自己的文件不动；设置和数据不动
+            self.assertEqual((install / "other.txt").read_bytes(), b"keep-me")
+            self.assertEqual((install / "config.yaml").read_bytes(), b"user: true\nsalary: 20\n")
+            self.assertEqual((install / "data" / "bosshunter.db").read_bytes(), b"user-db-bytes")
+
+    def test_prune_stale_files_keeps_shared_subtrees(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            src = base / "src"
+            dst = base / "dst"
+            (src / "keep").mkdir(parents=True)
+            (src / "keep" / "a.txt").write_text("a", encoding="utf-8")
+            (dst / "keep").mkdir(parents=True)
+            (dst / "keep" / "a.txt").write_text("a", encoding="utf-8")
+            (dst / "keep" / "stale.txt").write_text("s", encoding="utf-8")
+            (dst / "gone-dir").mkdir()
+            prune_stale_files(src, dst)
+            self.assertTrue((dst / "keep" / "a.txt").is_file())
+            self.assertFalse((dst / "keep" / "stale.txt").exists())
+            self.assertFalse((dst / "gone-dir").exists())
+
+
+class StagedPayloadValidationTests(unittest.TestCase):
+    def _root(self, base: Path, exe=True, internal=True) -> Path:
+        root = base / "payload"
+        root.mkdir(parents=True, exist_ok=True)
+        if exe:
+            (root / "简历猎手.exe").write_bytes(b"exe")
+        if internal:
+            (root / "_internal").mkdir(exist_ok=True)
+            (root / "_internal" / "app.bin").write_bytes(b"app")
+        return root
+
+    def test_good_payload_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(validate_staged_payload(self._root(Path(tmp))), Path(tmp) / "payload")
+
+    def test_missing_exe_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(UpdateError) as caught:
+                validate_staged_payload(self._root(Path(tmp), exe=False))
+            self.assertIn("安装包", str(caught.exception))
+
+    def test_missing_internal_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(UpdateError) as caught:
+                validate_staged_payload(self._root(Path(tmp), internal=False))
+            self.assertIn("安装包", str(caught.exception))
+
+
+class UpdatePendingTests(unittest.TestCase):
+    def setUp(self):
+        _reset_update_state()
+
+    def tearDown(self):
+        _reset_update_state()
+
+    def test_consume_ok_when_version_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp)
+            write_pending_update(install, __version__)
+            write_update_result(install, {"status": "applied", "expected_version": __version__, "reason_code": ""})
+            verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "ok")
+            self.assertEqual(verdict["actual_version"], __version__)
+            self.assertFalse((install / updater.UPDATE_PENDING_FILENAME).exists())
+            self.assertIsNone(get_last_update_failure(install))
+            self.assertFalse(reconcile_pending_update(install))
+
+    def test_consume_mismatch_reports_failure_not_a_prompt(self):
+        # 回归：换完打开还是旧版本时，旧实现毫无记录，启动检查立刻
+        # 又弹同一个更新。核对后必须进 error 状态、不再自动检查。
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp)
+            write_pending_update(install, "9.9.9")
+            write_update_result(install, {"status": "applied", "expected_version": "9.9.9", "reason_code": ""})
+            verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "failed")
+            self.assertIn("旧版本", verdict["reason"])
+            self.assertFalse((install / updater.UPDATE_PENDING_FILENAME).exists())
+            last = get_last_update_failure(install)
+            assert last is not None
+            self.assertEqual(last["expected_version"], "9.9.9")
+            self.assertTrue(reconcile_pending_update(install))
+            state = get_status()
+            self.assertEqual(state["status"], "error")
+            self.assertFalse(state["update_available"])
+            self.assertIn("旧版本", state["error"])
+            # 失败记录在，后续启动核对仍挡住自动检查（不进循环）
+            self.assertTrue(reconcile_pending_update(install))
+
+    def test_consume_bat_failure_maps_reason_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp)
+            write_pending_update(install, "9.9.9")
+            write_update_result(install, {"status": "failed", "expected_version": "9.9.9", "reason_code": "copy"})
+            verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "failed")
+            self.assertEqual(verdict["reason"], UPDATE_FAILURE_MESSAGES["copy"])
+
+    def test_consume_without_bat_result_is_unknown_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp)
+            write_pending_update(install, "9.9.9")
+            verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "failed")
+            self.assertEqual(verdict["reason"], UPDATE_FAILURE_MESSAGES["unknown"])
+
+    def test_stale_applied_result_is_not_misread_as_this_round(self):
+        # 上轮换成的结果文件，不能被这轮没跑起来的 bat 误读：
+        # pending 是新的、结果文件是旧的时，按“没换完”算。
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp)
+            write_update_result(install, {"status": "applied", "expected_version": __version__, "reason_code": ""})
+            write_pending_update(install, "9.9.9")
+            # apply_update 会先清结果文件；这里模拟清掉后的状态
+            from bosshunter.updater import _remove_quietly
+            _remove_quietly(install / updater.UPDATE_RESULT_FILENAME)
+            verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "failed")
+            self.assertEqual(verdict["reason"], UPDATE_FAILURE_MESSAGES["unknown"])
+
+    def test_manual_recheck_clears_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp)
+            write_pending_update(install, "9.9.9")
+            write_update_result(install, {"status": "failed", "expected_version": "9.9.9", "reason_code": "stuck"})
+            consume_pending_update(install)
+            self.assertIsNotNone(get_last_update_failure(install))
+            clear_update_result(install)
+            self.assertIsNone(get_last_update_failure(install))
+            self.assertFalse(reconcile_pending_update(install))
+
+    def test_no_marker_means_nothing_to_reconcile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(consume_pending_update(Path(tmp)))
+            self.assertFalse(reconcile_pending_update(Path(tmp)))
+
+
+class UpdatePreservePruneTests(unittest.TestCase):
     def test_prune_old_backups_keeps_newest(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -420,6 +645,44 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertNotIn("rmdir /s /q \"%INSTALL_DIR%\"", script)
         self.assertNotIn("format", script.lower())
 
+    def test_batch_kills_stuck_process_tree_and_other_instances(self):
+        # 回归：旧 bat 只等主进程 pid；残留/多开的同名进程占住文件时
+        # robocopy 直接半路失败。超时后要 taskkill 整棵进程树，换
+        # 之前还要清掉其他同名进程。
+        script = build_update_script()
+        self.assertIn("taskkill /PID %PID% /T /F", script)
+        self.assertIn('taskkill /F /IM "%EXE_NAME%" /T', script)
+
+    def test_batch_never_exits_silently(self):
+        # 回归：旧 bat 等 120 秒超时 / 复制失败时直接 goto :eof，
+        # 不写结果、不重启旧版，用户重开又弹更新。每个失败出口都
+        # 必须写 update-result.json 并尝试重开旧版。
+        script = build_update_script()
+        self.assertNotIn("goto :eof", script)
+        self.assertIn("update-result.json", script)
+        self.assertIn(":fail_stuck", script)
+        self.assertIn(":fail_nopkg", script)
+        self.assertIn(":fail_copy", script)
+        self.assertIn(":rollback", script)
+        self.assertIn("reason_code", script)
+
+    def test_batch_validates_staging_and_purges_stale_internal(self):
+        # 回归：旧 bat 不校验 staging、有错照换；且 robocopy /E /IS
+        # 从不清残留，旧版删掉的文件一直留在 _internal 里。
+        script = build_update_script()
+        self.assertIn('if not exist "%STAGING%\\%EXE_NAME%"', script)
+        self.assertIn('if not exist "%STAGING%\\_internal\\"', script)
+        self.assertIn('robocopy "%STAGING%\\_internal" "%INSTALL_DIR%_internal" /MIR', script)
+        self.assertIn("/R:5 /W:3", script)
+
+    def test_batch_restores_backup_on_copy_failure(self):
+        # 回归：旧 bat 复制失败就扔下半新半旧的安装目录走人。
+        # 现在必须从备份恢复（包括 _internal 的 /MIR 还原），再报错。
+        script = build_update_script()
+        self.assertIn('robocopy "%INSTALL_DIR%%BACKUP%" "%INSTALL_DIR%"', script)
+        self.assertIn('"%INSTALL_DIR%%BACKUP%\\_internal"', script)
+        self.assertIn("%EXPECTED%", script)
+
 
 class UpdateApplyTests(unittest.TestCase):
     def setUp(self):
@@ -433,13 +696,43 @@ class UpdateApplyTests(unittest.TestCase):
 
         if sys.platform.startswith("win"):
             self.skipTest("仅在非 Windows 上验证拒绝逻辑")
-        updater._STATE.update({"status": "ready", "staging_dir": "/tmp/nowhere"})
         with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp) / "staging"
+            (staging / "_internal").mkdir(parents=True)
+            (staging / "简历猎手.exe").write_bytes(b"new-exe")
+            (staging / "_internal" / "app.bin").write_bytes(b"new-app")
+            updater._STATE.update({
+                "status": "ready",
+                "staging_dir": str(staging),
+                "info": {"version": "1.0.7"},
+            })
+            install = Path(tmp) / "install"
+            install.mkdir()
+            (install / "简历猎手.exe").write_bytes(b"old-exe")
             with self.assertRaises(UpdateError) as caught:
-                apply_update(Path(tmp), "简历猎手.exe")
+                apply_update(install, "简历猎手.exe")
             self.assertIn("正式安装", str(caught.exception))
-            # 拒绝时什么文件都不该留下
-            self.assertEqual(list(Path(tmp).iterdir()), [])
+            # 拒绝时只写了备份和 update.bat，不动安装文件
+            self.assertEqual((install / "简历猎手.exe").read_bytes(), b"old-exe")
+
+    def test_apply_rejects_bad_staging_before_touching_install(self):
+        # 回归：staging 里没有新版 payload 时，旧实现只查安装目录的
+        # exe，照样写 bat、退出程序，白换一遍。
+        import sys
+
+        with tempfile.TemporaryDirectory() as tmp:
+            updater._STATE.update({
+                "status": "ready",
+                "staging_dir": str(Path(tmp) / "empty-staging"),
+                "info": {"version": "1.0.7"},
+            })
+            install = Path(tmp) / "install"
+            install.mkdir()
+            (install / "简历猎手.exe").write_bytes(b"old-exe")
+            with self.assertRaises(UpdateError) as caught:
+                apply_update(install, "简历猎手.exe")
+            self.assertIn("安装包", str(caught.exception))
+            self.assertEqual(list(install.iterdir()), [install / "简历猎手.exe"])
 
 
 class UpdateRouteTests(unittest.TestCase):
@@ -546,6 +839,37 @@ class UpdateRouteTests(unittest.TestCase):
             self.assertEqual(data["version"], "1.0.7")
             self.assertEqual(data["current_version"], __version__)
             self.assertEqual(data["notes"], "更快更稳")
+
+    def test_check_suppressed_after_failed_update_until_manual_recheck(self):
+        # 回归：上次更新换失败后，旧实现启动检查立刻又弹同一个更新。
+        # 现在非手动检查保持报错；手动强制检查是出口，清掉失败记录
+        # 后才能重新查到新版。
+        with tempfile.TemporaryDirectory() as tmp:
+            base = self._base_dir(tmp)
+            updater.write_pending_update(base, "1.0.7")
+            updater.write_update_result(
+                base, {"status": "failed", "expected_version": "1.0.7", "reason_code": "copy"}
+            )
+            original_get_install_dir = updater.get_install_dir
+            updater.get_install_dir = lambda: base
+            try:
+                status, _, body = self._request("/api/update/check")
+                self.assertTrue(status.startswith("200"), body)
+                data = json.loads(body)
+                self.assertEqual(data["status"], "error")
+                self.assertFalse(data["update_available"])
+                self.assertIn("换回旧版本", data["error"])
+                # 再查一次仍是报错，不进循环
+                _, _, body = self._request("/api/update/check")
+                self.assertEqual(json.loads(body)["status"], "error")
+                # 手动强制检查：清掉失败记录，重新查到新版
+                status, _, body = self._request("/api/update/check?force=1")
+                self.assertTrue(status.startswith("200"), body)
+                data = json.loads(body)
+                self.assertTrue(data["update_available"])
+                self.assertEqual(data["version"], "1.0.7")
+            finally:
+                updater.get_install_dir = original_get_install_dir
 
     def test_check_never_500s_when_relay_is_down(self):
         with tempfile.TemporaryDirectory() as tmp:

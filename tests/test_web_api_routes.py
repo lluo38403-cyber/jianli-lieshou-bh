@@ -3619,7 +3619,10 @@ class WebApiRouteTests(unittest.TestCase):
 
             # Assert
             self.assertTrue(status.startswith("400"), body)
-            self.assertEqual(json.loads(body), {"error": "仅支持 .md、.docx 或 .pdf 格式"})
+            self.assertEqual(
+                json.loads(body),
+                {"error": "老版 .doc 打不开，请用 Word 或 WPS 打开后另存为 .docx 再上传"},
+            )
 
     def test_web_api_history_open_chat_selects_the_recorded_boss_conversation(self):
         with tempfile.TemporaryDirectory() as tmp:

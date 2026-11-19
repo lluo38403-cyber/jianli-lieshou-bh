@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { fetchWithRetry } from '@/lib/api'
 
 export type AuthStatus = 'trial' | 'active' | 'expired' | 'unknown'
 
@@ -118,7 +119,9 @@ export function useAuth(): AuthHook {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/auth/status')
+      // 启动/更新重启后本地服务还没起来时，指望这次重试顶住；
+      // 实在拿不到就留着上次的状态，30 秒一轮还会再试。
+      const res = await fetchWithRetry('/api/auth/status', {}, { timeoutMs: 8000, retries: 3 })
       const data = (await res.json().catch(() => ({}))) as StatusPayload
       applySnapshot(data)
     } catch {
@@ -130,7 +133,7 @@ export function useAuth(): AuthHook {
 
   const fetchDisplay = useCallback(async () => {
     try {
-      const res = await fetch('/api/auth/config')
+      const res = await fetchWithRetry('/api/auth/config', {}, { timeoutMs: 8000, retries: 3 })
       const data = (await res.json().catch(() => ({}))) as DisplayPayload
       if (!mountedRef.current) return
       setDisplay({

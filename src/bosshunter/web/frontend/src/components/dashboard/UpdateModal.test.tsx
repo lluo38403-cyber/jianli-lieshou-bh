@@ -16,6 +16,8 @@ function fakeUpdate(overrides: Partial<UpdateState> = {}): UpdateState {
     phase: 'idle',
     progress: 0,
     error: '',
+    errorKind: null,
+    manualDownloadUrl: '',
     dismissed: false,
     checking: false,
     check: vi.fn(),
@@ -109,15 +111,41 @@ describe('UpdateModal', () => {
     expect(update.apply).toHaveBeenCalledTimes(1)
   })
 
-  it('shows the error and a retry button when the update fails', async () => {
-    const update = fakeUpdate({ phase: 'error', error: '下载失败了，稍后再试。' })
+  it('shows which step failed and a retry button when the update fails', async () => {
+    const update = fakeUpdate({ phase: 'error', error: '新版本没下载下来，请检查网络后重试。', errorKind: 'download' })
     const { rerender } = render(<UpdateModal update={fakeUpdate()} />)
     // 弹窗开着时下载出错：留在弹窗里给重试按钮，不闪退。
     expect(await screen.findByTestId('update-modal')).toBeTruthy()
     rerender(<UpdateModal update={update} />)
-    expect(screen.getByText('下载失败了，稍后再试。')).toBeTruthy()
+    expect(screen.getByText('新版本没下载下来')).toBeTruthy()
+    expect(screen.getByText(/旧版本还能正常用/)).toBeTruthy()
     fireEvent.click(screen.getByText('再试一次'))
     expect(update.retry).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the verify / apply copy for those failures', async () => {
+    const { rerender } = render(<UpdateModal update={fakeUpdate()} />)
+    expect(await screen.findByTestId('update-modal')).toBeTruthy()
+    rerender(<UpdateModal update={fakeUpdate({ phase: 'error', error: '下载的文件对不上，怕文件坏了，这次先不换。', errorKind: 'verify' })} />)
+    expect(screen.getByText('下载的文件对不上')).toBeTruthy()
+    rerender(<UpdateModal update={fakeUpdate({ phase: 'error', error: '找不到现在用的程序文件，这次先不换。', errorKind: 'apply' })} />)
+    expect(screen.getByText('这次没换上')).toBeTruthy()
+    expect(screen.getByText(/设置和投递记录都没动/)).toBeTruthy()
+  })
+
+  it('offers manual download through the shop link when one is known', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const { rerender } = render(<UpdateModal update={fakeUpdate()} />)
+    expect(await screen.findByTestId('update-modal')).toBeTruthy()
+    rerender(<UpdateModal update={fakeUpdate({
+      phase: 'error',
+      error: '新版本没下载下来，请检查网络后重试。',
+      errorKind: 'download',
+      manualDownloadUrl: 'https://example.com/shop',
+    })} />)
+    fireEvent.click(screen.getByTestId('update-modal-manual-download'))
+    expect(openSpy).toHaveBeenCalledWith('https://example.com/shop', '_blank', 'noopener,noreferrer')
+    openSpy.mockRestore()
   })
 
   it('never blocks the page: no full-screen overlay, other content stays clickable', async () => {

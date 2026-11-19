@@ -9,6 +9,7 @@ from typing import Any
 from bosshunter.config import DEFAULTS
 from bosshunter.web.resume_original import resolve_configured_resume_files
 from bosshunter.web.resume_text import resume_cache_buster, sanitize_resume_text
+from bosshunter.web.resume_upload import ResumeUploadError
 
 DEFAULT_RESUME_PATH = str(DEFAULTS.get("profile", {}).get("resume_path") or "./resume.md")
 
@@ -61,7 +62,7 @@ def configured_resume_exists(raw_path: str | None, base_dir: Path | None = None)
 		return False
 	configured = resolve_resume_filesystem_path(raw_path, base_dir)
 	markdown_path, pdf_path = resolve_configured_resume_files(configured)
-	return markdown_path.is_file() or pdf_path.is_file()
+	return markdown_path.is_file() or pdf_path.is_file() or configured.is_file()
 
 
 def build_resume_info_payload(
@@ -111,11 +112,20 @@ def read_and_repair_resume_text(path: Path) -> str:
 
 
 def ensure_resume_markdown_file(configured_path: Path) -> Path | None:
-	"""Ensure an AI-readable Markdown resume exists; create it from PDF if needed."""
+	"""Ensure an AI-readable Markdown resume exists; create it from PDF/DOCX if needed."""
 	configured = Path(configured_path)
 	markdown_path, pdf_path = resolve_configured_resume_files(configured)
 
 	if markdown_path.is_file():
+		return markdown_path
+
+	# 配置直接指到 .docx（手改配置的常见情况）：转一份 Markdown 供 AI 与面板读。
+	if configured.suffix.lower() == ".docx" and configured.is_file():
+		from bosshunter.web.resume_upload import docx_to_markdown
+
+		text = sanitize_resume_text(docx_to_markdown(configured.read_bytes()))
+		markdown_path.parent.mkdir(parents=True, exist_ok=True)
+		markdown_path.write_text(text, encoding="utf-8")
 		return markdown_path
 
 	if not pdf_path.is_file():
@@ -138,7 +148,10 @@ def load_resume_info(path: Path) -> dict[str, Any] | None:
 
 	_, pdf_path = resolve_configured_resume_files(markdown_path)
 	has_pdf = pdf_path.is_file()
-	content = read_and_repair_resume_text(markdown_path)
+	try:
+		content = read_and_repair_resume_text(markdown_path)
+	except UnicodeDecodeError as exc:
+		raise ResumeUploadError("配置的简历文件不是文字格式，请重新上传 .md、.docx 或 .pdf 简历") from exc
 	stat = markdown_path.stat()
 	return build_resume_info_payload(
 		filename=markdown_path.name,

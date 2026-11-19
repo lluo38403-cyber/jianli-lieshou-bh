@@ -1160,6 +1160,9 @@ def health():
 # 首页横幅 + 我的设置里能手动检查，点“立即更新”就后台下载、校验、
 # 换上新版。下载地址只认配置里的中转地址；换文件那一步是 Windows
 # 批处理，只能在真实 Windows 上验证（见 bosshunter/updater.py）。
+# 上次更新换没换成靠安装目录里的 update-pending.json /
+# update-result.json 判断：启动时先核对，换失败了就报失败、不再
+# 自动弹同一个更新；手动点“检查更新”才会清掉失败记录重新查。
 
 def _update_payload(state):
 	"""Flatten the update state for the frontend: release info on top."""
@@ -1177,6 +1180,16 @@ def api_update_check():
 	from bosshunter import updater
 
 	force = (request.query.get("force") or "").lower() in {"1", "true", "yes"}
+	install_dir = updater.get_install_dir()
+	if force:
+		# 手动点“检查更新”是跳出失败循环的出口：清掉上次失败的记录再查。
+		if install_dir is not None:
+			updater.clear_update_result(install_dir)
+	else:
+		# 非手动检查绝不能把上次更新失败的状态盖回“有新版本”——
+		# 那就是用户报的重复循环提示。失败记录在，状态就保持报错。
+		if install_dir is not None and updater.reconcile_pending_update(install_dir):
+			return _json_response(_update_payload(updater.get_status()))
 	return _json_response(_update_payload(updater.run_check(load_config(CONFIG_PATH), force=force)))
 
 
@@ -4040,6 +4053,13 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 	def _startup_update_check():
 		time.sleep(3)
 		try:
+			from bosshunter import updater
+			# 先核对上次更新换没换成：换失败了就报失败、不再自动弹
+			# 同一个更新（否则用户会看到重复循环提示）；换成了或没
+			# 换过，才照常查新版。
+			install_dir = updater.get_install_dir()
+			if install_dir is not None and updater.reconcile_pending_update(install_dir):
+				return
 			from bosshunter.updater import run_check
 			run_check(load_config(CONFIG_PATH), timeout=10.0)
 		except Exception:

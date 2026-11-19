@@ -4,15 +4,26 @@ Flow: the panel asks the cloud relay for the newest published version
 (GET {relay_url}/api/version, X-App-Token). When a newer version exists,
 the user can press one button: the backend downloads the release zip
 from the relay (GET {relay_url}/download/latest), verifies its sha256,
-extracts it to a staging directory, backs up the current exe payload,
-writes update.bat next to the exe, then exits; the batch file waits for
-the process to exit, copies staging over the install directory, relaunches
-the exe and cleans up.
+extracts it to a staging directory, validates the staged payload
+(exe + _internal must both be there), backs up the current exe payload,
+writes update-pending.json (expected version) and update.bat next to
+the exe, then exits; the batch file waits for the process (and any
+other copy of the exe, plus its child processes) to exit, copies
+staging over the install directory, purges files the new version
+removed from _internal, verifies the new exe exists, relaunches it
+and cleans up. On any failure the batch file restores the backup,
+writes update-result.json and relaunches the old exe; the restarted
+process consumes update-pending.json, compares its own version with
+the expected one, and — when they disagree — reports the failure
+instead of prompting for the same update again.
 
 Safety rules (do not weaken them):
 - The download URL only ever comes from the configured relay_url; no
   caller-supplied URL is accepted anywhere.
 - A sha256 mismatch aborts before anything on disk is touched.
+- A staged payload without the exe or without _internal is rejected
+  before anything on disk is touched: a wrong zip layout must never
+  turn into a half-swapped install.
 - config.yaml and data/ are never overwritten, deleted or moved, neither
   by the Python overlay nor by the batch file (robocopy /XD data
   /XF config.yaml); keep the two in sync.
@@ -26,6 +37,7 @@ Safety rules (do not weaken them):
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -47,7 +59,22 @@ CHECK_TIMEOUT = 10.0
 DOWNLOAD_TIMEOUT = 300.0
 CHECK_CACHE_SECONDS = 600
 UPDATE_BACKUP_PREFIX = "update-backup-"
+UPDATE_PENDING_FILENAME = "update-pending.json"
+UPDATE_RESULT_FILENAME = "update-result.json"
 EXE_NAME = "简历猎手.exe"
+
+# Machine-readable failure codes the batch file writes into
+# update-result.json. They stay ASCII on purpose: update.bat is written
+# as UTF-8 without BOM and cmd.exe on a Chinese Windows box reads it
+# in the local code page, so Chinese text in that JSON would come out
+# garbled; the plain-language message lives here instead.
+UPDATE_FAILURE_MESSAGES = {
+    "stuck": "主程序关不掉，更新没换成。请先把程序完全退出，再重新点一次更新。",
+    "nopkg": "安装包里找不到新版本，更新没换成。请重新点一次更新。",
+    "copy": "换文件的时候出问题了，已经换回旧版本。请重新点一次更新。",
+    "mismatch": "新版本换上去了，但打开还是旧版本，可能是旧文件没换掉。请重新点一次更新。",
+    "unknown": "上次更新没换完，请重新点一次更新。",
+}
 
 # Top-level entries of an install directory that an update must never touch.
 PRESERVED_TOP_LEVEL = ("config.yaml", "data")
@@ -252,16 +279,56 @@ def find_payload_root(staging_dir: str | Path) -> Path:
     """Find the install-layout root inside staging.
 
     Release zips carry one top folder (简历猎手-windows/); the payload
-    root is the directory that holds the exe. Falls back to staging
-    itself when the exe is already at the top level.
+    root is the directory that holds the exe *and* _internal. The
+    search is recursive (a doubly-nested top folder still resolves)
+    and prefers the shallowest match. Falls back to staging itself
+    when no directory holds both — validate_staged_payload() then
+    rejects the package instead of swapping in half a layout.
     """
     staging = Path(staging_dir)
-    if (staging / EXE_NAME).is_file():
+
+    def _is_root(candidate: Path) -> bool:
+        return (candidate / EXE_NAME).is_file() and (candidate / "_internal").is_dir()
+
+    if _is_root(staging):
         return staging
-    for child in sorted(staging.iterdir()):
-        if child.is_dir() and (child / EXE_NAME).is_file():
-            return child
+    queue: list[tuple[int, Path]] = [(0, staging)]
+    seen: set[Path] = set()
+    while queue:
+        depth, parent = queue.pop(0)
+        if parent in seen or depth > 3:
+            continue
+        seen.add(parent)
+        try:
+            children = sorted(parent.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if not child.is_dir():
+                continue
+            if _is_root(child):
+                return child
+            queue.append((depth + 1, child))
     return staging
+
+
+def validate_staged_payload(payload_root: str | Path) -> Path:
+    """Reject a staged payload that cannot replace the install.
+
+    The root must hold the exe and _internal (the whole frozen
+    program lives there, including the baked-in version number).
+    A zip with a wrong layout — no exe, a doubly-nested folder, or
+    the exe and _internal split across different folders — used to
+    sail through here and come back as "update applied, version
+    unchanged", i.e. the endless update prompt. Now it fails here,
+    before anything on disk is touched.
+    """
+    root = Path(payload_root)
+    if not (root / EXE_NAME).is_file():
+        raise UpdateError("安装包里找不到新版本，这次先不换。")
+    if not (root / "_internal").is_dir():
+        raise UpdateError("安装包不完整，这次先不换。")
+    return root
 
 
 # ─── Backup + overlay (preserve user files) ─────────────────
@@ -290,7 +357,7 @@ def create_backup(install_dir: str | Path, backup_dir: str | Path) -> Path:
             continue
         if src.name.startswith(UPDATE_BACKUP_PREFIX):
             continue
-        if src.name in {"update.bat", "update.log"}:
+        if src.name in {"update.bat", "update.log", UPDATE_PENDING_FILENAME, UPDATE_RESULT_FILENAME}:
             continue
         try:
             if src.resolve() == backup.resolve():
@@ -305,13 +372,37 @@ def create_backup(install_dir: str | Path, backup_dir: str | Path) -> Path:
     return backup
 
 
+def prune_stale_files(source_dir: str | Path, target_dir: str | Path) -> None:
+    """Delete target entries that no longer exist in the source tree.
+
+    Only for fully-managed payload trees (currently _internal): every
+    file there comes from the release package, so a file the new
+    release dropped must go — otherwise a stale DLL/.pyc from the old
+    release can stay loaded next to the new exe and the running
+    program reports (or behaves like) the old version.
+    """
+    source = Path(source_dir)
+    target = Path(target_dir)
+    if not target.is_dir():
+        return
+    for entry in target.iterdir():
+        counterpart = source / entry.name
+        if not counterpart.exists():
+            _remove_quietly(entry)
+        elif entry.is_dir() and counterpart.is_dir():
+            prune_stale_files(counterpart, entry)
+
+
 def overlay_staging(install_dir: str | Path, staging_dir: str | Path) -> None:
     """Copy a staged payload over the install dir.
 
     Staging files replace their counterparts; config.yaml and data/
-    are never touched; install files absent from staging are left
-    alone. This is the policy the Windows batch file mirrors with
-    robocopy /XD data /XF config.yaml — keep the two in sync.
+    are never touched. Files the new release removed are purged from
+    _internal (the only fully-managed tree — top-level files that are
+    not in staging are left alone, they may be the user's own).
+    This is the policy the Windows batch file mirrors with robocopy
+    /XD data /XF config.yaml plus a /MIR pass over _internal — keep
+    the two in sync.
     """
     install = Path(install_dir)
     staging = Path(staging_dir)
@@ -321,6 +412,8 @@ def overlay_staging(install_dir: str | Path, staging_dir: str | Path) -> None:
         dst = install / src.name
         if src.is_dir():
             shutil.copytree(src, dst, dirs_exist_ok=True)
+            if src.name == "_internal":
+                prune_stale_files(src, dst)
         else:
             shutil.copy2(src, dst)
 
@@ -330,46 +423,99 @@ def overlay_staging(install_dir: str | Path, staging_dir: str | Path) -> None:
 def build_update_script() -> str:
     """Return the update.bat contents.
 
-    The batch file takes three arguments at launch: staging dir, exe
-    file name, pid of the process to wait for. It waits for the given
-    pid to exit (up to 120s), then copies staging over the install
-    directory (never touching config.yaml or data/), relaunches the
-    exe, deletes staging and deletes itself. Every step is logged to
-    update.log next to the exe so a failed update can be diagnosed
-    by hand.
+    The batch file takes five arguments at launch: staging dir, exe
+    file name, pid of the process to wait for, expected new version,
+    backup directory name. It waits for the given pid to exit (up to
+    120s, then force-kills the whole process tree), makes sure no
+    other copy of the exe is still running (a second instance would
+    hold the exe/_internal files locked and robocopy would fail
+    halfway), checks the staged payload actually holds the exe and
+    _internal, then copies staging over the install directory (never
+    touching config.yaml or data/), purges files the new release
+    removed from _internal, verifies the new exe exists, and only
+    then relaunches it. Every step is logged to update.log next to
+    the exe. On any failure it restores the backup, writes
+    update-result.json (ASCII reason code; the restarted program
+    turns it into a plain-language message), relaunches the old exe
+    when nothing is running, and deletes itself — it never leaves a
+    half-swapped install behind, and never exits silently.
     """
     return (
         "@echo off\r\n"
         "rem 简历猎手自动更新：等主程序退出后，把新版本换上去。\r\n"
         "rem 换的过程中不碰 config.yaml 和 data/（你的设置和数据都在那里面）。\r\n"
+        "rem 换不成就从备份恢复旧版本，并把结果写进 update-result.json，\r\n"
+        "rem 重开的程序看到这次失败会直接告诉你，不会马上又弹更新。\r\n"
         "setlocal\r\n"
-        f'set "STAGING=%~1"\r\n'
-        f'set "EXE_NAME=%~2"\r\n'
-        f'set "PID=%~3"\r\n'
+        'set "STAGING=%~1"\r\n'
+        'set "EXE_NAME=%~2"\r\n'
+        'set "PID=%~3"\r\n'
+        'set "EXPECTED=%~4"\r\n'
+        'set "BACKUP=%~5"\r\n'
         'set "INSTALL_DIR=%~dp0"\r\n'
         'set "LOG=%INSTALL_DIR%update.log"\r\n'
+        'set "RESULT=%INSTALL_DIR%update-result.json"\r\n'
         'echo [%date% %time%] 开始更新，正在等主程序退出... > "%LOG%"\r\n'
         "set /a WAITED=0\r\n"
         ":waitloop\r\n"
         'tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul\r\n'
-        "if %errorlevel% neq 0 goto :copy\r\n"
+        "if %errorlevel% neq 0 goto :procsweep\r\n"
         "set /a WAITED+=1\r\n"
-        "if %WAITED% geq 120 (\r\n"
-        '  echo [%date% %time%] 等了 120 秒主程序还没退出，这次先不换，旧版本还能用。 >> "%LOG%"\r\n'
-        "  goto :eof\r\n"
-        ")\r\n"
+        "if %WAITED% geq 120 goto :killtree\r\n"
         "timeout /t 1 /nobreak >nul\r\n"
         "goto :waitloop\r\n"
+        ":killtree\r\n"
+        'echo [%date% %time%] 等了 120 秒主程序还没退出，正在强制结束它和它打开的子程序... >> "%LOG%"\r\n'
+        'taskkill /PID %PID% /T /F >> "%LOG%" 2>&1\r\n'
+        "timeout /t 5 /nobreak >nul\r\n"
+        'tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul\r\n'
+        "if %errorlevel% equ 0 goto :fail_stuck\r\n"
+        ":procsweep\r\n"
+        'tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>nul | findstr /I /C:"%EXE_NAME%" >nul\r\n'
+        "if %errorlevel% neq 0 goto :precopy\r\n"
+        'echo [%date% %time%] 还有同名程序在跑（会占住要换的文件），正在结束... >> "%LOG%"\r\n'
+        'taskkill /F /IM "%EXE_NAME%" /T >> "%LOG%" 2>&1\r\n'
+        "timeout /t 3 /nobreak >nul\r\n"
+        'tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>nul | findstr /I /C:"%EXE_NAME%" >nul\r\n'
+        "if %errorlevel% equ 0 goto :fail_stuck\r\n"
+        ":precopy\r\n"
+        'if not exist "%STAGING%\\%EXE_NAME%" goto :fail_nopkg\r\n'
+        'if not exist "%STAGING%\\_internal\\" goto :fail_nopkg\r\n'
         ":copy\r\n"
         'echo [%date% %time%] 主程序已退出，正在换上新版本... >> "%LOG%"\r\n'
-        'robocopy "%STAGING%" "%INSTALL_DIR%" /E /IS /R:2 /W:2 /XD data /XF config.yaml >> "%LOG%" 2>&1\r\n'
-        "if errorlevel 8 (\r\n"
-        '  echo [%date% %time%] 复制失败，旧版本还在，备份在 update-backup 开头的文件夹里。 >> "%LOG%"\r\n'
-        "  goto :eof\r\n"
-        ")\r\n"
+        'robocopy "%STAGING%" "%INSTALL_DIR%" /E /IS /R:5 /W:3 /XD data /XF config.yaml >> "%LOG%" 2>&1\r\n'
+        "if errorlevel 8 goto :rollback\r\n"
+        'robocopy "%STAGING%\\_internal" "%INSTALL_DIR%_internal" /MIR /R:3 /W:2 >> "%LOG%" 2>&1\r\n'
+        "if errorlevel 8 goto :rollback\r\n"
+        'if not exist "%INSTALL_DIR%%EXE_NAME%" goto :rollback\r\n'
         'echo [%date% %time%] 换好了，正在重新打开... >> "%LOG%"\r\n'
+        '> "%RESULT%" echo {"status": "applied", "expected_version": "%EXPECTED%", "reason_code": ""}\r\n'
         'rmdir /s /q "%STAGING%"\r\n'
         'start "" "%INSTALL_DIR%%EXE_NAME%"\r\n'
+        '(goto) 2>nul & del "%~f0"\r\n'
+        ":rollback\r\n"
+        'echo [%date% %time%] 复制失败，正在用备份恢复旧版本... >> "%LOG%"\r\n'
+        'if "%BACKUP%"=="" goto :fail_copy\r\n'
+        'robocopy "%INSTALL_DIR%%BACKUP%" "%INSTALL_DIR%" /E /IS /R:3 /W:2 /XD data /XF config.yaml >> "%LOG%" 2>&1\r\n'
+        'if exist "%INSTALL_DIR%%BACKUP%\\_internal\\" robocopy "%INSTALL_DIR%%BACKUP%\\_internal" "%INSTALL_DIR%_internal" /MIR /R:3 /W:2 >> "%LOG%" 2>&1\r\n'
+        'echo [%date% %time%] 已恢复旧版本。 >> "%LOG%"\r\n'
+        "goto :fail_copy\r\n"
+        ":fail_stuck\r\n"
+        'set "FAIL_CODE=stuck"\r\n'
+        "goto :fail_write\r\n"
+        ":fail_nopkg\r\n"
+        'set "FAIL_CODE=nopkg"\r\n'
+        "goto :fail_write\r\n"
+        ":fail_copy\r\n"
+        'set "FAIL_CODE=copy"\r\n'
+        "goto :fail_write\r\n"
+        ":fail_write\r\n"
+        'echo [%date% %time%] 更新没换成，旧版本还能用。 >> "%LOG%"\r\n'
+        '> "%RESULT%" echo {"status": "failed", "expected_version": "%EXPECTED%", "reason_code": "%FAIL_CODE%"}\r\n'
+        'tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>nul | findstr /I /C:"%EXE_NAME%" >nul\r\n'
+        "if %errorlevel% equ 0 goto :fail_exit\r\n"
+        'if exist "%INSTALL_DIR%%EXE_NAME%" start "" "%INSTALL_DIR%%EXE_NAME%"\r\n'
+        ":fail_exit\r\n"
         '(goto) 2>nul & del "%~f0"\r\n'
     )
 
@@ -379,6 +525,167 @@ def write_update_script(install_dir: str | Path) -> Path:
     bat_path = Path(install_dir) / "update.bat"
     bat_path.write_text(build_update_script(), encoding="utf-8")
     return bat_path
+
+
+# ─── Pending / result markers (version check after restart) ─
+
+def write_pending_update(install_dir: str | Path, expected_version: str) -> Path:
+    """Record that an update to `expected_version` was just applied.
+
+    The restarted program consumes this file on boot and compares its
+    own version with the expected one: if they disagree, the swap did
+    not actually take (stale files, wrong layout, partial copy) and
+    the program must report the failure instead of prompting for the
+    same update again.
+    """
+    pending = Path(install_dir) / UPDATE_PENDING_FILENAME
+    pending.write_text(
+        json.dumps(
+            {"expected_version": expected_version, "started_at": time.time()},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return pending
+
+
+def read_update_result(install_dir: str | Path) -> dict | None:
+    """Read update-result.json written by update.bat (or None)."""
+    path = Path(install_dir) / UPDATE_RESULT_FILENAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_update_result(install_dir: str | Path, verdict: dict) -> Path:
+    """Persist the final verdict of an update attempt (for later boots)."""
+    path = Path(install_dir) / UPDATE_RESULT_FILENAME
+    path.write_text(json.dumps(verdict, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def clear_update_result(install_dir: str | Path) -> None:
+    """Drop a stale failure record (manual re-check is the escape hatch)."""
+    _remove_quietly(Path(install_dir) / UPDATE_RESULT_FILENAME)
+
+
+def get_last_update_failure(install_dir: str | Path) -> dict | None:
+    """Return the last failed-update verdict, if it is still relevant.
+
+    Relevant means the update failed and the running version is still
+    not the expected one — i.e. the user has not fixed it since. A
+    manual re-check clears the record (see clear_update_result), and
+    a later successful update overwrites it.
+    """
+    result = read_update_result(install_dir)
+    if not isinstance(result, dict) or result.get("status") != "failed":
+        return None
+    expected = result.get("expected_version")
+    if not isinstance(expected, str) or not expected:
+        return None
+    if expected == __version__:
+        return None
+    reason_code = result.get("reason_code")
+    reason = result.get("reason")
+    if not isinstance(reason, str) or not reason:
+        reason = UPDATE_FAILURE_MESSAGES.get(reason_code, UPDATE_FAILURE_MESSAGES["unknown"]) \
+            if isinstance(reason_code, str) else UPDATE_FAILURE_MESSAGES["unknown"]
+    return {
+        "status": "failed",
+        "expected_version": expected,
+        "actual_version": __version__,
+        "reason": reason,
+    }
+
+
+def consume_pending_update(install_dir: str | Path) -> dict | None:
+    """Consume update-pending.json left by apply_update.
+
+    Returns the verdict dict (status "ok" or "failed" plus the plain
+    reason) or None when no update was pending. The verdict is also
+    written to update-result.json so later boots still know.
+    """
+    pending_path = Path(install_dir) / UPDATE_PENDING_FILENAME
+    if not pending_path.is_file():
+        return None
+    try:
+        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    except Exception:
+        pending = {}
+    try:
+        pending_path.unlink()
+    except OSError:
+        pass
+    expected = pending.get("expected_version") if isinstance(pending, dict) else None
+    bat_result = read_update_result(install_dir)
+    bat_status = bat_result.get("status") if isinstance(bat_result, dict) else None
+    bat_code = bat_result.get("reason_code") if isinstance(bat_result, dict) else None
+    if isinstance(expected, str) and expected and __version__ == expected and bat_status == "applied":
+        verdict: dict = {
+            "status": "ok",
+            "expected_version": expected,
+            "actual_version": __version__,
+            "reason": "",
+        }
+    elif isinstance(expected, str) and expected:
+        if bat_status == "failed":
+            code = bat_code if isinstance(bat_code, str) else "unknown"
+            reason = UPDATE_FAILURE_MESSAGES.get(code, UPDATE_FAILURE_MESSAGES["unknown"])
+        elif bat_status == "applied":
+            reason = UPDATE_FAILURE_MESSAGES["mismatch"]
+        else:
+            reason = UPDATE_FAILURE_MESSAGES["unknown"]
+        verdict = {
+            "status": "failed",
+            "expected_version": expected,
+            "actual_version": __version__,
+            "reason": reason,
+        }
+    else:
+        verdict = {
+            "status": "failed",
+            "expected_version": expected if isinstance(expected, str) else "",
+            "actual_version": __version__,
+            "reason": UPDATE_FAILURE_MESSAGES["unknown"],
+        }
+    write_update_result(install_dir, verdict)
+    return verdict
+
+
+def reconcile_pending_update(install_dir: str | Path) -> bool:
+    """Handle a pending/failed update at startup.
+
+    Consumes any pending marker and, when the previous update failed
+    (or an earlier failure is still unfixed), puts the update state
+    to "error" with the plain-language reason. Returns True when the
+    caller should skip the automatic version check — the user should
+    see the failure, not another prompt for the same update.
+    """
+    pending = consume_pending_update(install_dir)
+    if pending is not None:
+        if pending["status"] == "ok":
+            return False
+        _set_status(
+            status="error",
+            update_available=False,
+            info=None,
+            message="",
+            error=pending["reason"],
+        )
+        return True
+    last = get_last_update_failure(install_dir)
+    if last is not None:
+        _set_status(
+            status="error",
+            update_available=False,
+            info=None,
+            message="",
+            error=last["reason"],
+        )
+        return True
+    return False
 
 
 # ─── Install location ───────────────────────────────────────
@@ -503,7 +810,7 @@ def _download_worker(config: dict, info: dict) -> None:
         zip_path = download_update(config, info, tmpdir, progress_cb=_progress)
         _set_status(status="verifying", progress=100, message="正在检查下载好的文件…")
         staging = extract_update(zip_path, Path(tmpdir) / "staging")
-        payload_root = find_payload_root(staging)
+        payload_root = validate_staged_payload(find_payload_root(staging))
         _set_status(
             status="ready",
             progress=100,
@@ -523,31 +830,50 @@ def apply_update(install_dir: str | Path, exe_name: str) -> Path:
     """Prepare the swap: backup, write update.bat, launch it detached.
 
     Only valid when a release is staged (status "ready") and only on
-    Windows. The caller is responsible for exiting this process right
-    after (see request_restart). Returns the batch file path.
+    Windows. The staged payload is validated first (a bad zip layout
+    must fail here, not after the program has exited). The caller is
+    responsible for exiting this process right after (see
+    request_restart). Returns the batch file path.
     """
-    if os.name != "nt":
-        raise UpdateError("一键更新只在正式安装的版本里能用。")
     with _STATE_LOCK:
         status = _STATE.get("status")
         staging_dir = _STATE.get("staging_dir")
+        info = _STATE.get("info")
     if status != "ready" or not staging_dir:
         raise UpdateError("新版本还没下好，先等它下载完。")
+    # Validate the staged payload before touching the install: a zip
+    # whose layout is wrong must never get as far as update.bat.
+    validate_staged_payload(staging_dir)
+    if os.name != "nt":
+        raise UpdateError("一键更新只在正式安装的版本里能用。")
     install = Path(install_dir)
     if not (install / exe_name).is_file():
         raise UpdateError("找不到现在用的程序文件，这次先不换。")
+    expected_version = info.get("version") if isinstance(info, dict) else None
+    if not isinstance(expected_version, str) or not expected_version:
+        raise UpdateError("新版本还没下好，先等它下载完。")
     prune_old_backups(install)
-    backup_dir = install / f"{UPDATE_BACKUP_PREFIX}{__version__}"
+    backup_name = f"{UPDATE_BACKUP_PREFIX}{__version__}"
+    backup_dir = install / backup_name
     create_backup(install, backup_dir)
     bat_path = write_update_script(install)
+    # 旧的结果文件先清掉：新一轮 bat 万一没跑起来就写不出结果，
+    # 上轮的 "applied" 不能被误读成这轮换成了。
+    _remove_quietly(install / UPDATE_RESULT_FILENAME)
+    write_pending_update(install, expected_version)
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    subprocess.Popen(
-        ["cmd.exe", "/c", str(bat_path), str(staging_dir), exe_name, str(os.getpid())],
-        creationflags=flags,
-        close_fds=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(bat_path), str(staging_dir), exe_name, str(os.getpid()),
+             expected_version, backup_name],
+            creationflags=flags,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        _remove_quietly(install / UPDATE_PENDING_FILENAME)
+        raise
     _set_status(status="applying", progress=100, message="正在换上新版本…")
     return bat_path

@@ -182,8 +182,8 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
           onDrop={handleResumeDrop}
         >
           <Upload className="mb-2 h-6 w-6 text-muted" />
-          <span className="text-sm text-muted">把简历拖进来，或者点一下选文件 (.md、.docx、.pdf)</span>
-          <input type="file" accept=".md,.docx,.pdf,application/pdf" onChange={handleResumeUpload} className="hidden" />
+          <span className="text-sm text-muted">把简历拖进来，或者点一下选文件 (.md、.docx、.pdf、.txt)</span>
+          <input type="file" accept=".md,.docx,.pdf,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={handleResumeUpload} className="hidden" />
         </label>
       )}
       {panelMessage ? (

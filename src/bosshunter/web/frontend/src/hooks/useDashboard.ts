@@ -1,4 +1,5 @@
 import { useCallback, useState, useEffect, useRef } from 'react'
+import { fetchWithRetry, isServiceNotReadyError } from '@/lib/api'
 
 interface FunnelData {
   [key: string]: number
@@ -218,10 +219,24 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  /** 本地服务没起来、正在等它：首次打开时骨架屏没有文字，用这条状态
+   * 告诉页面“正在等本地服务启动”，而不是一直干等或卡死在报错上。 */
+  const [waitingForService, setWaitingForService] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null)
   const refreshingRef = useRef<AbortController | null>(null)
   const greetingRevisionRef = useRef(0)
+  const firstLoadRef = useRef(true)
+
+  /** 还在重试等本地服务：首次打开就把骨架屏撤掉，换成等服务的提示，
+   * 页面其余部分照常渲染，服务起来数据一到就自动补上。 */
+  const markWaiting = useCallback(() => {
+    setWaitingForService(true)
+    if (firstLoadRef.current) {
+      setLoading(false)
+      setError('正在等本地服务启动，好了会自动刷新……')
+    }
+  }, [])
 
   const updateGreetingJob = useCallback((updated: Job) => {
     greetingRevisionRef.current += 1
@@ -243,12 +258,18 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     try {
       const needsWorkbench = scope === 'all' || scope === 'workbench'
       const needsHistory = scope === 'all' || scope === 'monitor'
-      const fetchOptions = { cache: 'no-store' as const, signal: controller.signal }
+      // 读请求走统一重试：本地服务没起来（联不上/5xx）时指数退避再试，
+      // 每次尝试单独 8 秒超时；整个 fetchAll 仍有 15 秒的外层上限兜底。
+      const retryOptions = { signal: controller.signal, timeoutMs: 8000, retries: 3, onRetry: markWaiting }
       const [workbenchRes, historyRes] = await Promise.all([
-        needsWorkbench ? fetch('/api/workbench', fetchOptions) : Promise.resolve(null),
-        needsHistory ? fetch('/api/history?limit=50&include_unresolved=1&include_monitor_conversations=1', fetchOptions) : Promise.resolve(null),
+        needsWorkbench ? fetchWithRetry('/api/workbench', { cache: 'no-store' as const }, retryOptions) : Promise.resolve(null),
+        needsHistory ? fetchWithRetry('/api/history?limit=50&include_unresolved=1&include_monitor_conversations=1', { cache: 'no-store' as const }, retryOptions) : Promise.resolve(null),
       ])
       if ((workbenchRes && !workbenchRes.ok) || (historyRes && !historyRes.ok)) {
+        // 5xx 是本地服务那边的问题（重试已耗尽），按没起来处理；
+        // 4xx 是业务错误，不当成服务没起来。
+        const status = (workbenchRes && !workbenchRes.ok ? workbenchRes.status : historyRes?.status) ?? 0
+        if (status >= 500) throw new Error('SERVICE_NOT_READY')
         throw new Error('没读到数据')
       }
       const [workbenchData, historyData] = await Promise.all([
@@ -262,20 +283,32 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
       if (workbenchData !== undefined && greetingRevision === greetingRevisionRef.current) setWorkbench(workbenchData)
       if (historyData !== undefined) setHistory(historyData)
       setLastRefreshedAt(new Date())
+      setWaitingForService(false)
       setError('')
     } catch (err) {
       if (refreshingRef.current !== controller) return
       console.error('Failed to fetch dashboard data:', err)
-      setError(controller.signal.aborted ? '刷新超时了，会自动再试。' : '数据没读出来，会自动再试。')
+      // 重试耗尽后才定稿报错：服务没起来就继续等（5 秒一轮还会再试），
+      // 只是文案上不再说“自动再试”，改成手动也能刷。
+      const notReady = err instanceof Error && (err.message === 'SERVICE_NOT_READY' || isServiceNotReadyError(err))
+      setWaitingForService(notReady)
+      setError(
+        controller.signal.aborted
+          ? '刷新超时了，会自动再试。'
+          : notReady
+            ? '本地服务还没起来，正在等它启动，好了会自动刷新，点“刷新一下”也能马上再试。'
+            : '数据没读出来，会自动再试。',
+      )
     } finally {
       window.clearTimeout(timeout)
       if (refreshingRef.current === controller) {
         refreshingRef.current = null
         setRefreshing(false)
         setLoading(false)
+        firstLoadRef.current = false
       }
     }
-  }, [scope])
+  }, [scope, markWaiting])
 
   const updateJobStatus = useCallback(async (jobId: string, status: string) => {
     const res = await fetch('/api/jobs/status', {
@@ -362,6 +395,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     history,
     loading,
     error,
+    waitingForService,
     refreshing,
     lastRefreshedAt,
     refresh: fetchAll,

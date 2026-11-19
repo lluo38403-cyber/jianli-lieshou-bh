@@ -108,6 +108,27 @@ try {
   }
   Write-Host "stage=version OK：面板版本 v$($health.version) 与期望一致"
 
+  # ---- 阶段 update：更新状态接口正常，且刚启动不会误报更新失败 ----
+  # 只做只读检查：/api/update/status 要报对当前版本；
+  # /api/update/check?force=1 再怎么样也不能 500（中转连不上时也要
+  # 静默返回“没有新版”，绝不能把面板拖垮）。不真下载、不真换文件。
+  try {
+    $updateStatus = Invoke-RestMethod -Uri "$base/api/update/status" -TimeoutSec 10
+  } catch {
+    throw "stage=update 更新状态查不到：/api/update/status 请求失败：$($_.Exception.Message)"
+  }
+  if ($updateStatus.current_version -ne $ExpectedVersion) {
+    throw "stage=update 更新状态里的版本号对不上：报 v$($updateStatus.current_version)，期望 v$ExpectedVersion"
+  }
+  try {
+    $check = Invoke-WebRequest -Uri "$base/api/update/check?force=1" -UseBasicParsing -TimeoutSec 15
+    if ($check.StatusCode -ne 200) { throw "stage=update 更新检查异常：/api/update/check 返回 $($check.StatusCode)" }
+  } catch {
+    if ($_.Exception.Message -like 'stage=update*') { throw $_ }
+    throw "stage=update 更新检查异常：/api/update/check 请求失败：$($_.Exception.Message)"
+  }
+  Write-Host 'stage=update OK：更新状态正常，检查接口不报错'
+
   # ---- 阶段 authbar：顶部授权栏打进包里没有 ----
   # 授权栏是前端组件，面板本身不跑浏览器时看不到渲染；
   # 这里查打包好的 JS 里有没有授权栏的文案，确认组件确实在包里。
