@@ -375,7 +375,8 @@ class ActivationFlowTests(unittest.TestCase):
 class DisplayConfigTests(unittest.TestCase):
     def test_defaults_apply_when_section_missing(self):
         cfg = get_auth_display_config({})
-        self.assertEqual(cfg["buy_url"], "https://www.16688.com.cn/shop/S542647")
+        # 购买链接默认留空：没有链接时状态栏不显示购买按钮。
+        self.assertEqual(cfg["buy_url"], "")
         self.assertEqual(cfg["wechat_id"], "jmlq2004")
         self.assertEqual(cfg["wechat_qr_path"], "/wechat-qr.png")
 

@@ -144,10 +144,11 @@ auth:
   # 鉴权展示配置（只有展示用的值，没有任何密钥）：
   # buy_url 发卡网购买链接、wechat_id 客服微信号、wechat_qr_path
   # 客服二维码图地址。改这一处，全端跟着换，不用改业务代码。
-  # 注意：下面三项都要 lucky 确认/替换——购买链接、微信号是默认值，
-  # 二维码图目前是占位图（src/bosshunter/web/frontend/public/wechat-qr.png），
-  # 换成真实客服微信二维码图即可（文件名不变，或改下面的路径）。
-  buy_url: "https://www.16688.com.cn/shop/S542647"
+  # 注意：buy_url 故意留空——空着就不显示购买按钮，有链接再填。
+  # 微信号是默认值、二维码图目前是占位图（src/bosshunter/web/frontend/public/wechat-qr.png），
+  # 都要 lucky 确认/替换；二维码图换成真实客服微信二维码图即可
+  # （文件名不变，或改下面的路径）。
+  buy_url: ""
   wechat_id: "jmlq2004"
   wechat_qr_path: "/wechat-qr.png"
 

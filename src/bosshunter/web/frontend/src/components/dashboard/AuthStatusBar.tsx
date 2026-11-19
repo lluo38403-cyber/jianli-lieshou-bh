@@ -123,9 +123,11 @@ export function AuthStatusBar({ auth }: AuthStatusBarProps) {
         <Button data-testid="auth-activate" onClick={() => void handleActivate()} disabled={activating}>
           {activating ? '正在激活…' : '激活'}
         </Button>
-        <Button variant="secondary" data-testid="auth-buy" onClick={handleBuy} disabled={!display.buyUrl}>
-          购买天卡/周卡
-        </Button>
+        {display.buyUrl ? (
+          <Button variant="secondary" data-testid="auth-buy" onClick={handleBuy}>
+            购买天卡/周卡
+          </Button>
+        ) : null}
         {message ? (
           <span data-testid="auth-message" className="text-sm text-muted">
             {message}

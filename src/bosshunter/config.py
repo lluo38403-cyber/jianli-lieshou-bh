@@ -246,8 +246,9 @@ DEFAULTS: dict[str, Any] = {
         # 鉴权展示配置（只有展示用的值，没有任何密钥）：
         # buy_url 发卡网购买链接、wechat_id 客服微信号、wechat_qr_path
         # 客服二维码图地址。改这一处，全端跟着换，不用改业务代码。
-        # 注意：buy_url / wechat_id / 二维码图都要 lucky 确认/替换。
-        "buy_url": "https://www.16688.com.cn/shop/S542647",
+        # buy_url 故意留空：空着就不显示购买按钮，有链接再填。
+        # wechat_id / 二维码图仍要 lucky 确认/替换。
+        "buy_url": "",
         "wechat_id": "jmlq2004",
         "wechat_qr_path": "/wechat-qr.png",
     },

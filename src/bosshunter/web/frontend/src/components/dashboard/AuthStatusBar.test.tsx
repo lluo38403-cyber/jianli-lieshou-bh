@@ -100,6 +100,17 @@ describe('AuthStatusBar', () => {
     expect(open).toHaveBeenCalledWith('https://example.com/shop', '_blank', 'noopener,noreferrer')
   })
 
+  it('购买链接为空时不显示购买按钮', () => {
+    const auth = fakeAuth({
+      display: { buyUrl: '', wechatId: 'wx123', qrPath: '/wechat-qr.png' },
+    })
+    render(<AuthStatusBar auth={auth} />)
+    expect(screen.queryByTestId('auth-buy')).toBeNull()
+    expect(screen.queryByText('购买天卡/周卡')).toBeNull()
+    // 其他入口不受影响
+    expect(screen.getByText('联系客服')).toBeTruthy()
+  })
+
   it('点联系客服弹出二维码与微信号，点关闭收起', () => {
     render(<AuthStatusBar auth={fakeAuth()} />)
     expect(screen.queryByTestId('auth-service-modal')).toBeNull()
