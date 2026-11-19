@@ -9,6 +9,17 @@ from urllib.parse import urljoin
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 
+from bosshunter.antibot import (
+    DEFAULT_PLATFORM_ORDER,
+    CircuitBreaker,
+    group_jobs_by_platform,
+    handle_page_risk,
+    human_browse,
+    micro_pause,
+    platform_daily_limits,
+    platform_display_name,
+    sample_stagger_delay,
+)
 from bosshunter.browser import (
     new_tab,
     close_tab,
@@ -23,6 +34,7 @@ from bosshunter.browser import (
 from bosshunter.db import (
     get_db, get_jobs_ready_to_send, update_job_status, update_job_last_error,
     add_history, add_risk_event, set_platform_safety_lock,
+    count_sent_today, count_sent_today_by_platform,
 )
 from bosshunter.collection.capabilities import platform_supports
 from bosshunter.executor.platform_delivery import deliver_job
@@ -724,6 +736,48 @@ JS_SEND_GREETING = """
 """
 
 
+def _micro_delay_range(throttle_config: dict) -> tuple[float, float]:
+    """Human-like pause between two clicks, from config (default 3-8s)."""
+    try:
+        low = float(throttle_config.get("micro_delay_min", 3))
+        high = float(throttle_config.get("micro_delay_max", 8))
+    except (TypeError, ValueError):
+        low, high = 3.0, 8.0
+    low = max(0.0, low)
+    return low, max(low, high)
+
+
+def _stagger_range(throttle_config: dict) -> tuple[float, float]:
+    """Pause between platform groups, from config (default 30-120s)."""
+    try:
+        low = float(throttle_config.get("platform_stagger_min", 30))
+        high = float(throttle_config.get("platform_stagger_max", 120))
+    except (TypeError, ValueError):
+        low, high = 30.0, 120.0
+    low = max(0.0, low)
+    return low, max(low, high)
+
+
+def _page_risk_result(
+    target_id: str, platform: str, throttle_config: dict
+) -> dict | None:
+    """Run the captcha/risk check on the open page.
+
+    Returns a send-result dict when the page is blocked, else None when
+    the page is clear (the caller continues the job).
+    """
+    risk = handle_page_risk(target_id, platform, throttle_config)
+    if not risk:
+        return None
+    if risk == "stopped":
+        return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}
+    if risk == "login_required":
+        return {"success": False, "error": "needs_login", "history_detail": "平台要求先登录，请在浏览器里登录该平台后重试", "skip_backoff": True}
+    if risk == "verification_timeout":
+        return {"success": False, "error": "verification_timeout", "history_detail": "等待手动验证超时，任务已停止"}
+    return {"success": False, "error": risk, "history_detail": "页面触发平台风控，请稍后重试"}
+
+
 def _detect_job_closed_on_page(target_id: str) -> dict | None:
     """Attempt to confirm whether the opened job page reports the job as closed/down.
 
@@ -781,9 +835,14 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
     browse_min = throttle_config.get("browse_duration_min", 15)
     browse_max = throttle_config.get("browse_duration_max", 30)
     if throttle_config.get("browse_before_greet", True):
-        import random
-        browse_time = random.uniform(browse_min, browse_max)
-        if _sleep_or_stop(browse_time, stop_event):
+        try:
+            browse_min = float(browse_min)
+            browse_max = float(browse_max)
+        except (TypeError, ValueError):
+            browse_min, browse_max = 15.0, 30.0
+        browse_max = max(browse_min, browse_max)
+        # 像真人一样滚动浏览详情页，而不是打开就干等。
+        if human_browse(target_id, stop_event, min_s=browse_min, max_s=browse_max):
             close_tab(target_id)
             return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
 
@@ -811,6 +870,17 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
         close_tab(target_id)
         return page_check, None
 
+    # 风控检查：滑块/安全验证页出现时暂停，等用户手动验证后继续。
+    risk_result = _page_risk_result(target_id, "boss", throttle_config)
+    if risk_result is not None:
+        close_tab(target_id)
+        return risk_result, None
+
+    micro_low, micro_high = _micro_delay_range(throttle_config)
+    if micro_pause(stop_event, micro_low, micro_high):
+        close_tab(target_id)
+        return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
+
     chat_button_attempts = int(throttle_config.get("_chat_button_attempts", 30))
     result1a = _click_chat_button(target_id, stop_event, chat_button_attempts)
     if not result1a.get("success"):
@@ -820,7 +890,7 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
             return closed_result, None
         return {"success": False, "error": "no_chat_button", "history_detail": "无法找到沟通按钮", "skip_backoff": True}, None
 
-    if _sleep_or_stop(4, stop_event):
+    if micro_pause(stop_event, micro_low, micro_high):
         close_tab(target_id)
         return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
 
@@ -952,6 +1022,12 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
             "skip_backoff": True,
         }, target_id
 
+    # 聊天页也可能弹出安全验证：先检查，等用户处理完再发。
+    risk_result = _page_risk_result(target_id, "boss", throttle_config)
+    if risk_result is not None:
+        close_tab(target_id)
+        return risk_result, None
+
     existing_state = _message_delivery_state(target_id, greeting)
     if existing_state == "delivered":
         close_tab(target_id)
@@ -976,6 +1052,9 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
                 "history_detail": "招呼语已填入，但发送按钮不可用，未标记成功",
                 "skip_backoff": True,
             }, target_id
+        if micro_pause(stop_event, micro_low, micro_high):
+            close_tab(target_id)
+            return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
         if not click_at(target_id, ".btn-send:not(.disabled)"):
             return {
                 "success": False,
@@ -1069,6 +1148,8 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
         "already_sent": 0,
         "daily_limit": 0,
         "remaining_quota": 0,
+        "per_platform_limits": {},
+        "platform_suspended": [],
         "stop_reason": None,
     }
     # Keep the integer return value for CLI/backward compatibility while giving
@@ -1078,6 +1159,9 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
         throttle_config["_workbench_stop_event"] = stop_event
     access_guard = PlatformAccessGuard(db, config, "send")
     throttle_config["_platform_access_guard"] = access_guard
+    # 防检测层要用的上下文：数据库连接（验证码 hold / 熔断）与面板日志。
+    throttle_config["_db"] = db
+    throttle_config["_workbench_log"] = config.get("_workbench_log")
     try:
         access_guard.ensure_unlocked()
     except PlatformSafetyStop as exc:
@@ -1115,16 +1199,13 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
         db.close()
         return 0
 
-    # Check daily limit
+    # Check daily limit: global cap + per-platform caps (local calendar day).
     daily_limit = throttle_config.get("daily_limit", 30)
     interval_min = throttle_config.get("interval_min", 60)
     interval_max = throttle_config.get("interval_max", 180)
 
-    # Count today's sent
-    today_sent = db.execute(
-        "SELECT COUNT(*) as cnt FROM history WHERE action='sent' AND date(created_at)=date('now')"
-    ).fetchone()
-    already_sent = today_sent["cnt"] if today_sent else 0
+    # Count today's sent (local day, not UTC).
+    already_sent = count_sent_today(db)
 
     remaining_quota = daily_limit - already_sent
     send_report["already_sent"] = already_sent
@@ -1137,17 +1218,54 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
         db.close()
         return 0
 
-    jobs_to_send = jobs[:remaining_quota]
+    per_platform_limits = platform_daily_limits(throttle_config)
+    send_report["per_platform_limits"] = per_platform_limits
+    sent_by_platform: dict[str, int] = {}
+    for job in jobs:
+        platform = str(job.get("source_platform") or "boss").strip() or "boss"
+        if platform not in sent_by_platform:
+            sent_by_platform[platform] = count_sent_today_by_platform(db, platform)
+    jobs_to_send: list[dict] = []
+    quota_deferred = 0
+    for job in jobs:
+        if len(jobs_to_send) >= remaining_quota:
+            quota_deferred += 1
+            continue
+        platform = str(job.get("source_platform") or "boss").strip() or "boss"
+        if sent_by_platform.get(platform, 0) >= per_platform_limits.get(platform, 80):
+            console.print(
+                f"[yellow]今日 {platform_display_name(platform)} 已达单平台上限 "
+                f"({per_platform_limits.get(platform, 80)})，其余岗位留到明天[/yellow]"
+            )
+            quota_deferred += 1
+            continue
+        sent_by_platform[platform] = sent_by_platform.get(platform, 0) + 1
+        jobs_to_send.append(job)
     send_report["scheduled_count"] = len(jobs_to_send)
-    send_report["quota_deferred_count"] = max(len(jobs) - len(jobs_to_send), 0)
+    send_report["quota_deferred_count"] = quota_deferred
     if send_report["quota_deferred_count"]:
         send_report["stop_reason"] = "daily_limit"
     throttle = RequestThrottle(delay_min=interval_min, delay_max=interval_max)
     backoff = ProgressiveBackoff()
+    breaker = CircuitBreaker(db, throttle_config.get("breaker_max_consecutive_failures", 3))
     sent_count = 0
     workbench_log = config.get("_workbench_log")
 
-    console.print(f"[bold]准备发送 {len(jobs_to_send)} 条招呼语[/bold] (今日已发 {already_sent}/{daily_limit})")
+    # 错峰：投递队列按平台分组（采集顺序），组与组之间插一段随机停顿，
+    # 避免同一瞬间多平台高频请求；组内顺序不变。
+    platform_order = config.get("collection", {}).get("default_order") or list(DEFAULT_PLATFORM_ORDER)
+    grouped_jobs = group_jobs_by_platform(
+        jobs_to_send, tuple(str(p) for p in platform_order)
+    )
+    ordered_jobs = [job for _, group in grouped_jobs for job in group]
+    group_starts: dict[int, str] = {}
+    offset = 0
+    for group_platform, group in grouped_jobs:
+        group_starts[offset] = group_platform
+        offset += len(group)
+    stagger_low, stagger_high = _stagger_range(throttle_config)
+
+    console.print(f"[bold]准备发送 {len(ordered_jobs)} 条招呼语[/bold] (今日已发 {already_sent}/{daily_limit})")
 
     with Progress(
         SpinnerColumn(),
@@ -1156,16 +1274,29 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
         TextColumn("{task.completed}/{task.total}"),
         console=console
     ) as progress:
-        task = progress.add_task("发送中", total=len(jobs_to_send))
+        task = progress.add_task("发送中", total=len(ordered_jobs))
 
-        for index, job in enumerate(jobs_to_send):
+        for index, job in enumerate(ordered_jobs):
             if _stop_requested(stop_event):
                 console.print("[yellow]已请求停止，结束发送[/yellow]")
                 send_report["stop_reason"] = "stopped"
                 break
 
+            if index in group_starts and index > 0:
+                stagger_s = sample_stagger_delay(stagger_low, stagger_high)
+                if callable(workbench_log):
+                    workbench_log(
+                        f"切换到{platform_display_name(group_starts[index])}，"
+                        f"先歇 {int(stagger_s)} 秒再继续"
+                    )
+                progress.update(task, description="换平台，歇一会...")
+                if _sleep_or_stop(stagger_s, stop_event):
+                    console.print("[yellow]已请求停止，结束发送[/yellow]")
+                    send_report["stop_reason"] = "stopped"
+                    break
+
             current_job = f"{job.get('company') or '公司未知'}｜{job.get('title') or '职位未知'}"
-            next_job = jobs_to_send[index + 1] if index + 1 < len(jobs_to_send) else None
+            next_job = ordered_jobs[index + 1] if index + 1 < len(ordered_jobs) else None
             next_label = (
                 f"下一条：{next_job.get('company') or '公司未知'}｜{next_job.get('title') or '职位未知'}"
                 if next_job else "下一条：无"
@@ -1175,7 +1306,7 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
             if sent_count > 0:
                 if callable(workbench_log):
                     workbench_log(
-                        f"招呼语进度 {index + 1}/{len(jobs_to_send)}\n等待发送：{current_job}\n{next_label}"
+                        f"招呼语进度 {index + 1}/{len(ordered_jobs)}\n等待发送：{current_job}\n{next_label}"
                     )
                 progress.update(task, description="等待间隔...")
                 if throttle.wait(stop_event):
@@ -1196,6 +1327,10 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     job = dict(row)
                 greeting = job.get("greeting", "")
                 platform = str(job.get("source_platform") or "boss").strip() or "boss"
+                if breaker.is_suspended(platform):
+                    console.print(f"[yellow]    ! {platform_display_name(platform)}今日已挂起（连续失败触发熔断），跳过[/yellow]")
+                    progress.update(task, advance=1)
+                    continue
                 if not greeting and platform == "boss" and not throttle_config.get("silent_mode"):
                     update_job_status(db, job["id"], "error")
                     update_job_last_error(db, job["id"], "该岗位没有已生成的招呼语，无法发送", "no_greeting")
@@ -1206,7 +1341,7 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
 
                 if callable(workbench_log):
                     workbench_log(
-                        f"招呼语进度 {index + 1}/{len(jobs_to_send)}\n正在发送：{current_job}\n{next_label}"
+                        f"招呼语进度 {index + 1}/{len(ordered_jobs)}\n正在发送：{current_job}\n{next_label}"
                     )
                 progress.update(task, description=f"发送: {job['company'][:10]} - {job['title'][:15]}")
 
@@ -1238,6 +1373,7 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     sent_count += 1
                     send_report["sent_count"] = sent_count
                     backoff.record_success()
+                    breaker.record_success(platform)
                 else:
                     error = result_data.get("error", "unknown")
                     if error in {"daily_platform_page_limit", "persistent_risk_lock"}:
@@ -1249,6 +1385,11 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     update_job_status(db, job["id"], "error")
                     update_job_last_error(db, job["id"], history_detail, error)
                     add_history(db, job["id"], "error", history_detail)
+                    if not result_data.get("skip_backoff"):
+                        if breaker.record_failure(platform):
+                            console.print(f"\n[red]⚠ {platform_display_name(platform)}连续失败已触发熔断，今日不再投这个平台[/red]")
+                            add_risk_event(db, "platform_suspended", f"{platform} 连续失败，已挂起当日任务")
+                            send_report["platform_suspended"].append(platform)
                     if result_data.get("skip_backoff"):
                         progress.update(task, advance=1)
                         continue
@@ -1259,8 +1400,11 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     pause_duration = backoff.record_error()
                     add_risk_event(db, "send_error", f"{error} (连续{backoff._consecutive_errors}次)")
 
-                    # If we encounter rate limiting, stop immediately
-                    if error in ["captcha", "rate_limit", "blocked"]:
+                    # If we encounter rate limiting, stop immediately.
+                    # Captcha no longer stops the whole run: the hold flow
+                    # already gave the user a chance, and an unresolved
+                    # captcha is counted by the breaker per platform.
+                    if error in ["rate_limit", "blocked"]:
                         console.print(f"\n[red]⚠ 检测到风控信号: {error}，安全暂停[/red]")
                         add_risk_event(db, error, f"触发风控: {error}")
                         lock_minutes = config.get("safety", {}).get("risk_lock_minutes", 10)

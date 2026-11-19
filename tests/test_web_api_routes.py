@@ -1345,6 +1345,14 @@ class WebApiRouteTests(unittest.TestCase):
             "sent": 1,
             "remaining": 119,
             "exhausted": False,
+            # 反检测版：分平台上限 + 熔断挂起平台随 workbench 一起下发。
+            "per_platform": {
+                "boss": {"limit": 80, "sent": 1, "remaining": 79},
+                "zhilian": {"limit": 80, "sent": 0, "remaining": 80},
+                "51job": {"limit": 80, "sent": 0, "remaining": 80},
+                "liepin": {"limit": 80, "sent": 0, "remaining": 80},
+            },
+            "suspended_platforms": [],
         })
 
     def test_web_api_workbench_shows_approved_job_when_greeting_was_interrupted(self):

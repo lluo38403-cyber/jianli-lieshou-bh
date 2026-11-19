@@ -54,6 +54,9 @@ from bosshunter.db import (
 	JobDeletionConflictError,
 	JobManualSentConflictError,
 	add_history,
+	breaker_suspended_platforms,
+	count_sent_today,
+	count_sent_today_by_platform,
 	count_unresolved_monitor_items,
 	get_active_platform_safety_lock,
 	get_daily_activity,
@@ -64,6 +67,7 @@ from bosshunter.db import (
 	get_jobs_by_status,
 	get_jobs_ready_to_send,
 	get_jobs_with_send_errors,
+	get_open_verification_hold,
 	get_recent_history,
 	get_recent_monitor_replies,
 	get_score_trace,
@@ -76,6 +80,7 @@ from bosshunter.db import (
 	query_jobs,
 	persist_agent_evaluations,
 	reject_jobs,
+	resolve_verification_hold,
 	restore_jobs,
 	serialize_job,
 	recompute_outsourcing,
@@ -1614,10 +1619,20 @@ def api_workbench():
 		config = load_config(CONFIG_PATH)
 		threshold = config.get("scoring", {}).get("threshold", 60)
 		daily_limit = int(config.get("throttle", {}).get("daily_limit", 30) or 30)
-		today_sent_row = db.execute(
-			"SELECT COUNT(*) AS cnt FROM history WHERE action='sent' AND date(created_at)=date('now')"
-		).fetchone()
-		today_sent = int(today_sent_row["cnt"] if today_sent_row else 0)
+		today_sent = count_sent_today(db)
+		per_platform_limits = config.get("throttle", {}).get("daily_limit_per_platform") or {}
+		per_platform_quota = {}
+		for platform in ("boss", "zhilian", "51job", "liepin"):
+			try:
+				limit = max(1, int(per_platform_limits.get(platform, 80)))
+			except (TypeError, ValueError):
+				limit = 80
+			sent = count_sent_today_by_platform(db, platform)
+			per_platform_quota[platform] = {
+				"limit": limit,
+				"sent": sent,
+				"remaining": max(limit - sent, 0),
+			}
 		status = task_runner.status()
 		return _json_response({
 			"funnel": get_funnel_stats(db),
@@ -1644,10 +1659,27 @@ def api_workbench():
 				"sent": today_sent,
 				"remaining": max(daily_limit - today_sent, 0),
 				"exhausted": today_sent >= daily_limit,
+				"per_platform": per_platform_quota,
+				"suspended_platforms": breaker_suspended_platforms(db),
 			},
+			"open_hold": get_open_verification_hold(db),
 			"task": status["active"],
 			"last_task": status["last_task"],
 		})
+	finally:
+		db.close()
+
+
+@app.route("/api/delivery/verification/<hold_id>/resolve", method="POST")
+def api_delivery_verification_resolve(hold_id):
+	"""User finished the manual verification in the browser; resume delivery."""
+	db = _get_web_db()
+	try:
+		try:
+			hold_id_int = int(hold_id)
+		except (TypeError, ValueError):
+			return _json_response({"error": "hold_id 无效"}, 400)
+		return _json_response({"ok": resolve_verification_hold(db, hold_id_int)})
 	finally:
 		db.close()
 

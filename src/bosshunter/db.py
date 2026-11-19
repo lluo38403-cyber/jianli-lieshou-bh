@@ -158,6 +158,22 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS verification_holds (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform TEXT NOT NULL DEFAULT 'boss',
+            url TEXT,
+            evidence TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS platform_breakers (
+            platform TEXT PRIMARY KEY,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            suspended_until TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
         CREATE INDEX IF NOT EXISTS idx_jobs_score ON jobs(score);
         CREATE INDEX IF NOT EXISTS idx_history_job_id ON history(job_id);
@@ -1492,6 +1508,180 @@ def get_active_platform_safety_lock(conn: sqlite3.Connection) -> dict[str, str] 
         conn.commit()
         return None
     return {"reason": str(row["reason"]), "locked_until": locked_until.isoformat()}
+
+
+def count_sent_today(conn: sqlite3.Connection) -> int:
+    """How many sends happened today (local calendar day, not UTC)."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM history "
+        "WHERE action='sent' AND date(created_at, 'localtime') = date('now', 'localtime')"
+    ).fetchone()
+    return int(row["cnt"] if row else 0)
+
+
+def count_sent_today_by_platform(conn: sqlite3.Connection, platform: str) -> int:
+    """How many sends one platform did today (local calendar day)."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM history h JOIN jobs j ON j.id = h.job_id "
+        "WHERE h.action='sent' AND j.source_platform = ? "
+        "AND date(h.created_at, 'localtime') = date('now', 'localtime')",
+        (str(platform or "boss"),),
+    ).fetchone()
+    return int(row["cnt"] if row else 0)
+
+
+def create_verification_hold(
+    conn: sqlite3.Connection,
+    platform: str,
+    *,
+    url: str = "",
+    evidence: str = "",
+) -> int:
+    """Open a manual-verification hold and return its id."""
+    cur = conn.execute(
+        "INSERT INTO verification_holds (platform, url, evidence) VALUES (?, ?, ?)",
+        (str(platform or "boss"), str(url or ""), str(evidence or "")),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def get_open_verification_hold(conn: sqlite3.Connection) -> dict | None:
+    """Return the latest unresolved verification hold, if any."""
+    row = conn.execute(
+        "SELECT id, platform, url, evidence, created_at FROM verification_holds "
+        "WHERE resolved_at IS NULL ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "platform": str(row["platform"]),
+        "url": str(row["url"] or ""),
+        "evidence": str(row["evidence"] or ""),
+        "created_at": str(row["created_at"]),
+    }
+
+
+def get_verification_hold(conn: sqlite3.Connection, hold_id: int) -> dict | None:
+    """Return one hold by id (resolved or not)."""
+    row = conn.execute(
+        "SELECT id, platform, url, evidence, created_at, resolved_at "
+        "FROM verification_holds WHERE id = ?",
+        (int(hold_id),),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "platform": str(row["platform"]),
+        "url": str(row["url"] or ""),
+        "evidence": str(row["evidence"] or ""),
+        "created_at": str(row["created_at"]),
+        "resolved_at": str(row["resolved_at"]) if row["resolved_at"] else None,
+    }
+
+
+def resolve_verification_hold(conn: sqlite3.Connection, hold_id: int) -> bool:
+    """Mark a hold resolved. Returns True when an open hold was closed."""
+    cur = conn.execute(
+        "UPDATE verification_holds SET resolved_at = CURRENT_TIMESTAMP "
+        "WHERE id = ? AND resolved_at IS NULL",
+        (int(hold_id),),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def _breaker_local_now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _breaker_end_of_today() -> str:
+    return datetime.now().replace(hour=23, minute=59, second=59, microsecond=0).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+
+def breaker_record_failure(
+    conn: sqlite3.Connection, platform: str, max_failures: int = 3
+) -> bool:
+    """Record one delivery failure. Returns True when this failure suspends the platform."""
+    platform = str(platform or "boss")
+    try:
+        limit = max(1, int(max_failures))
+    except (TypeError, ValueError):
+        limit = 3
+    row = conn.execute(
+        "SELECT consecutive_failures, suspended_until FROM platform_breakers WHERE platform = ?",
+        (platform,),
+    ).fetchone()
+    failures = int(row["consecutive_failures"] if row else 0) + 1
+    suspended = bool(row and row["suspended_until"] and str(row["suspended_until"]) > _breaker_local_now())
+    newly_suspended = False
+    suspended_until = str(row["suspended_until"]) if row and row["suspended_until"] else None
+    if failures >= limit and not suspended:
+        suspended_until = _breaker_end_of_today()
+        newly_suspended = True
+    conn.execute(
+        """
+        INSERT INTO platform_breakers (platform, consecutive_failures, suspended_until, updated_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(platform) DO UPDATE SET
+            consecutive_failures = excluded.consecutive_failures,
+            suspended_until = excluded.suspended_until,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (platform, failures, suspended_until),
+    )
+    conn.commit()
+    return newly_suspended
+
+
+def breaker_record_success(conn: sqlite3.Connection, platform: str) -> None:
+    """Reset a platform's consecutive-failure counter after a success."""
+    conn.execute(
+        """
+        INSERT INTO platform_breakers (platform, consecutive_failures, suspended_until, updated_at)
+        VALUES (?, 0, NULL, CURRENT_TIMESTAMP)
+        ON CONFLICT(platform) DO UPDATE SET
+            consecutive_failures = 0,
+            suspended_until = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (str(platform or "boss"),),
+    )
+    conn.commit()
+
+
+def breaker_is_suspended(conn: sqlite3.Connection, platform: str) -> bool:
+    """Whether the platform is suspended for the rest of today (expired ones clear)."""
+    platform = str(platform or "boss")
+    row = conn.execute(
+        "SELECT suspended_until FROM platform_breakers WHERE platform = ?",
+        (platform,),
+    ).fetchone()
+    if not row or not row["suspended_until"]:
+        return False
+    if str(row["suspended_until"]) > _breaker_local_now():
+        return True
+    conn.execute(
+        "UPDATE platform_breakers SET consecutive_failures = 0, suspended_until = NULL, "
+        "updated_at = CURRENT_TIMESTAMP WHERE platform = ?",
+        (platform,),
+    )
+    conn.commit()
+    return False
+
+
+def breaker_suspended_platforms(conn: sqlite3.Connection) -> list[str]:
+    """Platforms currently suspended for the rest of today."""
+    rows = conn.execute(
+        "SELECT platform FROM platform_breakers "
+        "WHERE suspended_until IS NOT NULL AND suspended_until > ?",
+        (_breaker_local_now(),),
+    ).fetchall()
+    return [str(row["platform"]) for row in rows]
 
 
 def get_funnel_stats(conn: sqlite3.Connection, *, today: bool = False) -> dict[str, int]:

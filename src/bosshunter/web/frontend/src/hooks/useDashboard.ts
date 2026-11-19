@@ -112,6 +112,19 @@ export interface CollectionProgress {
   collected_job_ids?: string[]
 }
 
+export interface VerificationHold {
+  id: number
+  platform: string
+  url: string
+  evidence: string
+  created_at: string
+}
+
+export interface VerificationState {
+  open_hold: VerificationHold | null
+  suspended_platforms: string[]
+}
+
 interface WorkbenchData {
   funnel: FunnelData
   funnel_today: FunnelData
@@ -119,7 +132,15 @@ interface WorkbenchData {
   pending_greetings: Job[]
   send_errors: Job[]
   needs_resume: Job[]
-  send_quota: { daily_limit: number; sent: number; remaining: number; exhausted: boolean }
+  send_quota: {
+    daily_limit: number
+    sent: number
+    remaining: number
+    exhausted: boolean
+    per_platform?: Record<string, { limit: number; sent: number; remaining: number }>
+    suspended_platforms?: string[]
+  }
+  open_hold?: VerificationHold | null
   task: WorkbenchTask | null
   last_task: WorkbenchTask | null
 }
@@ -163,6 +184,7 @@ const emptyWorkbench: WorkbenchData = {
   send_errors: [],
   needs_resume: [],
   send_quota: { daily_limit: 30, sent: 0, remaining: 30, exhausted: false },
+  open_hold: null,
   task: null,
   last_task: null,
 }
@@ -275,6 +297,15 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     return task
   }
 
+  const resolveVerification = useCallback(async (holdId: number) => {
+    const res = await fetch(`/api/delivery/verification/${holdId}/resolve`, { method: 'POST' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data.error || '没能继续投递')
+    }
+    await fetchAll()
+  }, [fetchAll])
+
   useEffect(() => {
     void fetchAll()
     const pollIntervalMs = scope === 'monitor' ? 2000 : 5000
@@ -295,8 +326,17 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     }
   }, [fetchAll, scope])
 
+  // Verification state rides on the workbench poll: an open hold means a
+  // captcha paused delivery; suspended platforms come from the quota payload.
+  const verification: VerificationState = {
+    open_hold: workbench.open_hold ?? null,
+    suspended_platforms: workbench.send_quota?.suspended_platforms ?? [],
+  }
+
   return {
     workbench,
+    verification,
+    resolveVerification,
     history,
     loading,
     error,

@@ -18,6 +18,7 @@ import json
 import time
 from typing import Any
 
+from bosshunter.antibot import handle_page_risk, human_browse, micro_pause
 from bosshunter.browser import close_tab, evaluate, new_tab, wait_for_load
 from bosshunter.platform_safety import PlatformAccessGuard, PlatformSafetyStop
 
@@ -199,6 +200,37 @@ def _handle_post_apply_dialogs_js(spec: dict[str, tuple[str, ...]]) -> str:
     """
 
 
+def _micro_delay_range(throttle_config: dict) -> tuple[float, float]:
+    """Human-like pause between two clicks, from config (default 3-8s)."""
+    try:
+        low = float(throttle_config.get("micro_delay_min", 3))
+        high = float(throttle_config.get("micro_delay_max", 8))
+    except (TypeError, ValueError):
+        low, high = 3.0, 8.0
+    low = max(0.0, low)
+    return low, max(low, high)
+
+
+def _page_risk_result(
+    target_id: str, platform: str, throttle_config: dict
+) -> dict | None:
+    """Run the captcha/risk check on the open page.
+
+    Returns a send-result dict when the page is blocked, else None when
+    the page is clear (the caller continues the job).
+    """
+    risk = handle_page_risk(target_id, platform, throttle_config)
+    if not risk:
+        return None
+    if risk == "stopped":
+        return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}
+    if risk == "login_required":
+        return {"success": False, "error": "needs_login", "history_detail": "平台要求先登录，请在浏览器里登录该平台后重试", "skip_backoff": True}
+    if risk == "verification_timeout":
+        return {"success": False, "error": "verification_timeout", "history_detail": "等待手动验证超时，任务已停止"}
+    return {"success": False, "error": risk, "history_detail": "页面触发平台风控，请稍后重试"}
+
+
 def _deliver_via_detail_page(job: dict, throttle_config: dict, platform: str) -> tuple[dict, str | None]:
     """打开岗位详情页完成一次投递。返回 (result, target_id)。"""
     spec = DELIVER_SPECS[platform]
@@ -226,7 +258,14 @@ def _deliver_via_detail_page(job: dict, throttle_config: dict, platform: str) ->
         return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
 
     wait_for_load(target_id, timeout=15)
-    if _sleep_or_stop(2, stop_event):
+    # 像真人一样滚动浏览详情页，再点投递。
+    try:
+        detail_min = float(throttle_config.get("detail_browse_min", 6))
+        detail_max = float(throttle_config.get("detail_browse_max", 12))
+    except (TypeError, ValueError):
+        detail_min, detail_max = 6.0, 12.0
+    detail_max = max(detail_min, detail_max)
+    if human_browse(target_id, stop_event, min_s=detail_min, max_s=detail_max):
         close_tab(target_id)
         return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
 
@@ -238,12 +277,22 @@ def _deliver_via_detail_page(job: dict, throttle_config: dict, platform: str) ->
         close_tab(target_id)
         return {"success": False, "error": "needs_login", "history_detail": "平台要求先登录，请在浏览器里登录该平台后重试", "skip_backoff": True}, None
 
+    # 风控检查：滑块/安全验证页出现时暂停，等用户手动验证后继续。
+    risk_result = _page_risk_result(target_id, platform, throttle_config)
+    if risk_result is not None:
+        close_tab(target_id)
+        return risk_result, None
+
     # 先核验：可能已经投过。
     verify = _parse_js_result(evaluate(target_id, _verify_applied_js(spec)))
     if verify.get("applied"):
         close_tab(target_id)
         return {"success": True, "already_applied": True, "history_detail": "该岗位已投递过"}, None
 
+    micro_low, micro_high = _micro_delay_range(throttle_config)
+    if micro_pause(stop_event, micro_low, micro_high):
+        close_tab(target_id)
+        return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
     clicked = None
     for _ in range(10):
         if _stop_requested(stop_event):
@@ -262,13 +311,19 @@ def _deliver_via_detail_page(job: dict, throttle_config: dict, platform: str) ->
             return {"success": False, "error": "needs_login", "history_detail": "平台要求先登录，请在浏览器里登录该平台后重试", "skip_backoff": True}, None
         return {"success": False, "error": "no_apply_button", "history_detail": "详情页没找到投递按钮（页面结构可能变了）", "skip_backoff": True}, None
 
-    if _sleep_or_stop(2, stop_event):
+    if micro_pause(stop_event, micro_low, micro_high):
         close_tab(target_id)
         return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
     _parse_js_result(evaluate(target_id, _handle_post_apply_dialogs_js(spec)))
-    if _sleep_or_stop(2, stop_event):
+    if micro_pause(stop_event, micro_low, micro_high):
         close_tab(target_id)
         return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
+
+    # 点完投递后也可能弹出安全验证：先检查，等用户处理完再核验。
+    risk_result = _page_risk_result(target_id, platform, throttle_config)
+    if risk_result is not None:
+        close_tab(target_id)
+        return risk_result, None
 
     verify = _parse_js_result(evaluate(target_id, _verify_applied_js(spec)))
     close_tab(target_id)

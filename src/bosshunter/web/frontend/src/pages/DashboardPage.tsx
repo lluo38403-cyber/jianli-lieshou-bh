@@ -14,6 +14,7 @@ import { RecycleBinPanel } from '@/components/dashboard/RecycleBinPanel'
 import { TaskScoringProgress } from '@/components/dashboard/ScoringProgress'
 import { ScoreJobsDialog } from '@/components/dashboard/ScoreJobsDialog'
 import { CollectJobsDialog } from '@/components/dashboard/CollectJobsDialog'
+import { VerificationModal } from '@/components/dashboard/VerificationModal'
 import { CollectionSessionsPanel } from '@/components/dashboard/CollectionSessionsPanel'
 import { TrendChart } from '@/components/dashboard/TrendChart'
 import { TopCompanies } from '@/components/dashboard/TopCompanies'
@@ -427,6 +428,8 @@ function GettingStartedCard({
 export default function DashboardPage({ view = 'workbench' }: DashboardPageProps) {
   const {
     workbench,
+    verification,
+    resolveVerification,
     history,
     loading,
     error,
@@ -1075,6 +1078,16 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         )}
       </section>
 
+      <VerificationModal
+        hold={verification.open_hold}
+        onContinue={resolveVerification}
+        onStop={async () => {
+          const taskId = workbench.task?.id
+          if (taskId) await stopTask(taskId)
+        }}
+        canStop={Boolean(workbench.task)}
+      />
+
       {workbench.send_quota?.exhausted && (
         <section className="animate-fade-up anim-delay-1 rounded-xl border border-warning-border bg-warning-soft px-3 py-2 text-warning-strong">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1088,6 +1101,16 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               去改每天投多少
             </Button>
           </div>
+        </section>
+      )}
+
+      {(workbench.send_quota?.suspended_platforms?.length ?? 0) > 0 && (
+        <section className="animate-fade-up anim-delay-1 rounded-xl border border-warning-border bg-warning-soft px-3 py-2 text-warning-strong">
+          <h3 className="text-sm font-bold">有平台今天先不投了</h3>
+          <p className="mt-0.5 text-xs leading-5">
+            {(workbench.send_quota.suspended_platforms ?? []).map(platform => PLATFORM_LABELS[platform] ?? platform).join('、')}
+            连续失败触发了熔断，今天不再投，明天自动恢复。
+          </p>
         </section>
       )}
 

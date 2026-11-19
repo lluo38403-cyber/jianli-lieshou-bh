@@ -96,11 +96,30 @@ scoring:
 
 throttle:
   daily_limit: 30
+  # 分平台日上限（单平台一天最多投这么多；全局 daily_limit 仍是总天花板）
+  daily_limit_per_platform:
+    boss: 80
+    zhilian: 80
+    51job: 80
+    liepin: 80
   interval_min: 60
   interval_max: 180
+  # 两次点击之间的人性化停顿：高斯随机，默认 3-8 秒
+  micro_delay_min: 3
+  micro_delay_max: 8
   browse_before_greet: true
   browse_duration_min: 15
   browse_duration_max: 30
+  # 非 BOSS 平台详情页投递前的滚动浏览时长（秒）
+  detail_browse_min: 6
+  detail_browse_max: 12
+  # 多平台错峰：投递换平台时随机歇这么久（秒，高斯）
+  platform_stagger_min: 30
+  platform_stagger_max: 120
+  # 验证码阻断：等用户手动验证的最长等待（分钟）
+  captcha_wait_timeout_minutes: 120
+  # 熔断：一个平台连续失败这么多次，当天挂起
+  breaker_max_consecutive_failures: 3
   send_windows:
     - "09:00-17:00"
   day_off_probability: 0.05

@@ -44,6 +44,34 @@ describe('greeting save and dashboard refresh', () => {
 })
 
 
+describe('verification state', () => {
+  it('surfaces an open hold and suspended platforms from the workbench payload', async () => {
+    const workbench = {
+      pending_confirmation: [], pending_greetings: [], send_errors: [], needs_resume: [],
+      send_quota: { daily_limit: 120, sent: 5, remaining: 115, exhausted: false, suspended_platforms: ['boss'] },
+      open_hold: { id: 7, platform: 'boss', url: 'https://www.zhipin.com/web/user/verify', evidence: 'captcha_url', created_at: '2026-11-19 13:00:00' },
+    }
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(workbench)))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useDashboard('workbench'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.verification.open_hold?.id).toBe(7)
+    expect(result.current.verification.suspended_platforms).toEqual(['boss'])
+  })
+
+  it('defaults to no hold when the payload carries none', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({
+      pending_confirmation: [], pending_greetings: [], send_errors: [], needs_resume: [],
+    })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useDashboard('workbench'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.verification.open_hold).toBeNull()
+    expect(result.current.verification.suspended_platforms).toEqual([])
+  })
+})
+
+
 describe('dashboard progress polling', () => {
   it('updates progress even when the embedded document reports hidden', async () => {
     vi.useFakeTimers()
