@@ -446,6 +446,8 @@ def build_update_script() -> str:
         "rem 换的过程中不碰 config.yaml 和 data/（你的设置和数据都在那里面）。\r\n"
         "rem 换不成就从备份恢复旧版本，并把结果写进 update-result.json，\r\n"
         "rem 重开的程序看到这次失败会直接告诉你，不会马上又弹更新。\r\n"
+        "rem 等待不用 timeout 命令：它在无控制台的 detached 进程里不返回，\r\n"
+        "rem bat 会卡在等主程序退出的循环里走不到复制；改用 ping 延时。\r\n"
         "setlocal\r\n"
         'set "STAGING=%~1"\r\n'
         'set "EXE_NAME=%~2"\r\n'
@@ -462,12 +464,12 @@ def build_update_script() -> str:
         "if %errorlevel% neq 0 goto :procsweep\r\n"
         "set /a WAITED+=1\r\n"
         "if %WAITED% geq 120 goto :killtree\r\n"
-        "timeout /t 1 /nobreak >nul\r\n"
+        "ping -n 2 127.0.0.1 >nul\r\n"
         "goto :waitloop\r\n"
         ":killtree\r\n"
         'echo [%date% %time%] 等了 120 秒主程序还没退出，正在强制结束它和它打开的子程序... >> "%LOG%"\r\n'
         'taskkill /PID %PID% /T /F >> "%LOG%" 2>&1\r\n'
-        "timeout /t 5 /nobreak >nul\r\n"
+        "ping -n 6 127.0.0.1 >nul\r\n"
         'tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul\r\n'
         "if %errorlevel% equ 0 goto :fail_stuck\r\n"
         ":procsweep\r\n"
@@ -475,7 +477,7 @@ def build_update_script() -> str:
         "if %errorlevel% neq 0 goto :precopy\r\n"
         'echo [%date% %time%] 还有同名程序在跑（会占住要换的文件），正在结束... >> "%LOG%"\r\n'
         'taskkill /F /IM "%EXE_NAME%" /T >> "%LOG%" 2>&1\r\n'
-        "timeout /t 3 /nobreak >nul\r\n"
+        "ping -n 4 127.0.0.1 >nul\r\n"
         'tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>nul | findstr /I /C:"%EXE_NAME%" >nul\r\n'
         "if %errorlevel% equ 0 goto :fail_stuck\r\n"
         ":precopy\r\n"
