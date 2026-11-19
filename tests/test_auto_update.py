@@ -105,7 +105,7 @@ class VersionCompareTests(unittest.TestCase):
 class UpdateStubHandler(BaseHTTPRequestHandler):
     """Stub for the relay update contract: /api/version + /download/latest."""
 
-    version_payload = {"version": "1.1.2", "size": 0, "sha256": "0" * 64, "notes": ""}
+    version_payload = {"version": "1.1.3", "size": 0, "sha256": "0" * 64, "notes": ""}
     zip_bytes = b""
     status = 200
     requests: list = []
@@ -160,7 +160,7 @@ class UpdateCheckTests(unittest.TestCase):
     def setUp(self):
         _reset_update_state()
         UpdateStubHandler.version_payload = {
-            "version": "1.1.2",
+            "version": "1.1.3",
             "size": 123,
             "sha256": hashlib.sha256(_make_zip()).hexdigest(),
             "notes": "更快更稳",
@@ -193,7 +193,7 @@ class UpdateCheckTests(unittest.TestCase):
         info = check_for_update(self._config())
         self.assertIsNotNone(info)
         assert info is not None
-        self.assertEqual(info["version"], "1.1.2")
+        self.assertEqual(info["version"], "1.1.3")
         self.assertEqual(info["current_version"], __version__)
         self.assertEqual(info["size"], 123)
         self.assertEqual(info["notes"], "更快更稳")
@@ -222,9 +222,9 @@ class UpdateCheckTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         for bad in (
             {"size": 1, "sha256": "a" * 64},
-            {"version": "1.1.2", "size": 1},
-            {"version": "1.1.2", "size": 1, "sha256": "not-a-hash"},
-            {"version": "1.1.2", "size": 1, "sha256": "a" * 64, "notes": 5},
+            {"version": "1.1.3", "size": 1},
+            {"version": "1.1.3", "size": 1, "sha256": "not-a-hash"},
+            {"version": "1.1.3", "size": 1, "sha256": "a" * 64, "notes": 5},
         ):
             with self.subTest(bad=bad):
                 UpdateStubHandler.version_payload = bad
@@ -262,7 +262,7 @@ class UpdateDownloadTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.2",
+            "version": "1.1.3",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -290,7 +290,7 @@ class UpdateDownloadTests(unittest.TestCase):
 
     def _info(self):
         return {
-            "version": "1.1.2",
+            "version": "1.1.3",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -391,7 +391,7 @@ class UpdateDownloadTests(unittest.TestCase):
         bad = buf.getvalue()
         UpdateStubHandler.zip_bytes = bad
         UpdateStubHandler.version_payload = {
-            "version": "1.1.2",
+            "version": "1.1.3",
             "size": len(bad),
             "sha256": hashlib.sha256(bad).hexdigest(),
             "notes": "",
@@ -631,7 +631,6 @@ class UpdatePreservePruneTests(unittest.TestCase):
 class UpdateScriptTests(unittest.TestCase):
     def test_batch_waits_for_pid_and_preserves_user_files(self):
         script = build_update_script()
-        self.assertIn("tasklist", script)
         self.assertIn("PID", script)
         self.assertIn("robocopy", script)
         self.assertIn("/XD data", script)
@@ -664,24 +663,55 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertIn("ping -n 6 127.0.0.1 >nul", script)
         self.assertIn("ping -n 4 127.0.0.1 >nul", script)
 
+    def test_batch_has_no_findstr_pipe(self):
+        # 回归：tasklist | findstr 管道在全流程测试里三次卡死在
+        # restart（run 44590350853、44612674852、44615545961）。
+        # 诊断重跑抓到 bat 的 cmd.exe CPU 只有 0.03 秒、子进程
+        # findstr.exe（findstr /I /C:"简历猎手.exe"）还活着：
+        # tasklist 早退出了，findstr 还在等管道输入不返回。bat 里
+        # 不许再出现 findstr、tasklist 或任何管道符。
+        script = build_update_script()
+        self.assertNotIn("findstr", script.lower())
+        self.assertNotIn("tasklist", script.lower())
+        self.assertNotIn("|", script)
+
     def test_batch_waits_for_pid_and_imagename_together(self):
         # 回归：只按 PID 等，Windows 把退出进程的 PID 很快分给别
         # 的进程后循环一直看到“还在”而永远不退出（v12→v13 全流程
         # 测试 run 44590350853 复现：PID 2684 被重用，循环 184 秒
         # 没退出，update.log 只有第一行，连 :killtree 都没走到）。
-        # 等待条件必须 PID 和进程名一起匹配：重用的 PID 名字对不
-        # 上就立刻退出循环。两处按 PID 查的地方（:waitloop 和
-        # :killtree 重查）都要带双重过滤，bat 里不许再有裸 PID 等待。
+        # v14 的 PID+进程名双重匹配修法本身没错，但它还走 findstr
+        # 管道，所以三次失败都是 findstr 卡死、与 PID 重用无关。
+        # 现在等待判断改用 PowerShell 直查：Get-Process -Id 按
+        # PID+进程名一起匹配（:waitloop 和 :killtree 重查两处），
+        # 进程名在 PowerShell 里去掉 .exe 后缀再比对（bat 文件是
+        # UTF-8 无 BOM，字面中文会被 cmd 按本地代码页读坏；名字
+        # 来自启动参数 %EXE_NAME%，Unicode 直传）。
         script = build_update_script()
-        pid_checks = [
+        pid_probes = [
             line
             for line in script.splitlines()
-            if 'tasklist /FI "PID eq' in line
+            if "Get-Process -Id %PID%" in line
         ]
-        self.assertGreaterEqual(len(pid_checks), 2)
-        for line in pid_checks:
-            self.assertIn('/FI "IMAGENAME eq %EXE_NAME%"', line)
-            self.assertIn('findstr /I /C:"%EXE_NAME%"', line)
+        self.assertGreaterEqual(len(pid_probes), 2)
+        for line in pid_probes:
+            self.assertIn("powershell -NoProfile -NonInteractive", line)
+            self.assertIn(
+                "[System.IO.Path]::GetFileNameWithoutExtension('%EXE_NAME%')",
+                line,
+            )
+            self.assertIn("<nul", line)
+        # 只按名查的三处（:procsweep 两次、:fail_write 一次）也
+        # 必须走同一套 PowerShell 探针，不许回退到管道。
+        name_probes = [
+            line
+            for line in script.splitlines()
+            if "Get-Process -Name" in line
+        ]
+        self.assertGreaterEqual(len(name_probes), 3)
+        for line in name_probes:
+            self.assertIn("powershell -NoProfile -NonInteractive", line)
+            self.assertIn("<nul", line)
 
     def test_batch_wait_cap_fits_restart_window(self):
         # 回归：上限 120 次、每次 tasklist + ping 约 2–4 秒，最坏
@@ -695,17 +725,19 @@ class UpdateScriptTests(unittest.TestCase):
 
     def test_batch_pid_reuse_does_not_block_wait(self):
         # 复现 v12→v13 测试的故障场景：旧进程（PID 2684）已退出，
-        # Windows 把 2684 分给了一个无关进程。按 tasklist /FI 的
-        # AND 语义 + findstr 匹配建模两版等待条件（沙箱跑不了真
-        # bat，模型只用来说明双重过滤为什么能修好它；机制本身由
+        # Windows 把 2684 分给了一个无关进程。按 PID+进程名双重
+        # 匹配建模两版等待条件（沙箱跑不了真 bat，模型只用来说明
+        # 双重匹配为什么能修好它；机制本身由
         # test_batch_waits_for_pid_and_imagename_together 钉在
-        # 生成的 bat 上）。
+        # 生成的 bat 上——现在是 PowerShell Get-Process 探针，
+        # 不再是 tasklist 双重过滤；v14 的双重过滤修法本身没错，
+        # 只是它还走 findstr 管道才没起作用）。
         def old_condition(processes, pid):
             # 旧 bat：tasklist 只按 PID 过滤，findstr 只认 PID 串。
             return any(p == pid for _, p in processes)
 
         def new_condition(processes, pid, exe):
-            # 新 bat：tasklist 按 PID 和进程名双重过滤。
+            # 新 bat：PowerShell 按 PID 和进程名一起查。
             return any(
                 p == pid and name.lower() == exe.lower()
                 for name, p in processes
@@ -778,7 +810,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.2"},
+                "info": {"version": "1.1.3"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -798,7 +830,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(Path(tmp) / "empty-staging"),
-                "info": {"version": "1.1.2"},
+                "info": {"version": "1.1.3"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -818,7 +850,7 @@ class UpdateRouteTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.2",
+            "version": "1.1.3",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "更快更稳",
@@ -910,7 +942,7 @@ class UpdateRouteTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             data = json.loads(body)
             self.assertTrue(data["update_available"])
-            self.assertEqual(data["version"], "1.1.2")
+            self.assertEqual(data["version"], "1.1.3")
             self.assertEqual(data["current_version"], __version__)
             self.assertEqual(data["notes"], "更快更稳")
 
@@ -920,9 +952,9 @@ class UpdateRouteTests(unittest.TestCase):
         # 后才能重新查到新版。
         with tempfile.TemporaryDirectory() as tmp:
             base = self._base_dir(tmp)
-            updater.write_pending_update(base, "1.1.2")
+            updater.write_pending_update(base, "1.1.3")
             updater.write_update_result(
-                base, {"status": "failed", "expected_version": "1.1.2", "reason_code": "copy"}
+                base, {"status": "failed", "expected_version": "1.1.3", "reason_code": "copy"}
             )
             original_get_install_dir = updater.get_install_dir
             updater.get_install_dir = lambda: base
@@ -941,7 +973,7 @@ class UpdateRouteTests(unittest.TestCase):
                 self.assertTrue(status.startswith("200"), body)
                 data = json.loads(body)
                 self.assertTrue(data["update_available"])
-                self.assertEqual(data["version"], "1.1.2")
+                self.assertEqual(data["version"], "1.1.3")
             finally:
                 updater.get_install_dir = original_get_install_dir
 

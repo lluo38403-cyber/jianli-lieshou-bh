@@ -439,6 +439,18 @@ def build_update_script() -> str:
     turns it into a plain-language message), relaunches the old exe
     when nothing is running, and deletes itself — it never leaves a
     half-swapped install behind, and never exits silently.
+
+    The wait checks use a PowerShell Get-Process probe (PID + process
+    name, no pipes): an earlier `tasklist | findstr` pipe hung three
+    times in the CI update-flow test (runs 44590350853, 44612674852,
+    44615545961) — diagnostics showed the bat's cmd.exe at 0.03s CPU
+    with findstr.exe still alive waiting on pipe input after tasklist
+    had already exited. No findstr pipe may come back. The probe
+    takes the exe name from %EXE_NAME% (a launch argument, passed as
+    Unicode) and strips the .exe suffix inside PowerShell, so the bat
+    file itself holds no literal Chinese in the probe lines: it is
+    written as UTF-8 without BOM and cmd.exe reads it in the local
+    code page.
     """
     return (
         "@echo off\r\n"
@@ -454,6 +466,12 @@ def build_update_script() -> str:
         "rem 退出，连强制结束那一步都没走到）；所以 PID 和进程名一起\r\n"
         "rem 匹配，重用的 PID 名字对不上就立刻退出循环。上限 60 次\r\n"
         "rem （约一到两分钟），再久就强制结束整棵进程树。\r\n"
+        "rem 等待判断不用管道查进程：全流程测试三次失败在 restart\r\n"
+        "rem （v12→v13、v14→v15、诊断重跑 run 44615545961），诊断\r\n"
+        "rem 抓到 bat 的 cmd.exe CPU 只有 0.03 秒、管道下游的查找\r\n"
+        "rem 进程还活着：上游命令早退出了，它还在等管道输入不返回。\r\n"
+        "rem 改用 PowerShell 按 PID+进程名直接查（无管道），每次约\r\n"
+        "rem 1 秒，60 次上限仍在一到两分钟里。\r\n"
         "setlocal\r\n"
         'set "STAGING=%~1"\r\n'
         'set "EXE_NAME=%~2"\r\n'
@@ -466,7 +484,7 @@ def build_update_script() -> str:
         'echo [%date% %time%] 开始更新，正在等主程序退出... > "%LOG%"\r\n'
         "set /a WAITED=0\r\n"
         ":waitloop\r\n"
-        'tasklist /FI "PID eq %PID%" /FI "IMAGENAME eq %EXE_NAME%" 2>nul | findstr /I /C:"%EXE_NAME%" >nul\r\n'
+        'powershell -NoProfile -NonInteractive -Command "$p = Get-Process -Id %PID% -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq [System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) { exit 0 } else { exit 1 }" <nul\r\n'
         "if %errorlevel% neq 0 goto :procsweep\r\n"
         "set /a WAITED+=1\r\n"
         "if %WAITED% geq 60 goto :killtree\r\n"
@@ -476,15 +494,15 @@ def build_update_script() -> str:
         'echo [%date% %time%] 等了 60 次（约一分钟）主程序还没退出，正在强制结束它和它打开的子程序... >> "%LOG%"\r\n'
         'taskkill /PID %PID% /T /F >> "%LOG%" 2>&1\r\n'
         "ping -n 6 127.0.0.1 >nul\r\n"
-        'tasklist /FI "PID eq %PID%" /FI "IMAGENAME eq %EXE_NAME%" 2>nul | findstr /I /C:"%EXE_NAME%" >nul\r\n'
+        'powershell -NoProfile -NonInteractive -Command "$p = Get-Process -Id %PID% -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq [System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) { exit 0 } else { exit 1 }" <nul\r\n'
         "if %errorlevel% equ 0 goto :fail_stuck\r\n"
         ":procsweep\r\n"
-        'tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>nul | findstr /I /C:"%EXE_NAME%" >nul\r\n'
+        'powershell -NoProfile -NonInteractive -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
         "if %errorlevel% neq 0 goto :precopy\r\n"
         'echo [%date% %time%] 还有同名程序在跑（会占住要换的文件），正在结束... >> "%LOG%"\r\n'
         'taskkill /F /IM "%EXE_NAME%" /T >> "%LOG%" 2>&1\r\n'
         "ping -n 4 127.0.0.1 >nul\r\n"
-        'tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>nul | findstr /I /C:"%EXE_NAME%" >nul\r\n'
+        'powershell -NoProfile -NonInteractive -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
         "if %errorlevel% equ 0 goto :fail_stuck\r\n"
         ":precopy\r\n"
         'if not exist "%STAGING%\\%EXE_NAME%" goto :fail_nopkg\r\n'
@@ -520,7 +538,7 @@ def build_update_script() -> str:
         ":fail_write\r\n"
         'echo [%date% %time%] 更新没换成，旧版本还能用。 >> "%LOG%"\r\n'
         '> "%RESULT%" echo {"status": "failed", "expected_version": "%EXPECTED%", "reason_code": "%FAIL_CODE%"}\r\n'
-        'tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>nul | findstr /I /C:"%EXE_NAME%" >nul\r\n'
+        'powershell -NoProfile -NonInteractive -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
         "if %errorlevel% equ 0 goto :fail_exit\r\n"
         'if exist "%INSTALL_DIR%%EXE_NAME%" start "" "%INSTALL_DIR%%EXE_NAME%"\r\n'
         ":fail_exit\r\n"
