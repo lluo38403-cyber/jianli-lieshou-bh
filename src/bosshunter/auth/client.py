@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -295,7 +296,16 @@ class AuthClient:
         Returns True on a verified fresh state. On any failure the
         previous state is kept (live countdown keeps running, or the
         offline grace cache keeps serving) and False is returned.
+
+        ``JIANLI_NO_AUTH_SYNC=1`` skips the network call entirely:
+        the CI Windows smoke test sets it so a throwaway runner never
+        mints a trial with its machine id. The panel then shows the
+        offline state, same as a network failure.
         """
+        if os.environ.get("JIANLI_NO_AUTH_SYNC") == "1":
+            with self._lock:
+                self.last_error = "连不上，再检查一下网络。"
+            return False
         try:
             resp = self._post("/api/auth/info", {}, timeout=timeout)
             resp.raise_for_status()

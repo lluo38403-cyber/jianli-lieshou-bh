@@ -15,6 +15,7 @@ exactly like it would be against the real relay.
 import hashlib
 import hmac
 import json
+import os
 import tempfile
 import threading
 import time
@@ -370,6 +371,44 @@ class ActivationFlowTests(unittest.TestCase):
                 result = client.activate("JL-D-GGGG-HHHH-JJJJ")
             self.assertFalse(result["ok"])
             self.assertIn("连不上", result["error"])
+
+
+class NoAuthSyncEnvTests(unittest.TestCase):
+    """JIANLI_NO_AUTH_SYNC=1 (CI Windows 冒烟测试) 跳过中转同步：
+    临时跑机不拿机器码去中转薅试用，也不产生任何试用记录。"""
+
+    def test_sync_skipped_without_touching_relay(self):
+        relay = StubRelay()
+        calls: list[str] = []
+
+        def counting_handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            return relay.handler(request)
+
+        config = {"ai": {"relay_url": "http://stub-relay", "relay_token": TEST_TOKEN}}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = AuthClient(
+                config,
+                cache_path=Path(tmpdir) / "auth_cache.json",
+                transport=httpx.MockTransport(counting_handler),
+                machine_id=TEST_MACHINE,
+            )
+            with mock.patch.dict("os.environ", {"JIANLI_NO_AUTH_SYNC": "1"}):
+                self.assertFalse(client.sync())
+            self.assertEqual(calls, [])
+            self.assertEqual(relay.records, {})
+
+    def test_sync_still_works_without_env_flag(self):
+        relay = StubRelay()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = make_client(relay, tmpdir)
+            with mock.patch.dict("os.environ", {}, clear=False):
+                os.environ.pop("JIANLI_NO_AUTH_SYNC", None)
+                with mock.patch("time.time", return_value=relay.now), mock.patch(
+                    "time.monotonic", return_value=1000.0
+                ):
+                    self.assertTrue(client.sync())
+            self.assertEqual(client.status, "trial")
 
 
 class DisplayConfigTests(unittest.TestCase):

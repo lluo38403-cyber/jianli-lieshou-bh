@@ -2,6 +2,7 @@
 # 手动触发：仓库 Actions 页 → 打 Windows exe → Run workflow。
 # 产物在 Actions 运行记录的 Artifacts 里，名字叫「简历猎手-windows」，
 # 下载后解压，双击里面的「简历猎手.exe」。
+# 打完之后自动跑 Windows 冒烟测试（smoke job）：用构建产物本身启动面板验一遍。
 name: 打 Windows exe
 
 on:
@@ -37,27 +38,65 @@ jobs:
         run: pyinstaller jianli-lieshou-bh.spec
       - name: 烟测 exe 版本
         run: dist\简历猎手\简历猎手.exe --version
-      - name: 烟测面板（复制一份跑，不污染产物）
-        shell: pwsh
-        run: |
-          Copy-Item -Recurse dist\简历猎手 $env:RUNNER_TEMP\smoke
-          $proc = Start-Process -FilePath "$env:RUNNER_TEMP\smoke\简历猎手.exe" -ArgumentList "web","--no-open" -PassThru
-          try {
-            $ok = $false
-            for ($i=0; $i -lt 30; $i++) {
-              Start-Sleep -Seconds 2
-              try {
-                $r = Invoke-WebRequest -Uri "http://127.0.0.1:8686/" -UseBasicParsing -TimeoutSec 3
-                if ($r.StatusCode -eq 200) { $ok = $true; break }
-              } catch {}
-            }
-            if (-not $ok) { throw "面板没有起来" }
-            Write-Host "面板 OK（HTTP 200）"
-          } finally {
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-          }
       - name: 上传 exe
         uses: actions/upload-artifact@v4
         with:
           name: 简历猎手-windows
           path: dist/简历猎手
+
+  # Windows 冒烟测试：用上面 build 好的产物本身跑一遍，不走蓝奏云下载。
+  # 只做浅测：不登录任何真实招聘平台、不投递真实简历、不填 AI Key、
+  # 不用真机器码薅试用（冒烟脚本启动时设 JIANLI_NO_AUTH_SYNC=1，跳过
+  # 中转授权同步）、不触发自动更新换文件。试用倒计时只看界面上有没有
+  # 正常显示，不等它走完。任何一步失败都让整个 CI 失败。
+  smoke:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: 简历猎手-windows
+          path: smoke-artifact
+      - name: 读当前版本号
+        id: version
+        shell: pwsh
+        run: |
+          $line = Get-Content pyproject.toml | Select-String -Pattern '^version = "(.*)"$' | Select-Object -First 1
+          if (-not $line) { throw 'pyproject.toml 里没找到 version' }
+          $version = $line.Matches.Groups[1].Value
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "当前版本：v$version"
+      - name: 冒烟测试
+        id: smoke
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse smoke-artifact $env:RUNNER_TEMP\smoke-run
+          pwsh -File scripts/ci/smoke-windows.ps1 -ExeDir "$env:RUNNER_TEMP\smoke-run" -ExpectedVersion "${{ steps.version.outputs.version }}"
+      - name: "负向验证：版本号故意写错，冒烟必须失败"
+        id: neg-version
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          pwsh -File scripts/ci/smoke-windows.ps1 -ExeDir "$env:RUNNER_TEMP\smoke-run" -ExpectedVersion "9.9.9"
+      - name: "断言：错版本号那次确实失败了"
+        if: always()
+        shell: pwsh
+        run: |
+          if ('${{ steps.neg-version.outcome }}' -ne 'failure') { throw '负向验证没起作用：版本号写错 9.9.9，冒烟居然通过了' }
+          Write-Host '负向验证通过：错版本号被冒烟测试抓住了'
+      - name: "负向验证：产物目录是空的，冒烟必须失败"
+        id: neg-package
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\smoke-empty" | Out-Null
+          pwsh -File scripts/ci/smoke-windows.ps1 -ExeDir "$env:RUNNER_TEMP\smoke-empty" -ExpectedVersion "${{ steps.version.outputs.version }}"
+      - name: "断言：空产物那次确实失败了"
+        if: always()
+        shell: pwsh
+        run: |
+          if ('${{ steps.neg-package.outcome }}' -ne 'failure') { throw '负向验证没起作用：空产物目录，冒烟居然通过了' }
+          Write-Host '负向验证通过：空产物被冒烟测试抓住了'
