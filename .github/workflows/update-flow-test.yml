@@ -1,0 +1,76 @@
+# 简历猎手 · 更新全流程测试（真 Windows 机器）
+#
+# 手动触发：仓库 Actions 页 → 更新全流程测试 → Run workflow。
+# 用旧版 CI 产物（默认 v10 1.0.6，run 44500813052）启动旧版，
+# 走完整更新到当前版（默认读 pyproject.toml 的 1.0.7），再测简历上传。
+#
+# 只挂 workflow_dispatch，绝不挂 push/tags：它要连线上中转下载
+# 67MB 的新版包、还会真的换文件重开，只在手动点的时候跑。
+# 不登录任何真实招聘平台、不投递真实简历、不填 AI Key、
+# 不用真机器码薅试用（脚本启动时设 JIANLI_NO_AUTH_SYNC=1）。
+name: 更新全流程测试
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_version:
+        description: "旧版本号（如 1.0.6）"
+        required: true
+        default: "1.0.6"
+      from_run_id:
+        description: "旧版产物所在的 CI run id（默认 v10 的 run）"
+        required: true
+        default: "44500813052"
+      to_version:
+        description: "目标版本号（留空则读 pyproject.toml 的当前版）"
+        required: false
+        default: ""
+
+jobs:
+  update-flow:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 读目标版本号
+        id: version
+        shell: pwsh
+        run: |
+          if ('${{ inputs.to_version }}' -ne '') {
+            $version = '${{ inputs.to_version }}'
+          } else {
+            $line = Get-Content pyproject.toml | Select-String -Pattern '^version = "(.*)"$' | Select-Object -First 1
+            if (-not $line) { throw 'pyproject.toml 里没找到 version' }
+            $version = $line.Matches.Groups[1].Value
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "目标版本：v$version（旧版 v${{ inputs.from_version }}，产物 run ${{ inputs.from_run_id }}）"
+
+      - name: 下载旧版产物
+        run: |
+          gh run download ${{ inputs.from_run_id }} --name 简历猎手-windows --dir prev-artifact
+
+      - name: 更新全流程正测
+        id: flow
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse prev-artifact $env:RUNNER_TEMP\update-run
+          pwsh -File scripts/ci/update-flow-windows.ps1 -ExeDir "$env:RUNNER_TEMP\update-run" -FromVersion "${{ inputs.from_version }}" -ToVersion "${{ steps.version.outputs.version }}"
+
+      - name: "负向验证：目标版本故意写错，更新流程必须失败"
+        id: neg-version
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse prev-artifact $env:RUNNER_TEMP\update-neg
+          pwsh -File scripts/ci/update-flow-windows.ps1 -ExeDir "$env:RUNNER_TEMP\update-neg" -FromVersion "${{ inputs.from_version }}" -ToVersion "9.9.9"
+
+      - name: "断言：错目标版本那次确实失败了"
+        if: always()
+        shell: pwsh
+        run: |
+          if ('${{ steps.neg-version.outcome }}' -ne 'failure') { throw '负向验证没起作用：目标版本写错 9.9.9，更新流程居然通过了' }
+          Write-Host '负向验证通过：错目标版本被更新流程测试抓住了'
