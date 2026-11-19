@@ -57,8 +57,8 @@ class VersionMetadataTests(unittest.TestCase):
             / "Sidebar.tsx"
         ).read_text(encoding="utf-8")
 
-        # 简历猎手自有版本号（v2 改版定为 1.0.0，自动更新版升到 1.0.1，卡密鉴权版升到 1.0.2，万能卡显示版升到 1.0.3，不再沿用上游 BossHunter 的 2.4.0）。
-        version = "1.0.3"
+        # 简历猎手自有版本号（v2 改版定为 1.0.0，自动更新版升到 1.0.1，卡密鉴权版升到 1.0.2，万能卡显示版升到 1.0.3，面板加项目 logo 版升到 1.0.4，不再沿用上游 BossHunter 的 2.4.0）。
+        version = "1.0.4"
         frontend = ROOT / "src" / "bosshunter" / "web" / "frontend"
         package = json.loads((frontend / "package.json").read_text(encoding="utf-8"))
         lock = json.loads((frontend / "package-lock.json").read_text(encoding="utf-8"))
@@ -73,6 +73,14 @@ class VersionMetadataTests(unittest.TestCase):
         self.assertNotIn("BossHunter", sidebar_source)
         self.assertNotIn("v2.4.0", sidebar_source)
         self.assertNotIn("v1.1.0", sidebar_source)
+        # 面板加项目 logo（v8 1.0.4）：侧边栏品牌区用 logo 图，favicon 换成 logo 图，旧「猎」字 svg 删掉。
+        self.assertIn('src="/logo.png"', sidebar_source)
+        self.assertNotIn("sidebar-logo", sidebar_source)
+        index_html = (frontend / "index.html").read_text(encoding="utf-8")
+        self.assertIn('href="/favicon.png"', index_html)
+        self.assertTrue((frontend / "public" / "logo.png").is_file())
+        self.assertTrue((frontend / "public" / "favicon.png").is_file())
+        self.assertFalse((frontend / "public" / "favicon.svg").exists())
         # 注意：README.md / CHANGELOG.md 是保留的上游历史文档，不再作为本产品的发版口径，版本测试不对其断言。
 
 

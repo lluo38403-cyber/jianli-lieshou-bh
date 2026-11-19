@@ -251,10 +251,6 @@ body {
 .dark .app-sidebar {
   background: linear-gradient(178deg, #0a1f33 0%, #0d3049 55%, #0a4a58 120%);
 }
-.app-sidebar .sidebar-logo {
-  background: linear-gradient(135deg, #14b8a6 0%, #0ea5b7 55%, #2563eb 130%);
-  box-shadow: 0 8px 18px -6px rgba(20, 184, 166, 0.55);
-}
 .sidebar-nav-active {
   background: linear-gradient(90deg, rgba(45, 212, 191, 0.32) 0%, rgba(56, 189, 248, 0.22) 100%);
   color: #fff !important;

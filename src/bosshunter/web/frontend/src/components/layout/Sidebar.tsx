@@ -41,9 +41,7 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
     <aside className="app-sidebar flex w-16 shrink-0 flex-col md:w-60">
       <div className="flex h-16 shrink-0 items-center justify-center border-b border-white/10 md:justify-start md:px-5">
         <div className="flex items-center gap-3">
-          <div className="sidebar-logo flex h-10 w-10 items-center justify-center rounded-2xl text-white">
-            <Briefcase className="h-5 w-5" />
-          </div>
+          <img src="/logo.png" alt="简历猎手" className="h-10 w-10 shrink-0 rounded-2xl object-cover shadow-lg" />
           <div className="hidden md:block">
             <div className="text-[15px] font-black tracking-tight text-white">简历猎手</div>
             <div className="text-[11px] text-white/60">自动找工作 · 本地运行</div>
