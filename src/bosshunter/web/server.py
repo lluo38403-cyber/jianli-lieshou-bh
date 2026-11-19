@@ -14,6 +14,7 @@ import math
 import mimetypes
 import random
 import secrets
+import threading
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -314,6 +315,8 @@ def _sanitize_config_for_write(data):
 	existing = load_config(CONFIG_PATH)
 	# AI 配置：用户端写什么都作废，以服务端已保存的为准。
 	cleaned["ai"] = deepcopy(existing.get("ai", {}))
+	# 鉴权展示配置同样只认服务端已保存的值（用户端不改购买链接/客服信息）。
+	cleaned["auth"] = deepcopy(existing.get("auth", {}))
 	cleaned.pop("admin", None)
 	profile_cfg = cleaned.get("profile")
 	if isinstance(profile_cfg, dict):
@@ -363,6 +366,15 @@ def _preflight_messages(mode: str, config: dict, options: dict | None = None) ->
 		from bosshunter.ai.greeter import greeting_config_error
 		if error := greeting_config_error(config):
 			messages.append(error)
+
+	# 授权到期直接拦在启动前：只认已同步/已缓存的过期状态，没同步过
+	# （第一次打开、中转暂时连不上）不拦，投递循环里还会再查。
+	if mode == "full":
+		try:
+			if get_auth_client().known_expired():
+				messages.append(AUTH_EXPIRED_MESSAGE)
+		except Exception:
+			pass
 	# 未配置 AI 也不拦：评分走本地规则兜底；AI 缺失只在预检里提示为 pass，
 	# 不作为启动门槛（collect_preflight_checks 的 ai_connection 检查）。
 
@@ -769,6 +781,18 @@ def _execute_deliver(task: WorkbenchTask, config: dict) -> None:
 	"""Run one delivery worker and drain batches queued while it is active."""
 	if _stop_for_active_platform_lock(task):
 		return
+	# 授权门禁：先同步一次拿最新状态；已知过期直接停，未知状态不拦
+	# （第一次打开、中转暂时连不上），投递循环里每批还会再查。
+	auth_client = get_auth_client()
+	try:
+		auth_client.sync()
+	except Exception:
+		pass
+	if _auth_stop_if_expired(task, auth_client):
+		return
+	import threading
+
+	threading.Thread(target=_auth_watchdog, args=(task, auth_client), daemon=True).start()
 	queue_lock = task.context.setdefault("delivery_queue_lock", Lock())
 	with queue_lock:
 		task.context["delivering"] = True
@@ -780,6 +804,8 @@ def _execute_deliver(task: WorkbenchTask, config: dict) -> None:
 	current_config = config
 	try:
 		while not task.stop_requested.is_set():
+			if _auth_stop_if_expired(task, auth_client):
+				return
 			_execute_deliver_batch(task, current_config)
 			if task.stop_requested.is_set():
 				return
@@ -1085,6 +1111,108 @@ def api_update_apply():
 		return _json_response({"error": exc.user_message}, 400)
 	updater.request_restart(delay=1.5)
 	return _json_response({"applying": True})
+
+
+# ─── Auth (machine code + time cards) ───────────────────────
+# 极简鉴权：机器码绑定 + 纯时间制卡密（天卡/周卡），没有账号密码、
+# 没有登录注册窗口，下载即用。授权状态存在中转服务端，客户端只
+# 认服务端返回的剩余秒数，本地倒计时走单调时钟（改系统时间也
+# 改不动它）。中转连不上时用上次同步的缓存顶 24 小时。
+# 详见 bosshunter/auth/client.py；中转接口约定见改动清单。
+
+AUTH_EXPIRED_MESSAGE = "授权已到期，请输入天卡或周卡继续使用"
+
+_AUTH_CLIENT = None
+_AUTH_CLIENT_LOCK = Lock()
+
+
+def get_auth_client():
+	"""Lazy singleton auth client (cache under DATA_DIR)."""
+	global _AUTH_CLIENT
+	if _AUTH_CLIENT is None:
+		with _AUTH_CLIENT_LOCK:
+			if _AUTH_CLIENT is None:
+				from bosshunter.auth.client import AuthClient
+
+				_AUTH_CLIENT = AuthClient(
+					load_config(CONFIG_PATH), cache_path=DATA_DIR / "auth_cache.json"
+				)
+	return _AUTH_CLIENT
+
+
+def reset_auth_client() -> None:
+	"""Drop the singleton (tests only)."""
+	global _AUTH_CLIENT
+	with _AUTH_CLIENT_LOCK:
+		_AUTH_CLIENT = None
+
+
+def _background_auth_sync() -> None:
+	"""Best-effort sync that never raises (startup / first status call)."""
+	try:
+		get_auth_client().sync()
+	except Exception:
+		pass
+
+
+@app.route("/api/auth/status")
+def api_auth_status():
+	client = get_auth_client()
+	if client.status == "unknown":
+		threading.Thread(target=_background_auth_sync, daemon=True).start()
+	return _json_response(client.snapshot())
+
+
+@app.route("/api/auth/refresh", method="POST")
+def api_auth_refresh():
+	client = get_auth_client()
+	client.sync()
+	return _json_response(client.snapshot())
+
+
+@app.route("/api/auth/activate", method="POST")
+def api_auth_activate():
+	body = request.json or {}
+	result = get_auth_client().activate(str(body.get("card_code") or ""))
+	if not result.get("ok"):
+		return _json_response({"error": result.get("error", "这张卡用不了。")}, 400)
+	return _json_response({**result, **get_auth_client().snapshot()})
+
+
+@app.route("/api/auth/config")
+def api_auth_config():
+	from bosshunter.auth.client import get_auth_display_config
+
+	return _json_response(get_auth_display_config(load_config(CONFIG_PATH)))
+
+
+def _auth_stop_if_expired(task, auth_client=None) -> bool:
+	"""Stop a delivery task when auth has run out. True when stopped.
+
+	Unknown state never stops anything (first run / relay down): the
+	task is only stopped once a synced or cached state positively says
+	expired. The delivery loop re-checks before every batch.
+	"""
+	client = auth_client or get_auth_client()
+	if not client.known_expired():
+		return False
+	task.stop_reason = AUTH_EXPIRED_MESSAGE
+	task.stop_requested.set()
+	_log(task, AUTH_EXPIRED_MESSAGE)
+	return True
+
+
+def _auth_watchdog(task, auth_client, interval_seconds: float = 300.0) -> None:
+	"""Re-sync every few minutes during delivery; stop when time runs out."""
+	while not task.stop_requested.is_set():
+		if task.stop_requested.wait(interval_seconds):
+			break
+		try:
+			auth_client.sync()
+		except Exception:
+			pass
+		if _auth_stop_if_expired(task, auth_client):
+			break
 
 
 # ─── Dashboard APIs ──────────────────────────────────────
@@ -3712,6 +3840,14 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 
 	import threading
 	threading.Thread(target=_startup_update_check, daemon=True).start()
+
+	# 启动时悄悄同步一次授权状态：后台线程、10 秒超时，拿不到就用
+	# 上次同步的缓存顶着（最多 24 小时），绝不拖慢启动。
+	def _startup_auth_sync():
+		time.sleep(3)
+		_background_auth_sync()
+
+	threading.Thread(target=_startup_auth_sync, daemon=True).start()
 
 	app.run(
 		host=host,

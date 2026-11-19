@@ -1373,9 +1373,10 @@ class WebApiRouteTests(unittest.TestCase):
             base_dir = Path(tmp)
             db = get_db(base_dir / "data" / "bosshunter.db")
             try:
-                # Funnel "today" uses the machine's local calendar day. Keep fixtures
-                # in the same clock so this remains stable around local midnight.
-                now = datetime.now()
+                # Funnel "today" uses the machine's local calendar day. Anchor
+                # the fixtures at noon so a run just after midnight cannot
+                # push the "one hour ago" row onto the previous day.
+                now = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
                 fixtures = (
                     ("today-ready", "ready", now),
                     ("today-sent", "sent", now - timedelta(hours=1)),

@@ -96,7 +96,7 @@ class VersionCompareTests(unittest.TestCase):
 class UpdateStubHandler(BaseHTTPRequestHandler):
     """Stub for the relay update contract: /api/version + /download/latest."""
 
-    version_payload = {"version": "1.0.2", "size": 0, "sha256": "0" * 64, "notes": ""}
+    version_payload = {"version": "1.0.3", "size": 0, "sha256": "0" * 64, "notes": ""}
     zip_bytes = b""
     status = 200
     requests: list = []
@@ -151,7 +151,7 @@ class UpdateCheckTests(unittest.TestCase):
     def setUp(self):
         _reset_update_state()
         UpdateStubHandler.version_payload = {
-            "version": "1.0.2",
+            "version": "1.0.3",
             "size": 123,
             "sha256": hashlib.sha256(_make_zip()).hexdigest(),
             "notes": "更快更稳",
@@ -184,7 +184,7 @@ class UpdateCheckTests(unittest.TestCase):
         info = check_for_update(self._config())
         self.assertIsNotNone(info)
         assert info is not None
-        self.assertEqual(info["version"], "1.0.2")
+        self.assertEqual(info["version"], "1.0.3")
         self.assertEqual(info["current_version"], __version__)
         self.assertEqual(info["size"], 123)
         self.assertEqual(info["notes"], "更快更稳")
@@ -213,9 +213,9 @@ class UpdateCheckTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         for bad in (
             {"size": 1, "sha256": "a" * 64},
-            {"version": "1.0.2", "size": 1},
-            {"version": "1.0.2", "size": 1, "sha256": "not-a-hash"},
-            {"version": "1.0.2", "size": 1, "sha256": "a" * 64, "notes": 5},
+            {"version": "1.0.3", "size": 1},
+            {"version": "1.0.3", "size": 1, "sha256": "not-a-hash"},
+            {"version": "1.0.3", "size": 1, "sha256": "a" * 64, "notes": 5},
         ):
             with self.subTest(bad=bad):
                 UpdateStubHandler.version_payload = bad
@@ -253,7 +253,7 @@ class UpdateDownloadTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.0.2",
+            "version": "1.0.3",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -281,7 +281,7 @@ class UpdateDownloadTests(unittest.TestCase):
 
     def _info(self):
         return {
-            "version": "1.0.2",
+            "version": "1.0.3",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -451,7 +451,7 @@ class UpdateRouteTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.0.2",
+            "version": "1.0.3",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "更快更稳",
@@ -543,7 +543,7 @@ class UpdateRouteTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             data = json.loads(body)
             self.assertTrue(data["update_available"])
-            self.assertEqual(data["version"], "1.0.2")
+            self.assertEqual(data["version"], "1.0.3")
             self.assertEqual(data["current_version"], __version__)
             self.assertEqual(data["notes"], "更快更稳")
 

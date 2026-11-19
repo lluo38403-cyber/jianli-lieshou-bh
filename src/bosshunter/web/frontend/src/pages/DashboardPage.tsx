@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
 import { useUpdate } from '@/hooks/useUpdate'
 import { UpdateBanner } from '@/components/dashboard/UpdateBanner'
+import { useAuth } from '@/hooks/useAuth'
+import { AuthStatusBar } from '@/components/dashboard/AuthStatusBar'
 import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
 import { Button } from '@/components/ui/button'
 import { START_ONBOARDING_EVENT } from '@/components/onboarding/OnboardingTour'
@@ -439,6 +441,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const [selected, setSelected] = useState<string[]>([])
   const [notice, setNotice] = useState('')
   const update = useUpdate()
+  const auth = useAuth()
   const [updateNote, setUpdateNote] = useState('')
   const handleManualUpdateCheck = useCallback(async () => {
     setUpdateNote('')
@@ -879,6 +882,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
 
   return (
     <div className="space-y-4">
+      <AuthStatusBar auth={auth} />
       <UpdateBanner update={update} />
       {showGettingStarted && (
         <GettingStartedCard
