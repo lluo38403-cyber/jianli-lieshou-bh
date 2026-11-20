@@ -68,3 +68,45 @@ describe('Sidebar version display', () => {
     }
   })
 })
+
+describe('Sidebar exit app', () => {
+  it('点“退出程序”弹出原话确认，点“否”只关弹窗、什么都不做', async () => {
+    stubFetch('1.1.11')
+    const fetchMock = vi.mocked(fetch)
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByTestId('sidebar-exit-app'))
+    expect(
+      screen.getByText('是否结束该应用程序，这可能会导致当前进行中的任务结束'),
+    ).toBeTruthy()
+    fireEvent.click(screen.getByText('否'))
+    expect(
+      screen.queryByText('是否结束该应用程序，这可能会导致当前进行中的任务结束'),
+    ).toBeNull()
+    expect(fetchMock.mock.calls.some(call => String(call[0]) === '/api/exit')).toBe(false)
+  })
+
+  it('点“是”调 POST /api/exit 并关窗', async () => {
+    stubFetch('1.1.11')
+    const fetchMock = vi.mocked(fetch)
+    const closeSpy = vi.fn()
+    Object.defineProperty(window, 'close', { value: closeSpy, configurable: true })
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByTestId('sidebar-exit-app'))
+    fireEvent.click(screen.getByText('是'))
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.some(
+        call => String(call[0]) === '/api/exit' && (call[1] as RequestInit)?.method === 'POST',
+      )).toBe(true)
+    })
+    await vi.waitFor(() => expect(closeSpy).toHaveBeenCalled())
+    expect(window.__jlSkipCloseConfirm).toBe(true)
+  })
+})

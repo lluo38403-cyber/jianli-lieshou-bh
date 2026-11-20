@@ -170,8 +170,9 @@ class EnsureRuntimeLaunchTests(unittest.TestCase):
         targets.return_value = None
         self.assertFalse(ensure_runtime(_config(), wait_seconds=0, allow_launch=False))
         launch.assert_not_called()
-        # 重试那次也不拉起。
-        self.assertEqual(start.call_count, 2)
+        # v25：allow_launch=False 时根本不调 start_runtime，重试那次
+        # 也只是等 targets——所以 start 一次都没调过。
+        self.assertEqual(start.call_count, 0)
 
 
 class DiagnosticsLaunchFlagTests(unittest.TestCase):

@@ -79,6 +79,18 @@ UPDATE_FAILURE_MESSAGES = {
 # Top-level entries of an install directory that an update must never touch.
 PRESERVED_TOP_LEVEL = ("config.yaml", "data")
 
+# v25：更新换版进行中标志。apply_update 置位后，--app 关窗监视线程
+# （app_window.watch_app_window_close）跳过关停——apply 自己会关窗、
+# 停 runtime、起 bat，监视线程绝不能在换文件途中抢跑关停。置位点在
+# 校验通过之后、关窗之前；bat 拉起失败时清掉（那次更新没换成，进程
+# 继续跑）；bat 拉起成功后不用清，进程随 request_restart 退出。
+_UPDATE_APPLYING = False
+
+
+def is_update_applying() -> bool:
+    """True while apply_update is swapping in a new version."""
+    return _UPDATE_APPLYING
+
 
 class UpdateError(RuntimeError):
     """Update failure with a plain-language message safe to show the user."""
@@ -1333,7 +1345,7 @@ def ensure_desktop_shortcut(
     return True
 
 
-def _kill_install_dir_processes(install_dir: str | Path) -> bool:
+def _kill_install_dir_processes(install_dir: str | Path, exclude_pid: int | None = None) -> bool:
     """换文件前（Python 侧第一道防御）：结束可执行路径在安装目录里的进程。
 
     只认 ExecutablePath 前缀——安装目录里只能是我们自己的打包文件，
@@ -1343,6 +1355,10 @@ def _kill_install_dir_processes(install_dir: str | Path) -> bool:
     Windows 上做；PowerShell 起不来或杀失败都只写进 update.log、
     返回 False，绝不阻断更新（bat 里的 :procsweep 是第二道防御，
     杀不掉会在那里走失败流程）。
+    exclude_pid：跳过这个 PID——v25 的启动残留清理调这里时，当前
+    进程自己就是安装目录里的新 exe，不排除会自杀；apply_update 里
+    传当前 PID 也一样（旧 exe 由 bat 的 :precopy 门等它退出，不用
+    在这里提前杀掉自己）。
     """
     if not _is_windows():
         return False
@@ -1353,7 +1369,9 @@ def _kill_install_dir_processes(install_dir: str | Path) -> bool:
         "$prefix = $installDir + '\\'; "
         "$doomed = @(); "
         "foreach ($p in Get-CimInstance Win32_Process) { "
-        "if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { $doomed += $p } }; "
+        "if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)"
+        + (f" -and $p.ProcessId -ne {int(exclude_pid)}" if exclude_pid is not None else "")
+        + ") { $doomed += $p } }; "
         "$killed = 0; $failed = 0; "
         "foreach ($p in $doomed) { try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } }; "
         "Start-Sleep -Seconds 1; "
@@ -1423,6 +1441,10 @@ def apply_update(install_dir: str | Path, exe_name: str) -> Path:
     # 上轮的 "applied" 不能被误读成这轮换成了。
     _remove_quietly(install / UPDATE_RESULT_FILENAME)
     write_pending_update(install, expected_version)
+    # 换版进行中：先置位，再关窗——关窗监视线程看到标志位就跳过，
+    # 不会在换文件途中抢跑关停（见模块顶部的 _UPDATE_APPLYING）。
+    global _UPDATE_APPLYING
+    _UPDATE_APPLYING = True
     # 先关主界面 --app 窗口：只关 exe 启动时持有的那个句柄对应的进程，
     # 绝不碰登录浏览器（登录浏览器是另一个独立进程、另一个 profile）。
     # 窗口不关，换文件时可能被占住、端口也交接不干净；关窗口不删
@@ -1461,10 +1483,21 @@ def apply_update(install_dir: str | Path, exe_name: str) -> Path:
         stop_runtime()
     except Exception:
         pass
+    # v25：再停我们拉起的自动化 Chrome（bat 的路径杀杀不到它，
+    # Chrome 不在安装目录里，进程内停是唯一办法）。只停命令行含
+    # 专用配置目录/调试端口的我们自己的 Chrome，用户浏览器不动。
+    try:
+        from bosshunter.browser.runtime import stop_launched_browser
+
+        stop_launched_browser()
+    except Exception:
+        pass
     # Python 侧第一道防御：按 ExecutablePath 杀安装目录里的残留进程
     #（变成孤儿的 node.exe 等）；杀不掉只记日志，bat 里还有第二道。
+    # 排除当前 PID：旧 exe 由 bat 的 :precopy 门等它退出，不用在这里
+    # 提前杀掉自己（request_restart 还要 1.5 秒后才退出）。
     try:
-        _kill_install_dir_processes(install)
+        _kill_install_dir_processes(install, exclude_pid=os.getpid())
     except Exception:
         pass
     flags = _windows_launch_flags()
@@ -1480,6 +1513,7 @@ def apply_update(install_dir: str | Path, exe_name: str) -> Path:
         )
     except Exception:
         _remove_quietly(install / UPDATE_PENDING_FILENAME)
+        _UPDATE_APPLYING = False
         raise
     _set_status(status="applying", progress=100, message="正在换上新版本…")
     return bat_path

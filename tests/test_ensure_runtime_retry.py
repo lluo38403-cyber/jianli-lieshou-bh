@@ -38,7 +38,9 @@ class EnsureRuntimeRetryTests(unittest.TestCase):
         result = ensure_runtime(_config(), wait_seconds=0)
 
         self.assertFalse(result)
-        self.assertEqual(start.call_count, 2)
+        # v25：重试那次传 allow_launch=False，只等 targets、不再重复
+        # 拉起 runtime，所以 start 只在第一次尝试里调了一次。
+        self.assertEqual(start.call_count, 1)
         sleep.assert_called_once_with(3)
 
     def test_retry_success_recovers(self):
@@ -57,7 +59,10 @@ class EnsureRuntimeRetryTests(unittest.TestCase):
         result = ensure_runtime(_config(), wait_seconds=0)
 
         self.assertTrue(result)
-        self.assertEqual(start.call_count, 2)
+        # v25：重试那次传 allow_launch=False，只等 targets、不再重复
+        # 拉起 runtime——targets 是在重试那次的等待里出现的，start
+        # 只在第一次尝试里调了一次。
+        self.assertEqual(start.call_count, 1)
         sleep.assert_called_once_with(3)
 
     def test_success_on_first_attempt_does_not_retry(self):

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { fetchWithRetry } from '@/lib/api'
+import { skipCloseConfirm } from '@/lib/closeConfirm'
 
 export interface UpdateInfo {
   version: string
@@ -415,6 +416,9 @@ export function useUpdate() {
       window.matchMedia('(display-mode: standalone)').matches
     if (standalone) {
       try {
+        // v25：更新换版的代码关窗必须绕过 beforeunload 确认——先置位
+        // 再 window.close()，否则换版会卡住等用户点确认。
+        skipCloseConfirm()
         window.close()
       } catch {
         // 关不掉就走下面的兜底。

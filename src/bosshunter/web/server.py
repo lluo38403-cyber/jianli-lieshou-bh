@@ -7,10 +7,12 @@ Serves:
 
 from bosshunter.employment import classify_employment, internship_rejection
 
+import atexit
 import hashlib
 import json
 import re
 import shutil
+import signal
 import tempfile
 from ipaddress import ip_address
 from urllib.parse import urlsplit
@@ -1550,6 +1552,43 @@ def api_update_apply():
 		return _json_response({"error": exc.user_message}, 400)
 	updater.request_restart(delay=1.5)
 	return _json_response({"applying": True})
+
+
+@app.route("/api/exit", method="POST")
+def api_exit():
+	"""Exit the whole application (v25, 面板“退出程序”入口点“是”后调)。
+
+	先回包，再在后台线程里按顺序：停进行中的任务（task_runner.stop，
+	现成机制）、停浏览器运行组件与我们拉起的自动化 Chrome（统一清理
+	入口 shutdown_browser_resources），最后退出进程。更新流程不走这里，
+	走自己的 apply_update + request_restart，两条退出路径不冲突；
+	关 --app 窗口点 X 也不走这里，走 beforeunload 确认 + 关窗监视线程。
+	"""
+	def _exit() -> None:
+		time.sleep(1.5)  # 让 HTTP 回包先发出去
+		try:
+			active = task_runner.status().get("active")
+			if active:
+				try:
+					task_runner.stop(str(active.get("id") or ""), "用户退出应用程序")
+				except Exception:
+					pass
+				try:
+					task_runner.wait(timeout=5)
+				except Exception:
+					pass
+		except Exception:
+			pass
+		try:
+			from bosshunter.browser.runtime import shutdown_browser_resources
+
+			shutdown_browser_resources()
+		except Exception:
+			pass
+		os._exit(0)
+
+	threading.Thread(target=_exit, daemon=True).start()
+	return _json_response({"exiting": True})
 
 
 # ─── Auth (machine code + time cards) ───────────────────────
@@ -4416,6 +4455,48 @@ def error500(error):
 
 # ─── Run ─────────────────────────────────────────────────
 
+_SHUTDOWN_HOOKS_INSTALLED = False
+
+
+def _install_shutdown_hooks(data_dir: Path, port: int) -> None:
+	"""Install atexit + SIGINT/SIGTERM cleanup for normal exits (v25).
+
+	只在起新服务时装一次：复用已有服务的进程不装（它的退出钩子会
+	误清首个实例的 Chrome）。清理走统一入口 shutdown_browser_resources
+	（停 runtime + 停我们拉的 Chrome + 清实例文件），幂等、失败不挡
+	退出。信号处理只在主线程能装，非主线程调 run_server 时跳过信号、
+	只留 atexit。
+	"""
+	global _SHUTDOWN_HOOKS_INSTALLED
+	if _SHUTDOWN_HOOKS_INSTALLED:
+		return
+	_SHUTDOWN_HOOKS_INSTALLED = True
+
+	def _cleanup() -> None:
+		try:
+			from bosshunter.browser.runtime import clear_instance_file, shutdown_browser_resources
+
+			shutdown_browser_resources()
+			clear_instance_file(data_dir)
+		except Exception:
+			pass
+
+	atexit.register(_cleanup)
+	try:
+		def _sigterm(_signum, _frame):
+			_cleanup()
+			raise SystemExit(0)
+
+		def _sigint(_signum, _frame):
+			_cleanup()
+			raise KeyboardInterrupt
+
+		signal.signal(signal.SIGTERM, _sigterm)
+		signal.signal(signal.SIGINT, _sigint)
+	except (ValueError, OSError, AttributeError):
+		pass
+
+
 def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = True):
 	"""Start the web server."""
 	if not (FRONTEND_DIR / "index.html").is_file():
@@ -4445,6 +4526,23 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 		if open_browser:
 			launch_app_window(panel_url)
 		return
+	# v25：起新服务前先做残留清理（上次被任务管理器强杀后留下的
+	# node.exe / 自动化 Chrome），再记下本实例、装好退出钩子。复用
+	# 路径（上面已 return）不做这些：那个进程只是开窗就退出，退出
+	# 钩子会误清首个实例的 Chrome。清理要在拉起任何新 runtime 之前跑。
+	try:
+		from bosshunter.browser.runtime import (
+			cleanup_stale_browser_resources,
+			set_data_dir,
+			write_instance_file,
+		)
+
+		set_data_dir(DATA_DIR)
+		cleanup_stale_browser_resources(data_dir=DATA_DIR, port=port)
+		write_instance_file(DATA_DIR, os.getpid(), port)
+		_install_shutdown_hooks(DATA_DIR, port)
+	except Exception:
+		pass
 	from bosshunter.collection_session_store import list_sessions
 	for session in list_sessions(DATA_DIR / "bosshunter.db", active_only=True):
 		if task_runner.status()["active"]:
@@ -4465,6 +4563,33 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 			# 就降级回默认浏览器，任何环境都能进界面。
 			launch_app_window(panel_url)
 		threading.Thread(target=_open, daemon=True).start()
+
+		def _watch_app_close():
+			# v25：关 --app 窗口先经 beforeunload 确认（浏览器通用确认
+			# 框，见前端 closeConfirm）；用户点“离开”后句柄退出，这里
+			# 走统一清理再退出进程。更新换版时监视线程自己会跳过
+			# （updater._UPDATE_APPLYING 置位）。Bottle 没有干净的停服
+			# 务句柄，清理完直接退出进程就是停服务。
+			try:
+				from bosshunter.app_window import watch_app_window_close
+				from bosshunter.browser.runtime import clear_instance_file, shutdown_browser_resources
+
+				def _on_close() -> None:
+					try:
+						shutdown_browser_resources()
+					except Exception:
+						pass
+					try:
+						clear_instance_file(DATA_DIR)
+					except Exception:
+						pass
+					os._exit(0)
+
+				watch_app_window_close(_on_close)
+			except Exception:
+				pass
+
+		threading.Thread(target=_watch_app_close, daemon=True).start()
 
 	# 启动时悄悄查一次有没有新版：后台线程、10 秒超时，查不到就当没有，
 	# 绝不拖慢启动、绝不影响找工作。结果进更新状态，首页横幅直接用。

@@ -1,9 +1,11 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { useEffect } from 'react'
 import { Sidebar } from './components/layout/Sidebar'
 import { Header } from './components/layout/Header'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { UpdateProvider } from './hooks/useUpdate'
 import { UnsavedChangesProvider } from './hooks/useUnsavedChangesGuard'
+import { installCloseConfirm } from './lib/closeConfirm'
 import DashboardPage from './pages/DashboardPage'
 import ConfigPage from './pages/ConfigPage'
 import AdminPage from './pages/AdminPage'
@@ -19,6 +21,12 @@ function MonitorPage() {
 
 function MainLayout() {
   const location = useLocation()
+  // v25：点 --app 窗口右上角 X 时先经 beforeunload 确认。现代 Chrome
+  // 的 beforeunload 只能弹浏览器自带的通用离开确认框（放不进自定义
+  // 文案，见 lib/closeConfirm）；点“离开”后后端关窗监视线程走统一
+  // 清理再退出进程，点“留下”则什么都不做。代码关窗（更新换版、
+  // “退出程序”点“是”）先置位跳过确认，见 skipCloseConfirm。
+  useEffect(() => installCloseConfirm(), [])
   return (
     <UpdateProvider>
     <UnsavedChangesProvider>

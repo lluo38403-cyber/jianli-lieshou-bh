@@ -168,6 +168,43 @@ describe('useUpdate', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/update/apply', { method: 'POST' })
     await waitFor(() => expect(reloadMock).toHaveBeenCalled(), { timeout: 8000 })
   })
+
+  it('apply in standalone mode skips the close confirm before window.close', async () => {
+    // v25：更新换版的代码关窗必须绕过 beforeunload 确认，否则换版
+    // 会卡住等用户点。standalone（--app 窗口）才走 window.close()。
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) return jsonResponse(NEW_VERSION)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.2' })
+      if (url === '/api/update/status') return jsonResponse({ status: 'ready', progress: 100 })
+      if (url === '/api/update/apply') return jsonResponse({ applying: true })
+      return jsonResponse({})
+    })
+    const closeMock = vi.fn()
+    Object.defineProperty(window, 'close', { value: closeMock, configurable: true })
+    const matchMediaMock = vi.fn(() => ({
+      matches: true,
+      media: '(display-mode: standalone)',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }))
+    Object.defineProperty(window, 'matchMedia', { value: matchMediaMock, configurable: true })
+    try {
+      const { result } = renderHook(() => useUpdate())
+      await waitFor(() => expect(result.current.info?.version).toBe('1.0.2'))
+      await act(async () => {
+        await result.current.start()
+      })
+      await waitFor(() => expect(result.current.phase).toBe('ready'), { timeout: 5000 })
+      await act(async () => {
+        await result.current.apply()
+      })
+      expect(window.__jlSkipCloseConfirm).toBe(true)
+      expect(closeMock).toHaveBeenCalled()
+    } finally {
+      delete window.__jlSkipCloseConfirm
+    }
+  })
 })
 
 describe('classifyUpdateError', () => {

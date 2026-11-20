@@ -16,12 +16,20 @@ the browser's default profile -- a different process from the login
 browser. Closing one never closes the other, and the update path only
 ever terminates the Popen handle held here, never the login browser.
 
-Closing the app window never exits the service: the web server keeps
-running in the background (same as closing a tab today). Re-running the
-exe just opens another app window onto the same service.
+Closing the app window exits the whole program (v25): the service
+used to keep running in the background after the window closed, which
+left the runtime node and the automation Chrome orphaned in Task
+Manager. Now run_server watches the held --app handle and, once it
+has lived past a short grace period and then exits, shuts the runtime
+and our automation Chrome down and exits the process. Limitation:
+when Chrome hands the --app URL to an already-running instance, the
+Popen handle exits at once and there is nothing to watch -- the
+window close is undetectable and the service keeps its old behavior
+(stays running). See watch_app_window_close.
 """
 
 import json
+import logging
 import os
 import subprocess
 import time
@@ -29,11 +37,16 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+_logger = logging.getLogger(__name__)
+
 # CREATE_NO_WINDOW 的真实值；Linux/macOS 上 subprocess 没有这个属性，
 # fallback 写死真实值，传了也会被忽略，测试还能断言到。
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 _APP_WINDOW_PROC: subprocess.Popen | None = None
+# --app 窗口拉起时的单调时钟（watch_app_window_close 用它算窗口活了
+# 多久，过滤 Chrome 把 --app 交给已在跑实例时的“立刻退出”假信号）。
+_APP_WINDOW_STARTED_AT: float | None = None
 
 
 def is_our_service_alive(host: str = "127.0.0.1", port: int = 8686, timeout: float = 2.0) -> bool:
@@ -120,7 +133,9 @@ def launch_app_window(url: str, config: dict[str, Any] | None = None) -> subproc
         except OSError:
             proc = None
         if proc is not None:
+            global _APP_WINDOW_STARTED_AT
             _APP_WINDOW_PROC = proc
+            _APP_WINDOW_STARTED_AT = time.monotonic()
             return proc
     # 没找到 Edge/Chrome，或拉起失败：走默认浏览器，总能进界面。
     import webbrowser
@@ -141,6 +156,8 @@ def close_app_window(timeout: float = 3.0) -> bool:
     global _APP_WINDOW_PROC
     proc = _APP_WINDOW_PROC
     _APP_WINDOW_PROC = None
+    global _APP_WINDOW_STARTED_AT
+    _APP_WINDOW_STARTED_AT = None
     if proc is None or proc.poll() is not None:
         return False
     try:
@@ -160,3 +177,76 @@ def close_app_window(timeout: float = 3.0) -> bool:
 def get_app_window_process() -> subprocess.Popen | None:
     """Return the held --app window handle (None when there is none)."""
     return _APP_WINDOW_PROC
+
+
+def watch_app_window_close(
+    on_close,
+    grace_seconds: float = 5.0,
+    poll_interval: float = 0.5,
+    wait_for_proc_seconds: float = 30.0,
+    _get_proc=None,
+    _started_at: float | None = None,
+    _is_update_applying=None,
+    _clock=None,
+    _sleep=None,
+) -> bool:
+    """Watch the held --app window; call on_close() once the user closes it.
+
+    run_server 在守护线程里跑这个函数。语义（v25）：
+    - 先等 _APP_WINDOW_PROC 出现（开窗是异步线程做的），等不到就
+      返回 False、不做任何事；
+    - 句柄在 grace_seconds（默认 5 秒）内就退出，视为 Chrome 把
+      --app 交给了已在跑的实例的假退出，直接返回 False、不触发关停；
+    - 句柄活过 grace 后才退出，视为用户关窗，调一次 on_close()、
+      返回 True；
+    - 更新进行中（updater._UPDATE_APPLYING 置位，apply_update 自己
+      会关窗、停 runtime、起 bat）绝不抢跑：直接返回 False。
+    局限：Chrome 把 --app 交给已在跑实例时根本没有可监视的句柄，
+    这种情况下关窗检测不到、服务保持旧行为（不停），不要假装修好了。
+    on_close 里抛异常只记日志、不让监视线程崩掉。永不抛异常。
+    """
+    clock = _clock or time.monotonic
+    sleep = _sleep or time.sleep
+    get_proc = _get_proc or get_app_window_process
+    if _is_update_applying is None:
+        try:
+            from bosshunter.updater import is_update_applying as _is_update_applying
+        except Exception:
+            _is_update_applying = lambda: False  # noqa: E731
+    try:
+        deadline = clock() + wait_for_proc_seconds
+        proc = None
+        while clock() < deadline:
+            proc = get_proc()
+            if proc is not None:
+                break
+            sleep(poll_interval)
+        if proc is None:
+            return False
+        started_at = _started_at if _started_at is not None else _APP_WINDOW_STARTED_AT
+        if started_at is None:
+            # 句柄有了、启动时间没记上（不应发生）：从第一次看到句柄
+            # 起算，宁可漏一次真关窗也不误杀刚交接的假退出。
+            started_at = clock()
+        while True:
+            try:
+                if _is_update_applying():
+                    return False
+            except Exception:
+                pass
+            try:
+                exited = proc.poll() is not None
+            except Exception:
+                return False
+            if exited:
+                if clock() - started_at >= grace_seconds:
+                    try:
+                        on_close()
+                    except Exception as exc:
+                        _logger.warning("watch_app_window_close: on_close 失败：%s", exc)
+                    return True
+                return False
+            sleep(poll_interval)
+    except Exception as exc:
+        _logger.warning("watch_app_window_close: 监视失败：%s", exc)
+        return False
