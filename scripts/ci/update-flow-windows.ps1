@@ -397,9 +397,11 @@ function Get-PathHash {
 function Get-DataTreeHash {
   param([string]$Dir)
   # data/ 的树哈希：排除运行时文件（.db/.log 等，旧版重启、巡检
-  # 也会写它们，变化不代表更新动了用户数据）；config.yaml、
-  # update-cache（manifest+zip）都在内——失败的更新绝不能动它们。
-  $files = Get-ChildItem -Path $Dir -Recurse -File -Exclude '*.db', '*.db-journal', '*.db-wal', '*.db-shm', '*.log' -ErrorAction SilentlyContinue | Sort-Object FullName
+  # 也会写它们，变化不代表更新动了用户数据；v25 起的 .instance.json
+  # 每次启动都重写 pid/started_at、launched-browser.json 随浏览器启停
+  # 改写，同样是运行时文件）；config.yaml、update-cache（manifest+zip）
+  # 都在内——失败的更新绝不能动它们。
+  $files = Get-ChildItem -Path $Dir -Recurse -File -Exclude '*.db', '*.db-journal', '*.db-wal', '*.db-shm', '*.log', '.instance.json', 'launched-browser.json' -ErrorAction SilentlyContinue | Sort-Object FullName
   if (-not $files) { return '(empty)' }
   $lines = foreach ($f in $files) {
     "$($f.FullName)|$((Get-FileHash -Path $f.FullName -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash)"
