@@ -1,7 +1,9 @@
-import { NavLink } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { Briefcase, Home, Radar, Settings } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { requestManualUpdateCheck } from '@/lib/updateEvents'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
+import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 
 const navItems = [
   { to: '/', icon: Home, label: '首页' },
@@ -18,6 +20,53 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
   const [pendingReplies, setPendingReplies] = useState(pendingRepliesProp ?? 0)
   // 版本号从后端取，不写死：后端 __version__ 一升，这里跟着变。
   const [currentVersion, setCurrentVersion] = useState('')
+  const location = useLocation()
+  const navigate = useNavigate()
+  const { guardRef } = useUnsavedChangesGuard()
+  /** 拦下来的目标页：有值时弹出未保存提醒，没值时不弹。 */
+  const [pendingTo, setPendingTo] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [savingBeforeLeave, setSavingBeforeLeave] = useState(false)
+
+  // 切页拦截：只有“在设置页、有未保存修改、要去别的页”时才拦；
+  // 没改动、去的就是当前页、或根本不在设置页时，直接正常跳转。
+  const handleNavClick = (event: ReactMouseEvent<HTMLAnchorElement>, to: string) => {
+    if (to === location.pathname) return
+    if (!guardRef.current?.isDirty()) return
+    event.preventDefault()
+    setSaveError(null)
+    setPendingTo(to)
+  }
+
+  const handleSaveAndLeave = async () => {
+    if (!pendingTo) return
+    setSavingBeforeLeave(true)
+    const ok = await guardRef.current?.save() ?? false
+    setSavingBeforeLeave(false)
+    if (!ok) {
+      // 保存失败：留在本页，提醒还在，改动也还在，可再点一次或选别的。
+      setSaveError('保存失败，还在这一页，改动还在；检查一下网络再点一次。')
+      return
+    }
+    const to = pendingTo
+    setPendingTo(null)
+    setSaveError(null)
+    navigate(to)
+  }
+
+  const handleDiscardAndLeave = () => {
+    if (!pendingTo) return
+    guardRef.current?.discard()
+    const to = pendingTo
+    setPendingTo(null)
+    setSaveError(null)
+    navigate(to)
+  }
+
+  const handleStay = () => {
+    setPendingTo(null)
+    setSaveError(null)
+  }
 
   useEffect(() => {
     let alive = true
@@ -83,6 +132,7 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
           <NavLink
             key={item.to}
             to={item.to}
+            onClick={event => handleNavClick(event, item.to)}
             data-tour={item.to === '/config' ? 'nav-config' : item.to === '/' ? 'nav-workbench' : undefined}
             className={({ isActive }) =>
               `relative flex items-center justify-center gap-3 rounded-xl px-1 py-3 text-[10px] transition-all duration-200 hover:-translate-y-px md:justify-between md:px-3 md:text-sm ${
@@ -108,6 +158,15 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
           <p className="hidden text-center text-[11px] leading-5 text-amber-300 md:block">有 {pendingReplies} 条 HR 消息等你处理</p>
         )}
       </div>
+      {pendingTo !== null && (
+        <UnsavedChangesDialog
+          saving={savingBeforeLeave}
+          error={saveError}
+          onSaveAndLeave={() => void handleSaveAndLeave()}
+          onDiscardAndLeave={handleDiscardAndLeave}
+          onStay={handleStay}
+        />
+      )}
     </aside>
   )
 }

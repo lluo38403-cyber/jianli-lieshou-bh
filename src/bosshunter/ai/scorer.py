@@ -233,14 +233,14 @@ def _build_scoring_prompt(job: dict, resume: str, config: dict | None = None) ->
         salary=job["salary"],
         experience=job["experience"],
         education=job.get("education", "") or "未识别",
-        recruitment_type={"campus": "校招", "experienced": "社招"}.get(
+        recruitment_type={"campus": "校招", "experienced": "社招", "both": "校招、社招均可"}.get(
             job.get("recruitment_type", ""), "未识别"
         ),
         candidate_education=config.get("profile", {}).get("education", "") or "未填写",
         candidate_recruitment_type={
             "campus": "校招",
             "experienced": "社招",
-            "both": "校招/社招均可",
+            "both": "校招、社招均可",
         }.get(config.get("profile", {}).get("recruitment_type", ""), "未填写"),
         salary_min=_format_salary_k(salary_min),
         salary_max=_format_salary_k(salary_max),

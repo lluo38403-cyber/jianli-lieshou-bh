@@ -113,23 +113,32 @@ it('has no AI settings section on the user page', async () => {
   expect(screen.queryByText('招呼语质量提醒')).toBeNull()
 })
 
-it('shows city names without internal codes and offers hot-city quick picks', async () => {
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+it('has only one city picker and BOSS cities still sync to target_cities', async () => {
+  let saved: Record<string, any> = {}
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
-    const body = url === '/api/config'
-      ? { platforms: { boss: { enabled: true, search: { keywords: ['人力'], cities: ['北京'] } } }, profile: { target_cities: ['北京'] } }
-      : url.startsWith('/api/cities') ? { ok: true, cities: [{ name: '北京', code: '010000' }, { name: '上海', code: '020000' }, { name: '深圳', code: '030000' }] } : {}
+    let body: unknown = {}
+    if (url === '/api/config') {
+      if (init?.method === 'POST') { saved = JSON.parse(String(init.body)); body = { success: true } }
+      else body = { platforms: { boss: { enabled: true, search: { keywords: ['人力'], cities: ['北京'] } } }, profile: { target_cities: ['北京'] } }
+    } else if (url.startsWith('/api/cities')) body = { ok: true, cities: [{ name: '北京', code: '010000' }, { name: '上海', code: '020000' }, { name: '深圳', code: '030000' }] }
     return new Response(JSON.stringify(body), { status: 200 })
   }))
   render(<UpdateProvider><ConfigPage /></UpdateProvider>)
-  // 页面有两个城市选择器（BOSS 平台、全局过滤），都只显示城市名。
-  expect((await screen.findAllByPlaceholderText('搜索城市名')).length).toBeGreaterThan(0)
+  // 全局过滤里重复的城市选择已去掉，只剩 BOSS 平台标签页里的一处。
+  expect((await screen.findAllByPlaceholderText('搜索城市名'))).toHaveLength(1)
+  expect(screen.queryByText('在哪个城市找')).toBeNull()
   expect(document.body.textContent).not.toContain('010000')
   expect(document.body.textContent).not.toContain('020000')
   expect(screen.queryByText('刷新城市列表')).toBeNull()
   expect(screen.getAllByRole('button', { name: '刷新城市列表' }).length).toBeGreaterThan(0)
-  fireEvent.click(screen.getAllByRole('button', { name: '上海' })[0])
-  expect((await screen.findAllByText('已选 2 个')).length).toBeGreaterThan(0)
+  fireEvent.click(screen.getByRole('button', { name: '上海' }))
+  expect(screen.getByText('已选 2 个')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+  await screen.findByText('设置已经保存了')
+  // BOSS 城市改值仍同步到 profile.target_cities，后端打分/过滤还读它。
+  expect(saved.profile.target_cities).toEqual(['北京', '上海'])
+  expect(saved.platforms.boss.search.cities).toEqual(['北京', '上海'])
 })
 
 it('warns explicitly instead of silently dropping a city without a code', async () => {
@@ -263,4 +272,98 @@ it('shows the risk protection section, defaults to steady, and saves tier and sw
   expect(saved.throttle.risk_tier).toBe('fast')
   expect(saved.throttle.random_interval).toBe(false)
   expect(saved.throttle.daily_cap).toBe(50)
+})
+
+it('notes the BOSS daily 150 application limit next to the daily cap', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    const body = url === '/api/config'
+      ? { throttle: {} }
+      : url.startsWith('/api/cities') ? { cities: [] } : {}
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
+  expect(await screen.findByText('BOSS 直聘普通账号每天只能投 150 个岗位，合理设置即可。')).toBeTruthy()
+})
+
+it('explains the job-type toggle state in plain words and keeps the three buttons consistent', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    const body = url === '/api/config'
+      ? { platforms: { boss: { enabled: true, search: { keywords: [], cities: [] } } }, profile: { job_types: [] } }
+      : url.startsWith('/api/cities') ? { cities: [] } : {}
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
+  await screen.findByText('全局过滤规则')
+  expect(screen.getByText(/亮着的就是你要投的类型；全都灭掉/)).toBeTruthy()
+  const fulltime = screen.getByRole('button', { name: '全职' })
+  const parttime = screen.getByRole('button', { name: '兼职' })
+  const intern = screen.getByRole('button', { name: '实习' })
+  // 三颗按钮都没选时都没有高亮，点一颗后只有它亮，选中态一致。
+  for (const button of [fulltime, parttime, intern]) expect(button.className).not.toContain('bg-secondary')
+  fireEvent.click(fulltime)
+  expect(fulltime.className).toContain('bg-secondary')
+  expect(parttime.className).not.toContain('bg-secondary')
+  expect(intern.className).not.toContain('bg-secondary')
+  // BOSS 再细筛的下拉框已改名，不再跟全局的三颗按钮重名。
+  expect(screen.getByText('BOSS 搜索只找这种类型')).toBeTruthy()
+})
+
+it('shows salary in k with 4k/7k placeholders and explains the ceiling ratio in plain words', async () => {
+  // GET 返回最后一次 POST 存下的值，和真实后端一致。
+  let saved: Record<string, any> = { profile: { salary_min: 0, salary_max: 0, salary_ceil_ratio: 1.5 } }
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    let body: unknown = {}
+    if (url === '/api/config') {
+      if (init?.method === 'POST') { saved = JSON.parse(String(init.body)); body = { success: true } }
+      else body = saved
+    }
+    if (url.startsWith('/api/cities')) body = { cities: [] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
+  await screen.findByText('全局过滤规则')
+  const minInput = screen.getByLabelText('我想要的工资（千元）最少') as HTMLInputElement
+  const maxInput = screen.getByLabelText('我想要的工资（千元）最多') as HTMLInputElement
+  // 0 显示为空，占位作示例；输入框旁边明确标 k。
+  expect(minInput.value).toBe('')
+  expect(maxInput.value).toBe('')
+  expect(minInput.placeholder).toBe('4')
+  expect(maxInput.placeholder).toBe('7')
+  expect(screen.getAllByText('k')).toHaveLength(2)
+  expect(screen.getByText(/超过你期望的工资也行，但有个上限/)).toBeTruthy()
+  expect(screen.getByText(/最低和最高都填 0 就是不限/)).toBeTruthy()
+  // 改了又改回原值不算脏：5 再清空回 0（原值），保存按钮是灰的，不发保存。
+  fireEvent.change(minInput, { target: { value: '5' } })
+  fireEvent.change(minInput, { target: { value: '' } })
+  expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true)
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
+  // 清空后写回去的仍是数字 0：先改成 5 保存，再清空成 0 保存，两次都存对了。
+  fireEvent.change(minInput, { target: { value: '5' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  await screen.findByText('设置已经保存了')
+  expect(saved.profile.salary_min).toBe(5)
+  fireEvent.change(minInput, { target: { value: '' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  // 别等“设置已经保存了”：第一次保存的提示还没消失，会误命中旧的；
+  // 直接等第二次保存的 POST 写进去。
+  await waitFor(() => expect(saved.profile.salary_min).toBe(0))
+  expect(saved.profile.salary_max).toBe(0)
+})
+
+it('shows both recruitment types selected when the config says so', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    const body = url === '/api/config'
+      ? { profile: { recruitment_type: 'both' } }
+      : url.startsWith('/api/cities') ? { cities: [] } : {}
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
+  await screen.findByText('我的简历和我')
+  const select = screen.getByDisplayValue('校招、社招均可') as HTMLSelectElement
+  expect(select.value).toBe('both')
 })

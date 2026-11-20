@@ -1,4 +1,5 @@
 import { useConfig } from '@/hooks/useConfig'
+import { useRegisterUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { useUpdateContext, formatUpdateNotes, formatUpdateSize } from '@/hooks/useUpdate'
 import { UpdateModal } from '@/components/dashboard/UpdateModal'
 import { CHECK_UPDATE_EVENT } from '@/lib/updateEvents'
@@ -27,6 +28,14 @@ const BOSS_FILTER_OPTIONS = {
 
 export default function ConfigPage() {
   const { config, loading, saving, dirty, error, message, updateConfig, saveConfig, resetConfig } = useConfig()
+  // 离开设置页时的未保存提醒：向侧边栏注册守卫；“我想找什么工作 /
+  // 全局过滤规则”和“我的设置”是同一页、同一份保存，走这一个守卫就够。
+  // 岗位采集弹窗（CollectJobsDialog）的草稿是另一条立即保存链路，不归这里管。
+  useRegisterUnsavedChangesGuard({
+    isDirty: () => dirty,
+    save: () => saveConfig(),
+    discard: () => resetConfig(),
+  })
   const update = useUpdateContext()
   const [updateNote, setUpdateNote] = useState('')
   const [manualUpdateSignal, setManualUpdateSignal] = useState(0)
@@ -378,7 +387,7 @@ export default function ConfigPage() {
                     {platform === 'boss' && <div className="space-y-3 rounded-xl border border-card-border bg-card p-3">
                       <p className="text-xs font-black text-foreground">BOSS 再细筛一下（可以不填）</p>
                       <div className="grid gap-3 md:grid-cols-2">
-                        <Field label="全职、兼职还是实习">
+                        <Field label="BOSS 搜索只找这种类型" hint="只在 BOSS 搜索时用">
                           <Select value={Array.isArray(bossFilters.job_type) ? bossFilters.job_type[0] || '' : ''} onChange={event => updateBossFilter(search, 'job_type', event.target.value, false)}>
                             <option value="">不限</option>
                             {BOSS_FILTER_OPTIONS.job_type.map(option => <option key={option} value={option}>{option}</option>)}
@@ -466,18 +475,7 @@ export default function ConfigPage() {
                   )
                 })}
               </div>
-              <p className="mt-1 text-xs text-muted">只投你选中的类型；看不出是哪种类型的不会拦。全部取消就是都要。</p>
-            </Field>
-            <Field label="在哪个城市找">
-              <CityMultiSelect
-                options={cityOptions}
-                value={config.profile?.target_cities || []}
-                onChange={value => updatePlatformCities('boss', value)}
-                onRefresh={handleCityRefresh}
-                refreshing={cityRefreshing}
-                message={cityMessage}
-              />
-              <p className="mt-1 text-xs text-muted">也是 BOSS 的搜索城市；智联、前程无忧、猎聘的城市在上面各平台里单独设。</p>
+              <p className="mt-1 rounded-lg bg-secondary px-3 py-2 text-xs font-bold text-foreground">亮着的就是你要投的类型；全都灭掉 = 什么类型都要，不限。看不出是哪种类型的岗位不会拦。</p>
             </Field>
             <NumberRangeField
               label="我想要的工资（千元）"
@@ -487,6 +485,10 @@ export default function ConfigPage() {
               onMaxChange={value => updateConfig('profile.salary_max', value)}
               min={0}
               max={200}
+              unit="k"
+              minPlaceholder="4"
+              maxPlaceholder="7"
+              emptyZero
             />
             <Field label={`工资高一点也能接受：${config.profile?.salary_ceil_ratio ?? 1.5}`}>
               <Slider
@@ -496,7 +498,7 @@ export default function ConfigPage() {
                 max={5}
                 step={0.1}
               />
-              <p className="mt-1 text-xs text-muted">看岗位工资区间的下限；下限比你填的最高工资 × 这个倍数还高，打分前就跳过。最低和最高都填 0 就是不限。</p>
+              <p className="mt-1 text-xs text-muted">超过你期望的工资也行，但有个上限：岗位工资下限超过『你填的最高工资 × 这个倍数』就跳过；倍数越大，接受的高薪范围越宽。最低和最高都填 0 就是不限。</p>
             </Field>
             <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
               <div>
@@ -647,6 +649,7 @@ export default function ConfigPage() {
                 <Switch checked={config.throttle?.daily_cap_enabled ?? true} onChange={v => updateConfig('throttle.daily_cap_enabled', v)} aria-label="每日投递上限开关" />
               </div>
             </div>
+            <p className="text-xs text-muted">BOSS 直聘普通账号每天只能投 150 个岗位，合理设置即可。</p>
             <p className="text-xs text-muted">换档位、开关马上生效，不用重启；下次投递就按新的来。“找新岗位的设置”里也能改档位和随机间隔，两边是同一组设置。</p>
           </div>
         </SectionCard>
@@ -913,6 +916,10 @@ function NumberRangeField({
   max,
   step,
   disabled = false,
+  unit,
+  minPlaceholder,
+  maxPlaceholder,
+  emptyZero = false,
 }: {
   label: string
   minValue: number
@@ -923,6 +930,12 @@ function NumberRangeField({
   max?: number
   step?: number
   disabled?: boolean
+  // 只在薪资这种带单位的区间用：输入框旁标单位（如 k），0 显示为空并
+  // 用占位作示例（4k / 7k）。空值 onChange 回来仍是 0，不改过滤行为。
+  unit?: string
+  minPlaceholder?: string
+  maxPlaceholder?: string
+  emptyZero?: boolean
 }) {
   const inputClassName = 'h-9 min-w-0 flex-1 bg-transparent px-2 text-center text-sm text-foreground outline-none disabled:cursor-not-allowed disabled:text-muted'
 
@@ -934,26 +947,30 @@ function NumberRangeField({
           aria-label={`${label}最少`}
           className={inputClassName}
           type="number"
-          value={minValue}
+          value={emptyZero && minValue === 0 ? '' : minValue}
+          placeholder={minPlaceholder}
           onChange={event => onMinChange(Number(event.target.value))}
           min={min}
           max={max}
           step={step}
           disabled={disabled}
         />
+        {unit && <span className="shrink-0 pr-1 text-xs font-bold text-muted">{unit}</span>}
         <span className="flex h-full shrink-0 items-center border-x border-card-border bg-surface px-3 text-xs font-bold text-muted">至</span>
         <span className="shrink-0 pl-3 text-[11px] text-muted">最多</span>
         <input
           aria-label={`${label}最多`}
           className={inputClassName}
           type="number"
-          value={maxValue}
+          value={emptyZero && maxValue === 0 ? '' : maxValue}
+          placeholder={maxPlaceholder}
           onChange={event => onMaxChange(Number(event.target.value))}
           min={min}
           max={max}
           step={step}
           disabled={disabled}
         />
+        {unit && <span className="shrink-0 pr-3 text-xs font-bold text-muted">{unit}</span>}
       </div>
     </Field>
   )

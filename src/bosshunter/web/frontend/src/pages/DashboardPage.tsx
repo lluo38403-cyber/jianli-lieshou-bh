@@ -29,6 +29,7 @@ import { JobFilterBar } from '@/components/jobs/JobFilterBar'
 import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
 import { parseHistoryDetail } from '@/lib/historyDetail'
 import { PLATFORM_LABELS, PLATFORM_IDS, openPlatformLogin } from '@/lib/platforms'
+import { derivePlatformLoginStates } from '@/lib/platformLogin'
 import {
   EMPTY_JOB_FILTERS,
   filterJobs,
@@ -344,13 +345,38 @@ function PreflightPanel({
   onRetry: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
+  const [launching, setLaunching] = useState(false)
+  const [launchMessage, setLaunchMessage] = useState('')
   const actionableChecks = checks.filter(check => check.status !== 'pass')
   if (actionableChecks.length === 0) return null
 
   const errors = actionableChecks.filter(check => check.status === 'error').length
   const needsConfig = actionableChecks.some(check => check.action === 'config')
+  // “浏览器运行组件未启动”/没连上远程调试这类检查（action === 'browser'）：
+  // 提示文案里说的“一键启动浏览器”就放在这里点，不用用户自己去别处找按钮。
+  const needsBrowser = actionableChecks.some(check => check.action === 'browser')
   const heading = `${actionableChecks.length} 件事${errors ? '要处理' : '提醒你'}`
   const summary = `${heading} · ${actionableChecks[0].message}`
+
+  const handleLaunchBrowser = async () => {
+    if (launching) return
+    setLaunching(true)
+    setLaunchMessage('')
+    try {
+      const res = await fetch('/api/browser/launch', { method: 'POST' })
+      const data = await res.json().catch(() => ({} as { ok?: boolean; message?: string; error?: string }))
+      // 后端约定：200 + ok:true 才算浏览器已连上；ok:false 时 message 会说明原因。
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.message || data.error || '浏览器没启动起来')
+      }
+      setLaunchMessage('浏览器已启动。')
+      onRetry()
+    } catch (err) {
+      setLaunchMessage(err instanceof Error ? `${err.message}，再点一次试试。` : '浏览器没启动起来，再点一次试试。')
+    } finally {
+      setLaunching(false)
+    }
+  }
 
   return (
     <div role="region" aria-label="启动检查结果" className={`mt-2 rounded-lg border px-2 text-xs ${
@@ -369,11 +395,17 @@ function PreflightPanel({
             去设置
           </Button>
         )}
+        {needsBrowser && (
+          <Button variant="ghost" size="sm" className="h-7 shrink-0 px-1" onClick={() => void handleLaunchBrowser()} disabled={launching || checking}>
+            {launching ? '正在启动…' : '一键启动浏览器'}
+          </Button>
+        )}
         <Button variant="ghost" size="sm" className="h-7 shrink-0 px-1" onClick={onRetry} disabled={checking}>
           <RefreshCw className={`mr-1 h-3 w-3 ${checking ? 'animate-spin' : ''}`} />
           {checking ? '检查中' : '再检查一次'}
         </Button>
       </div>
+      {launchMessage && <p role="status" className="border-t border-current/10 py-2 text-xs leading-5 text-foreground">{launchMessage}</p>}
       <div id="preflight-details" hidden={!expanded} className="space-y-2 border-t border-current/10 py-2 text-xs leading-5">
         {actionableChecks.map(check => (
           <div key={`${check.id}-${check.title}`} className="break-words">
@@ -428,6 +460,9 @@ function GettingStartedCard({
             </button>
           ))}
         </div>
+        {/* 引导区里的检查入口；漏斗非空后引导区消失，同一入口保留在
+            “今天要做的事”标题栏（下面那份，data-tour 也在那一份上），
+            新手引导最后一步总能找到它，老用户回首页也能直接点。 */}
         <Button data-tour="check-preflight" variant="secondary" size="sm" onClick={onCheck} disabled={checking}>
           <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
           {checking ? '检查中' : '检查一下能不能跑'}
@@ -452,6 +487,11 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     refreshing,
     lastRefreshedAt,
     refresh,
+    applyPlatformLoginStates,
+    refreshPlatformLogin,
+    platformLoginRefreshing,
+    platformLoginRefreshedAt,
+    platformLoginRefreshError,
     updateGreetingJob,
     updateJobStatus,
     startTask,
@@ -514,27 +554,45 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const [preflightRunning, setPreflightRunning] = useState(false)
   const [generatingGreetings, setGeneratingGreetings] = useState(false)
   const [browserDiag, setBrowserDiag] = useState<BrowserDiagnostics | null>(null)
+  const [browserDiagLoading, setBrowserDiagLoading] = useState(false)
   const [preflightSeeded, setPreflightSeeded] = useState(false)
 
   // 浏览器诊断：后端没提供该接口时静默，不挡首页。诊断本身可能很慢
   // （runtime 没起来时服务端要等几秒），10 秒没回来就当没有，不占着
   // 连接一直等——首页内容不依赖它。
+  // 挂载时顺带用这份诊断推导一次登录态：库里的行可能是上次启动留
+  // 下的旧值（登录态表重启后仍在），不先拿新鲜诊断对一遍，卡片就
+  // 会按旧值显示“已掉线”。浏览器没连上时推导不出东西，旧值不动。
   const fetchBrowserDiagnostics = useCallback(async () => {
     const controller = new AbortController()
     const timer = window.setTimeout(() => controller.abort(), 10000)
+    setBrowserDiagLoading(true)
     try {
       const res = await fetch('/api/browser/diagnostics', { cache: 'no-store', signal: controller.signal })
       if (!res.ok) return
       const data = await res.json()
       // 只认契约里的形状；后端没提供该接口、返回空对象时不误报。
-      if (typeof data.ok === 'boolean' || data.error_kind) setBrowserDiag(data)
+      if (typeof data.ok === 'boolean' || data.error_kind) {
+        setBrowserDiag(data)
+        applyPlatformLoginStates(derivePlatformLoginStates(data))
+      }
     } catch {
       // 忽略：诊断只是辅助信息。
     } finally {
       window.clearTimeout(timer)
+      setBrowserDiagLoading(false)
     }
-  }, [])
+  }, [applyPlatformLoginStates])
   useEffect(() => { void fetchBrowserDiagnostics() }, [fetchBrowserDiagnostics])
+
+  // 卡片右上角“刷新”：只刷登录态（POST 诊断 + 前端推导），不整页
+  // 重载；诊断原样同步给下面的浏览器诊断面板，两处不各说各话。
+  const handleRefreshPlatformLogin = useCallback(async () => {
+    const data = await refreshPlatformLogin()
+    if (data && typeof data === 'object' && (typeof (data as Record<string, unknown>).ok === 'boolean' || (data as Record<string, unknown>).error_kind)) {
+      setBrowserDiag(data as BrowserDiagnostics)
+    }
+  }, [refreshPlatformLogin])
 
   // 首页 preflight 结果优先用后端保存的最近一次结果：路由切换回来
   // 不再显示“未检查过”，本地刚跑过的结果优先。
@@ -966,16 +1024,27 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           browserName={browserName}
         />
       )}
-      <PlatformStatusCard platformLogin={workbench.platform_login} browserName={browserName} />
+      <PlatformStatusCard
+        platformLogin={workbench.platform_login}
+        browserName={browserName}
+        onRefresh={() => { void handleRefreshPlatformLogin() }}
+        refreshing={platformLoginRefreshing}
+        refreshedAt={platformLoginRefreshedAt}
+        refreshError={platformLoginRefreshError || null}
+        checking={browserDiagLoading || platformLoginRefreshing}
+      />
       <BrowserDiagnosticsPanel diagnostics={browserDiag} onRefresh={fetchBrowserDiagnostics} />
       <section id="today-workbench" className="animate-fade-up scroll-mt-6 rounded-2xl border border-card-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
           <h2 className="text-lg font-bold tracking-tight">今天要做的事</h2>
           <div className="flex items-center gap-2 text-xs text-muted">
             <span className="mr-1 hidden sm:inline">{activeTask ? `${activeTask.label}中` : '现在没事做'}</span>
-            <Button variant="ghost" size="sm" className="h-7 px-1" onClick={runStandalonePreflight} disabled={refreshing || Boolean(modePending) || preflightRunning}>
+            {/* 常驻检查入口：引导区只在漏斗为空时显示，这一份一直都在，
+                和引导区里的是同一个动作（runStandalonePreflight），不另起流程；
+                新手引导最后一步的 data-tour 锚点也在这一份上。 */}
+            <Button data-tour="check-preflight" variant="secondary" size="sm" className="h-7 px-1" onClick={runStandalonePreflight} disabled={refreshing || Boolean(modePending) || preflightRunning}>
               <ShieldCheck className={cn('mr-1 h-3.5 w-3.5', preflightRunning && 'animate-spin')} />
-              {preflightRunning ? '检查中' : '检查能不能跑'}
+              {preflightRunning ? '检查中' : '检查一下能不能跑'}
             </Button>
             <Button variant="ghost" size="sm" className="h-7 px-1" onClick={refresh} disabled={refreshing} title={lastRefreshedAt ? `最后刷新：${lastRefreshedAt.toLocaleTimeString('zh-CN', { hour12: false })}` : undefined}>
               <RefreshCw className={cn('mr-1 h-3.5 w-3.5', refreshing && 'animate-spin')} />

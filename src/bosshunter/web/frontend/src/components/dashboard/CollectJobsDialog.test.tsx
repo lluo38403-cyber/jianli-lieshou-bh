@@ -40,6 +40,45 @@ it('full workflow hides continuous collection and submits the existing scoring b
   expect(start.mock.calls[0][0].continuous_collection).toBeUndefined()
 })
 
+it('traps Tab inside the dialog, closes with Escape and restores focus', async () => {
+  const start = vi.fn(async (_options: Record<string, unknown>) => ({ ok: true }))
+  const close = vi.fn()
+  const { rerender } = render(<>
+    <button type="button">底层按钮</button>
+    <CollectJobsDialog open={false} activeTask={null} onClose={close} onStart={start} />
+  </>)
+  const trigger = screen.getByRole('button', { name: '底层按钮' })
+  trigger.focus()
+  rerender(<>
+    <button type="button">底层按钮</button>
+    <CollectJobsDialog open activeTask={null} onClose={close} onStart={start} />
+  </>)
+  await screen.findByDisplayValue('AI')
+  const dialog = screen.getByRole('dialog', { name: '找新岗位' })
+  // 全屏模态盖在更新卡片（z-50）之上，不靠挂载顺序。
+  expect(dialog.className).toContain('z-[60]')
+  // 打开时焦点进弹窗、背景页面不滚动。
+  expect(dialog.contains(document.activeElement)).toBe(true)
+  expect(document.body.style.overflow).toBe('hidden')
+  // Tab 到最后一个可点元素后再 Tab，绕回第一个；反向同理，跑不到底层按钮上。
+  const startButton = screen.getByRole('button', { name: '重新采集' })
+  startButton.focus()
+  fireEvent.keyDown(document, { key: 'Tab' })
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: '关闭' }))
+  fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+  expect(document.activeElement).toBe(startButton)
+  // Esc 关闭。
+  fireEvent.keyDown(document, { key: 'Escape' })
+  expect(close).toHaveBeenCalledTimes(1)
+  rerender(<>
+    <button type="button">底层按钮</button>
+    <CollectJobsDialog open={false} activeTask={null} onClose={close} onStart={start} />
+  </>)
+  // 关掉后焦点回到打开前的位置，页面恢复滚动。
+  expect(document.activeElement).toBe(trigger)
+  expect(document.body.style.overflow).toBe('')
+})
+
 it('shows only the active platform tab and keeps the start buttons in a fixed bottom bar', async () => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)

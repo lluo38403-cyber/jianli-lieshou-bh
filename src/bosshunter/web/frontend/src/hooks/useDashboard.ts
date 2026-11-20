@@ -1,5 +1,6 @@
 import { useCallback, useState, useEffect, useRef } from 'react'
 import { fetchWithRetry, isServiceNotReadyError, readJsonWithTimeout } from '@/lib/api'
+import { derivePlatformLoginStates, mergePlatformLoginStates } from '@/lib/platformLogin'
 
 interface FunnelData {
   [key: string]: number
@@ -225,6 +226,14 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
   const [refreshing, setRefreshing] = useState(false)
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null)
   const refreshingRef = useRef<AbortController | null>(null)
+  /** 手动刷登录态（只刷这一格，不走整页 refresh）：正在跑的请求、以及
+   * 最近一次刷出的新值——轮询回来的旧库值不能把它盖回去，要等巡检
+   * 把同样结果写库（checked_at 更新）后才由库值接管。 */
+  const [platformLoginRefreshing, setPlatformLoginRefreshing] = useState(false)
+  const [platformLoginRefreshedAt, setPlatformLoginRefreshedAt] = useState<Date | null>(null)
+  const [platformLoginRefreshError, setPlatformLoginRefreshError] = useState('')
+  const loginRefreshRef = useRef<AbortController | null>(null)
+  const platformLoginOverrideRef = useRef<Partial<Record<string, PlatformLoginInfo>> | null>(null)
   const greetingRevisionRef = useRef(0)
   const firstLoadRef = useRef(true)
 
@@ -280,7 +289,15 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
       if (controller.signal.aborted || refreshingRef.current !== controller) return
 
       // An older poll must not replace the greeting returned by a successful save.
-      if (workbenchData !== undefined && greetingRevision === greetingRevisionRef.current) setWorkbench(workbenchData)
+      if (workbenchData !== undefined && greetingRevision === greetingRevisionRef.current) {
+        const incoming = workbenchData as WorkbenchData
+        // 登录态那一格单独按 checked_at 取新：刚手动刷出 / 挂载诊断算出
+        // 的新值，在巡检写库之前不被轮询的旧库值盖回去。
+        const platformLogin = platformLoginOverrideRef.current
+          ? mergePlatformLoginStates(incoming.platform_login, platformLoginOverrideRef.current)
+          : incoming.platform_login
+        setWorkbench({ ...incoming, platform_login: platformLogin })
+      }
       if (historyData !== undefined) setHistory(historyData)
       setLastRefreshedAt(new Date())
       setWaitingForService(false)
@@ -309,6 +326,66 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
       }
     }
   }, [scope, markWaiting])
+
+  /** 把一次新鲜诊断算出的登录态写进 workbench（只动 platform_login
+   * 这一格），并记住它，供上面轮询合并时按 checked_at 取新。 */
+  const applyPlatformLoginStates = useCallback((states: Partial<Record<string, PlatformLoginInfo>> | null) => {
+    if (!states) return
+    platformLoginOverrideRef.current = mergePlatformLoginStates(platformLoginOverrideRef.current, states)
+    setWorkbench(previous => ({
+      ...previous,
+      platform_login: mergePlatformLoginStates(previous.platform_login, states),
+    }))
+  }, [])
+
+  /** 只刷新各平台登录状态：调现成的 POST /api/browser/diagnostics
+   * （只做检测，不拉起浏览器、不跑任务、不碰预检），按后端的同一份
+   * 口径在前端推导四平台状态，只更新 platform_login。
+   * 注意：这个端点本身不写库——写库是预检接口和后台巡检的事；这里
+   * 刷出的新值先存在前端，巡检（4 分钟一轮）会把同样结果写库，之
+   * 前轮询按 checked_at 取新，不会盖回旧值。返回诊断原样（供首页
+   * 同步浏览器诊断面板），请求失败返回 null；浏览器没连上时返回
+   * 诊断原样但不更新登录态（沿用旧值，不把“连不上”误标成掉线）。 */
+  const refreshPlatformLogin = useCallback(async (): Promise<unknown> => {
+    if (loginRefreshRef.current) return null
+    const controller = new AbortController()
+    loginRefreshRef.current = controller
+    const timer = window.setTimeout(() => controller.abort(), 15000)
+    setPlatformLoginRefreshing(true)
+    setPlatformLoginRefreshError('')
+    try {
+      const res = await fetch('/api/browser/diagnostics', {
+        method: 'POST',
+        cache: 'no-store' as const,
+        signal: controller.signal,
+      })
+      if (!res.ok) throw new Error(`HTTP_${res.status}`)
+      const data: unknown = await res.json().catch(() => null)
+      if (controller.signal.aborted) return null
+      const states = derivePlatformLoginStates(data)
+      if (!states) {
+        setPlatformLoginRefreshError('浏览器没连上，登录态查不出来。先点“一键启动浏览器”，再点刷新试试。')
+        return data
+      }
+      applyPlatformLoginStates(states)
+      setPlatformLoginRefreshedAt(new Date())
+      return data
+    } catch (err) {
+      if (controller.signal.aborted) {
+        setPlatformLoginRefreshError('刷新超时了，稍后再点刷新试试。')
+      } else {
+        console.error('Failed to refresh platform login states:', err)
+        setPlatformLoginRefreshError('没刷出来，稍后再点刷新试试。')
+      }
+      return null
+    } finally {
+      window.clearTimeout(timer)
+      if (loginRefreshRef.current === controller) {
+        loginRefreshRef.current = null
+        setPlatformLoginRefreshing(false)
+      }
+    }
+  }, [applyPlatformLoginStates])
 
   const updateJobStatus = useCallback(async (jobId: string, status: string) => {
     const res = await fetch('/api/jobs/status', {
@@ -408,6 +485,11 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     refreshing,
     lastRefreshedAt,
     refresh: fetchAll,
+    applyPlatformLoginStates,
+    refreshPlatformLogin,
+    platformLoginRefreshing,
+    platformLoginRefreshedAt,
+    platformLoginRefreshError,
     updateGreetingJob,
     updateJobStatus,
     startTask,

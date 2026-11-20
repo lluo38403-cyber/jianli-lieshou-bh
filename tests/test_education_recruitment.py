@@ -3,6 +3,7 @@ from pathlib import Path
 
 from bosshunter.ai.scorer import _build_scoring_prompt
 from bosshunter.collection.models import JobCandidate, classify_recruitment_type
+from bosshunter.config import load_config
 from bosshunter.db import get_db, insert_job_if_new
 
 
@@ -66,6 +67,54 @@ def test_scoring_prompt_includes_candidate_and_job_recruitment_context():
     )
 
     assert "最高学历：硕士" in prompt
-    assert "求职招聘类型：校招/社招均可" in prompt
+    assert "求职招聘类型：校招、社招均可" in prompt
     assert "学历要求：本科" in prompt
     assert "招聘类型：社招" in prompt
+
+
+def _scoring_prompt_with_candidate_recruitment_type(value: str) -> str:
+    return _build_scoring_prompt(
+        {
+            "title": "产品经理",
+            "company": "示例公司",
+            "salary": "20-30K",
+            "experience": "3-5年",
+            "education": "本科",
+            "recruitment_type": "experienced",
+            "jd": "负责产品规划。",
+        },
+        "候选人简历",
+        {"profile": {"education": "硕士", "recruitment_type": value}},
+    )
+
+
+def test_new_config_defaults_recruitment_type_to_both():
+    with tempfile.TemporaryDirectory() as temporary:
+        config = load_config(Path(temporary) / "config.yaml")
+
+    assert config["profile"]["recruitment_type"] == "both"
+
+
+def test_scoring_prompt_recruitment_type_old_values_unchanged():
+    assert "求职招聘类型：校招" in _scoring_prompt_with_candidate_recruitment_type("campus")
+    assert "求职招聘类型：社招" in _scoring_prompt_with_candidate_recruitment_type("experienced")
+    assert "求职招聘类型：未填写" in _scoring_prompt_with_candidate_recruitment_type("")
+    assert "求职招聘类型：校招、社招均可" in _scoring_prompt_with_candidate_recruitment_type("both")
+
+
+def test_scoring_prompt_job_recruitment_type_both_is_not_unrecognized():
+    prompt = _build_scoring_prompt(
+        {
+            "title": "产品经理",
+            "company": "示例公司",
+            "salary": "20-30K",
+            "experience": "3-5年",
+            "education": "本科",
+            "recruitment_type": "both",
+            "jd": "负责产品规划。",
+        },
+        "候选人简历",
+        {"profile": {"education": "硕士", "recruitment_type": "both"}},
+    )
+
+    assert "招聘类型：校招、社招均可" in prompt

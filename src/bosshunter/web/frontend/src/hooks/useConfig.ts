@@ -28,6 +28,28 @@ function writeConfigPath(config: Record<string, any>, path: string, value: unkno
   return next
 }
 
+/**
+ * 脏判定：当前值与“已保存快照”深比较。改了又改回原值不算脏；
+ * 比较的是整份配置对象——快照与当前值都来自同一份服务端数据，
+ * 服务端回填的字段两边都有，不会误判成脏。
+ */
+export function isConfigEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false
+    return a.every((item, index) => isConfigEqual(item, b[index]))
+  }
+  const aKeys = Object.keys(a as Record<string, unknown>)
+  const bKeys = Object.keys(b as Record<string, unknown>)
+  if (aKeys.length !== bKeys.length) return false
+  return aKeys.every(key => isConfigEqual(
+    (a as Record<string, unknown>)[key],
+    (b as Record<string, unknown>)[key],
+  ))
+}
+
 export function useConfig() {
   const [config, setConfig] = useState<Record<string, any> | null>(null)
   const [schema, setSchema] = useState<any>(null)
@@ -39,6 +61,8 @@ export function useConfig() {
   /** 本地服务没起来、正在等它自动再试（耗尽后页面上的“重试”也能手动再试）。 */
   const [waitingForService, setWaitingForService] = useState(false)
   const configRef = useRef<Record<string, any> | null>(null)
+  /** 已保存快照：最近一次从服务端拉到的配置，脏判定拿当前值跟它比。 */
+  const savedSnapshotRef = useRef<Record<string, any> | null>(null)
   const retryTimerRef = useRef<number | null>(null)
   const mountedRef = useRef(true)
   const firstLoadRef = useRef(true)
@@ -65,6 +89,7 @@ export function useConfig() {
       const configData = await readJsonWithTimeout(configRes)
       const schemaData = await readJsonWithTimeout(schemaRes)
       configRef.current = configData
+      savedSnapshotRef.current = JSON.parse(JSON.stringify(configData))
       setConfig(configData)
       setSchema(schemaData)
       setDirty(false)
@@ -72,6 +97,7 @@ export function useConfig() {
     } catch (err) {
       console.error('Failed to fetch config:', err)
       configRef.current = null
+      savedSnapshotRef.current = null
       setConfig(null)
       // 服务没起来：先报等服务的提示，10 秒后自动再拉一次，起来了
       // 页面自己就好了；不是服务问题才报原来的失败文案。
@@ -120,15 +146,20 @@ export function useConfig() {
     const next = writeConfigPath(prev, path, value)
     configRef.current = next
     setConfig(next)
-    // Server-persisted fields (e.g. resume upload) sync local state without dirtying.
-    if (options?.markDirty !== false) {
-      setDirty(true)
+    // Server-persisted fields (e.g. resume upload) sync local state without dirtying:
+    // the server already has this value, so the saved snapshot moves with it.
+    if (options?.markDirty === false) {
+      savedSnapshotRef.current = writeConfigPath(savedSnapshotRef.current ?? prev, path, value)
+      setDirty(!isConfigEqual(next, savedSnapshotRef.current))
+      return
     }
+    setDirty(!isConfigEqual(next, savedSnapshotRef.current))
   }, [])
 
-  const saveConfig = async () => {
+  /** 保存当前配置；返回保存是否成功，供“保存并离开”决定跳不跳。 */
+  const saveConfig = async (): Promise<boolean> => {
     const snapshot = configRef.current
-    if (!snapshot) return
+    if (!snapshot) return false
     setSaving(true)
     setMessage(null)
     try {
@@ -143,11 +174,14 @@ export function useConfig() {
         window.dispatchEvent(new Event('jianli-lieshou-config-saved'))
         setMessage({ type: 'success', text: '设置已经保存了' })
         setDirty(false)
+        return true
       } else {
         setMessage({ type: 'error', text: data.error || '保存失败' })
+        return false
       }
     } catch (err) {
       setMessage({ type: 'error', text: '网络错误' })
+      return false
     } finally {
       setSaving(false)
       setTimeout(() => setMessage(null), 3000)

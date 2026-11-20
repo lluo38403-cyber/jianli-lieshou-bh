@@ -204,6 +204,71 @@ describe('DashboardPage workbench task panel', () => {
     expect(within(results).getByRole('status').textContent).toContain('尚未配置有效简历')
   })
 
+  it('keeps the preflight check reachable after the getting started card disappears', async () => {
+    workbenchPayload = baseWorkbench({ funnel: { collected: 2 } })
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
+
+    expect(await screen.findByRole('heading', { name: '今天要做的事' })).toBeTruthy()
+    expect(screen.queryByRole('region', { name: '开始使用' })).toBeNull()
+    // 引导区没了，标题栏里只剩一份检查入口，点的还是同一个预检。
+    const checks = screen.getAllByRole('button', { name: '检查一下能不能跑' })
+    expect(checks).toHaveLength(1)
+    fireEvent.click(checks[0])
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/workbench/preflight?mode=full'))
+  })
+
+  it('offers one-click browser launch from the browser runtime preflight failure', async () => {
+    preflightResponse = () => jsonResponse({
+      ok: false,
+      checks: [{
+        id: 'browser_runtime', title: '浏览器运行组件', status: 'error',
+        message: '简历猎手浏览器运行组件未启动',
+        detail: '点“一键启动浏览器”，程序会自动打开浏览器并连上；还不行就点“再检查一次”。',
+        action: 'browser',
+      }],
+    })
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
+
+    const guide = await screen.findByRole('region', { name: '开始使用' })
+    fireEvent.click(within(guide).getByRole('button', { name: '检查一下能不能跑' }))
+    const results = await within(guide).findByRole('region', { name: '启动检查结果' })
+    expect(within(results).getByRole('status').textContent).toContain('浏览器运行组件未启动')
+    const preflightCalls = () => fetchMock.mock.calls.filter(call => String(call[0]) === '/api/workbench/preflight?mode=full').length
+    expect(preflightCalls()).toBe(1)
+    fireEvent.click(within(results).getByRole('button', { name: '一键启动浏览器' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/browser/launch', expect.objectContaining({ method: 'POST' })))
+    // 点后有反馈，启动成功后自动重新检查。
+    await waitFor(() => expect(screen.getByText('浏览器已启动。')).toBeTruthy())
+    await waitFor(() => expect(preflightCalls()).toBeGreaterThanOrEqual(2))
+  })
+
+  it('shows a failure message when one-click browser launch fails', async () => {
+    preflightResponse = () => jsonResponse({
+      ok: false,
+      checks: [{
+        id: 'browser_runtime', title: '浏览器运行组件', status: 'error',
+        message: '简历猎手浏览器运行组件未启动',
+        detail: '点“一键启动浏览器”，程序会自动打开浏览器并连上；还不行就点“再检查一次”。',
+        action: 'browser',
+      }],
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/browser/launch') throw new Error('拉不起来')
+      return fetchMock(input, init)
+    }))
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
+
+    const guide = await screen.findByRole('region', { name: '开始使用' })
+    fireEvent.click(within(guide).getByRole('button', { name: '检查一下能不能跑' }))
+    const results = await within(guide).findByRole('region', { name: '启动检查结果' })
+    fireEvent.click(within(results).getByRole('button', { name: '一键启动浏览器' }))
+    await waitFor(() => expect(screen.getByText(/再点一次试试/)).toBeTruthy())
+    // 失败后按钮还在，能再点一次，不会卡在“正在启动”。
+    expect((within(results).getByRole('button', { name: '一键启动浏览器' }) as HTMLButtonElement).disabled).toBe(false)
+    // 失败不自动重查：预检只调过一次（引导区那次）。
+    expect(fetchMock.mock.calls.filter(call => String(call[0]) === '/api/workbench/preflight?mode=full')).toHaveLength(1)
+  })
+
   it('shows per-job greet progress from task logs', async () => {
     workbenchPayload = baseWorkbench({
       task: buildTask({
@@ -588,12 +653,14 @@ describe('DashboardPage persisted preflight and platform login status', () => {
 
   it('shows the always-on platform login status and a relogin shortcut for the logged-out one', async () => {
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    // 行必须用新鲜时间戳：超过 10 分钟没更新的旧值会被卡片按“没查过”处理。
+    const checkedAt = new Date().toISOString()
     workbenchPayload = baseWorkbench({
       platform_login: {
-        boss: { status: 'logged_in', checked_at: '2026-11-19T08:00:00', detail: '' },
-        zhilian: { status: 'logged_out', checked_at: '2026-11-19T08:00:00', detail: '登录过期了' },
+        boss: { status: 'logged_in', checked_at: checkedAt, detail: '' },
+        zhilian: { status: 'logged_out', checked_at: checkedAt, detail: '登录过期了' },
         '51job': { status: 'unknown' },
-        liepin: { status: 'logged_in', checked_at: '2026-11-19T08:00:00', detail: '' },
+        liepin: { status: 'logged_in', checked_at: checkedAt, detail: '' },
       },
     })
     render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
@@ -604,6 +671,64 @@ describe('DashboardPage persisted preflight and platform login status', () => {
     // openPlatformLogin 现在先走后端 /api/browser/open，失败再回退 window.open：
     // fetchMock 对未知地址返回 {}，后端 ok 为假，于是异步回退。
     await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://www.zhaopin.com/', '_blank', 'noopener,noreferrer'))
+  })
+
+  it('replaces stale logged-out rows with fresh diagnostics on mount', async () => {
+    const diagnostics = {
+      ok: true, chrome: true,
+      boss_tab: { targetId: '1', url: 'https://www.zhipin.com/web/geek/job' },
+      zhilian_tab: { targetId: '2', url: 'https://www.zhaopin.com/' },
+      zhilian_page: { status: 'ready', message: '已发现智联搜索框，未发现登录墙' },
+      job51_tab: { targetId: '3', url: 'https://we.51job.com/pc/search' },
+      job51_page: { status: 'ready', message: '已发现前程无忧搜索框，未发现登录墙' },
+      liepin_tab: { targetId: '4', url: 'https://www.liepin.com/zhaopin/' },
+      liepin_page: { status: 'ready', message: '已发现猎聘搜索框，未发现登录墙' },
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/browser/diagnostics') return jsonResponse(diagnostics)
+      return fetchMock(input, init)
+    }))
+    // 库里是上次启动留下的旧“掉线”：挂载诊断没回来之前不能当成事实。
+    const stale = { status: 'logged_out', checked_at: '2026-11-19T08:00:00', detail: '登录过期了' }
+    workbenchPayload = baseWorkbench({
+      platform_login: { boss: stale, zhilian: stale, '51job': stale, liepin: stale },
+    })
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
+    const statusCard = await screen.findByRole('region', { name: '各平台登录状态' })
+    await waitFor(() => expect(within(statusCard).getAllByText('已登录')).toHaveLength(4))
+    expect(within(statusCard).queryByText('已掉线')).toBeNull()
+  })
+
+  it('refreshes only the login states from the card button', async () => {
+    const diagnostics = {
+      ok: true, chrome: true,
+      boss_tab: { targetId: '1', url: 'https://www.zhipin.com/web/geek/job' },
+      zhilian_tab: { targetId: '2', url: 'https://www.zhaopin.com/' },
+      zhilian_page: { status: 'login_required', message: '智联页面要求登录' },
+      job51_tab: { targetId: '3', url: 'https://we.51job.com/pc/search' },
+      job51_page: { status: 'ready', message: '已发现前程无忧搜索框，未发现登录墙' },
+      liepin_tab: { targetId: '4', url: 'https://www.liepin.com/zhaopin/' },
+      liepin_page: { status: 'ready', message: '已发现猎聘搜索框，未发现登录墙' },
+    }
+    const stubFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/browser/diagnostics' && init?.method === 'POST') return jsonResponse(diagnostics)
+      return fetchMock(input, init)
+    })
+    vi.stubGlobal('fetch', stubFetch)
+    workbenchPayload = baseWorkbench({ platform_login: { boss: { status: 'unknown' }, zhilian: { status: 'unknown' }, '51job': { status: 'unknown' }, liepin: { status: 'unknown' } } })
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
+    const statusCard = await screen.findByRole('region', { name: '各平台登录状态' })
+    expect(within(statusCard).getAllByText('还没查过')).toHaveLength(4)
+    fireEvent.click(within(statusCard).getByRole('button', { name: '刷新登录状态' }))
+    await waitFor(() => expect(within(statusCard).getByText(/已刷新/)).toBeTruthy())
+    expect(within(statusCard).getByText('已掉线')).toBeTruthy()
+    expect(within(statusCard).getByText('1 个平台掉线了，先重新登录再跑')).toBeTruthy()
+    expect(stubFetch.mock.calls.filter(([url, init]) =>
+      String(url) === '/api/browser/diagnostics' && (init as RequestInit)?.method === 'POST')).toHaveLength(1)
+    // 没走预检接口（那会跑全套检查还改写上次检查结果），也没触发整页
+    // 刷新：没因为这一次点刷新去读历史。
+    expect(stubFetch.mock.calls.filter(([url]) => String(url).startsWith('/api/workbench/preflight'))).toHaveLength(0)
+    expect(stubFetch.mock.calls.filter(([url]) => String(url).startsWith('/api/history?limit=50'))).toHaveLength(0)
   })
 
   it('offers one-tap login jumps for all four platforms in the getting-started card', async () => {

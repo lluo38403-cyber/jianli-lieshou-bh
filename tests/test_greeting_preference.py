@@ -36,6 +36,59 @@ def test_greeting_preference_is_bounded_and_cannot_replace_fixed_rules():
     assert "不得覆盖下方事实与安全要求" in captured["prompt"]
 
 
+def test_greeting_prompt_recruitment_type_both_is_not_unrecognized():
+    captured = {}
+
+    def fake_call(prompt, config, max_tokens=None, **kwargs):
+        captured["prompt"] = prompt
+        return "自然简短的招呼语"
+
+    with patch("bosshunter.ai.greeter._call_claude", side_effect=fake_call):
+        _generate_greeting_once(
+            {
+                "title": "产品经理",
+                "company": "示例公司",
+                "salary": "20-30K",
+                "education": "本科",
+                "recruitment_type": "both",
+                "jd": "负责产品规划。",
+                "score_reason": "经验匹配",
+                "source_platform": "boss",
+            },
+            "真实简历摘要",
+            {"profile": {}},
+        )
+
+    assert "招聘类型：校招、社招均可" in captured["prompt"]
+
+
+def test_greeting_prompt_recruitment_type_old_values_unchanged():
+    captured = {}
+
+    def fake_call(prompt, config, max_tokens=None, **kwargs):
+        captured["prompt"] = prompt
+        return "自然简短的招呼语"
+
+    job = {
+        "title": "产品经理",
+        "company": "示例公司",
+        "salary": "20-30K",
+        "education": "本科",
+        "recruitment_type": "experienced",
+        "jd": "负责产品规划。",
+        "score_reason": "经验匹配",
+        "source_platform": "boss",
+    }
+    with patch("bosshunter.ai.greeter._call_claude", side_effect=fake_call):
+        _generate_greeting_once(job, "真实简历摘要", {"profile": {}})
+    assert "招聘类型：社招" in captured["prompt"]
+
+    job["recruitment_type"] = ""
+    with patch("bosshunter.ai.greeter._call_claude", side_effect=fake_call):
+        _generate_greeting_once(job, "真实简历摘要", {"profile": {}})
+    assert "招聘类型：未识别" in captured["prompt"]
+
+
 def test_positive_match_reason_removes_missing_suffix():
     reason = "后端技能扎实，项目经验匹配。 | 缺失: 缺乏大型分布式系统架构经验"
 

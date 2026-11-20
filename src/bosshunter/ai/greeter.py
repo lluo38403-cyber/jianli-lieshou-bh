@@ -473,7 +473,7 @@ def _generate_greeting_once(
         company=job["company"],
         salary=job["salary"] or "面议",
         education=job.get("education", "") or "未识别",
-        recruitment_type={"campus": "校招", "experienced": "社招"}.get(
+        recruitment_type={"campus": "校招", "experienced": "社招", "both": "校招、社招均可"}.get(
             job.get("recruitment_type", ""), "未识别"
         ),
         jd_summary=jd_summary,

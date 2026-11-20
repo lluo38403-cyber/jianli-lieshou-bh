@@ -3,6 +3,7 @@ import { Sidebar } from './components/layout/Sidebar'
 import { Header } from './components/layout/Header'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { UpdateProvider } from './hooks/useUpdate'
+import { UnsavedChangesProvider } from './hooks/useUnsavedChangesGuard'
 import DashboardPage from './pages/DashboardPage'
 import ConfigPage from './pages/ConfigPage'
 import AdminPage from './pages/AdminPage'
@@ -20,6 +21,7 @@ function MainLayout() {
   const location = useLocation()
   return (
     <UpdateProvider>
+    <UnsavedChangesProvider>
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
       <Sidebar />
       <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
@@ -40,6 +42,7 @@ function MainLayout() {
       </div>
       <OnboardingTour />
     </div>
+    </UnsavedChangesProvider>
     </UpdateProvider>
   )
 }

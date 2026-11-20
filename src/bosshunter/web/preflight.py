@@ -63,7 +63,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 		try:
 			checks.extend(check_browser_connection(deepcopy(config), collection_options, allow_launch=allow_launch))
 		except Exception:
-			checks.append(_check("browser_runtime", "浏览器连接", "error", "浏览器连接检测失败", "请重新启动 BossHunter 后再试。", "browser"))
+			checks.append(_check("browser_runtime", "浏览器连接", "error", "浏览器连接检测失败", "请重新启动简历猎手后再试。", "browser"))
 		return checks
 
 	with ThreadPoolExecutor(max_workers=2) as executor:
@@ -75,7 +75,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 			))
 		pending_checks.append((
 			executor.submit(check_browser_connection, deepcopy(config), collection_options, allow_launch),
-			_check("browser_runtime", "浏览器连接", "error", "浏览器连接检测失败", "请重新启动 BossHunter 后再试。", "browser"),
+			_check("browser_runtime", "浏览器连接", "error", "浏览器连接检测失败", "请重新启动简历猎手后再试。", "browser"),
 		))
 		for future, fallback in pending_checks:
 			try:
@@ -307,7 +307,7 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 				"AI 接口连接",
 				"warning",
 				"接口可访问，但无法自动验证模型",
-				"该兼容服务未提供模型列表接口；BossHunter 启动时仍会尝试消息接口。",
+				"该兼容服务未提供模型列表接口；简历猎手启动时仍会尝试消息接口。",
 				"config",
 			)
 		]
@@ -380,7 +380,7 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 				"browser_runtime",
 				"浏览器运行组件",
 				"pass",
-				"BossHunter 浏览器运行组件正常",
+				"简历猎手浏览器运行组件正常",
 				f"本地连接地址：{result.get('runtime_url') or '已就绪'}。",
 			)
 		)
@@ -391,7 +391,7 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 				"浏览器运行组件",
 				"error",
 				"缺少可用的 Node.js",
-				"BossHunter 无法启动浏览器连接组件，请安装 Node.js 22+ 后重启。",
+				"简历猎手无法启动浏览器连接组件，请安装 Node.js 22+ 后重启。",
 				"browser",
 			)
 		)
@@ -400,7 +400,7 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 			message = "浏览器连接端口被其他程序占用"
 			detail = "请停止占用本地 Runtime 端口的程序，或修改 browser.proxy_port 后重启。"
 		else:
-			message = "BossHunter 浏览器运行组件未启动"
+			message = "简历猎手浏览器运行组件未启动"
 			detail = "点“一键启动浏览器”，程序会自动打开浏览器并连上；还不行就点“再检查一次”。"
 		checks.append(_check("browser_runtime", "浏览器运行组件", "error", message, detail, "browser"))
 

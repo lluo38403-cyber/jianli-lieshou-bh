@@ -187,6 +187,126 @@ describe('dashboard progress polling', () => {
   })
 })
 
+describe('platform login states', () => {
+  const oldLogin = {
+    boss: { status: 'logged_out', checked_at: '2026-11-19T08:00:00', detail: '登录过期了' },
+    zhilian: { status: 'logged_out', checked_at: '2026-11-19T08:00:00', detail: '登录过期了' },
+    '51job': { status: 'unknown' },
+    liepin: { status: 'unknown' },
+  }
+  const diagnosticsAllReady = {
+    ok: true,
+    chrome: true,
+    boss_tab: { targetId: '1', url: 'https://www.zhipin.com/web/geek/job' },
+    zhilian_tab: { targetId: '2', url: 'https://www.zhaopin.com/' },
+    zhilian_page: { status: 'ready', message: '已发现智联搜索框，未发现登录墙' },
+    job51_tab: { targetId: '3', url: 'https://we.51job.com/pc/search' },
+    job51_page: { status: 'ready', message: '已发现前程无忧搜索框，未发现登录墙' },
+    liepin_tab: { targetId: '4', url: 'https://www.liepin.com/zhaopin/' },
+    liepin_page: { status: 'ready', message: '已发现猎聘搜索框，未发现登录墙' },
+  }
+
+  it('refreshPlatformLogin only refreshes login states, not the whole page', async () => {
+    let workbenchPayload: Record<string, unknown> = {
+      pending_confirmation: [], pending_greetings: [], send_errors: [], needs_resume: [],
+      platform_login: oldLogin,
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/browser/diagnostics' && init?.method === 'POST') return jsonResponse(diagnosticsAllReady)
+      if (url === '/api/workbench') return jsonResponse(workbenchPayload)
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { result, unmount } = renderHook(() => useDashboard('workbench'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.workbench.platform_login?.boss?.status).toBe('logged_out')
+
+    let data: unknown
+    await act(async () => { data = await result.current.refreshPlatformLogin() })
+    expect(result.current.workbench.platform_login?.boss?.status).toBe('logged_in')
+    expect(result.current.workbench.platform_login?.zhilian?.status).toBe('logged_in')
+    expect(result.current.platformLoginRefreshedAt).toBeInstanceOf(Date)
+    expect(result.current.platformLoginRefreshing).toBe(false)
+    expect(result.current.platformLoginRefreshError).toBe('')
+    expect(data).toEqual(diagnosticsAllReady)
+    // 只调了一次诊断接口，没碰整页 refresh 的历史接口，也没重读 workbench。
+    expect(fetchMock.mock.calls.filter(([url, init]) =>
+      String(url) === '/api/browser/diagnostics' && (init as RequestInit)?.method === 'POST')).toHaveLength(1)
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/api/history'))).toHaveLength(0)
+    // 紧接着的轮询回来的旧库值盖不回新值。
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.workbench.platform_login?.boss?.status).toBe('logged_in')
+    // 库里出现更新的掉线行时，新的库值才接管。
+    workbenchPayload = {
+      ...workbenchPayload,
+      platform_login: { ...oldLogin, boss: { status: 'logged_out', checked_at: new Date().toISOString(), detail: '又掉了' } },
+    }
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.workbench.platform_login?.boss?.status).toBe('logged_out')
+    expect(result.current.workbench.platform_login?.boss?.detail).toBe('又掉了')
+    unmount()
+  })
+
+  it('refreshPlatformLogin keeps old values and explains when the browser is down', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/browser/diagnostics' && init?.method === 'POST') {
+        return jsonResponse({ ok: false, chrome: false, error_kind: 'connection_failed', message: '浏览器已经装好了，但是现在连不上。' })
+      }
+      if (url === '/api/workbench') return jsonResponse({ platform_login: oldLogin })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { result, unmount } = renderHook(() => useDashboard('workbench'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await act(async () => { await result.current.refreshPlatformLogin() })
+    expect(result.current.workbench.platform_login?.boss?.status).toBe('logged_out')
+    expect(result.current.platformLoginRefreshedAt).toBeNull()
+    expect(result.current.platformLoginRefreshError).toContain('浏览器没连上')
+    unmount()
+  })
+
+  it('refreshPlatformLogin reports a plain failure when the request itself fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/browser/diagnostics') throw new TypeError('Failed to fetch')
+      if (url === '/api/workbench') return jsonResponse({ platform_login: oldLogin })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { result, unmount } = renderHook(() => useDashboard('workbench'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await act(async () => { await result.current.refreshPlatformLogin() })
+    expect(result.current.workbench.platform_login?.boss?.status).toBe('logged_out')
+    expect(result.current.platformLoginRefreshedAt).toBeNull()
+    expect(result.current.platformLoginRefreshError).toContain('没刷出来')
+    expect(result.current.platformLoginRefreshing).toBe(false)
+    unmount()
+  })
+
+  it('applyPlatformLoginStates only touches the login slice', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({
+      pending_confirmation: [], pending_greetings: [], send_errors: [], needs_resume: [],
+      platform_login: oldLogin,
+    })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result, unmount } = renderHook(() => useDashboard('workbench'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => {
+      result.current.applyPlatformLoginStates({
+        boss: { status: 'logged_in', checked_at: new Date().toISOString(), detail: '新' },
+      })
+    })
+    expect(result.current.workbench.platform_login?.boss?.status).toBe('logged_in')
+    expect(result.current.workbench.platform_login?.zhilian?.status).toBe('logged_out')
+    expect(result.current.workbench.pending_greetings).toEqual([])
+    unmount()
+  })
+})
+
 describe('dashboard does not stall on a stalled response body', () => {
   it('clears the skeleton when res.json() never resolves', async () => {
     vi.useFakeTimers()

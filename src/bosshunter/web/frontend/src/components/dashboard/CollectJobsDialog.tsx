@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, RefreshCw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -123,6 +123,58 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   const [zhilianCities, setZhilianCities] = useState<PlatformCityOption[]>([])
   const [job51Cities, setJob51Cities] = useState<PlatformCityOption[]>([])
   const [liepinCities, setLiepinCities] = useState<PlatformCityOption[]>([])
+  const panelRef = useRef<HTMLDivElement>(null)
+  const previouslyFocusedRef = useRef<Element | null>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const startingRef = useRef(starting)
+  startingRef.current = starting
+
+  /** 弹窗开着时：焦点锁在弹窗里（Tab 跑不到底层按钮上）、Esc 关闭、
+   * 背景页面不滚动；关掉后焦点回到打开前的位置。 */
+  useEffect(() => {
+    if (!open) return
+    previouslyFocusedRef.current = document.activeElement
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    panelRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (!startingRef.current) onCloseRef.current()
+        return
+      }
+      if (event.key !== 'Tab' || !panelRef.current) return
+      const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ))
+      if (!focusable.length) {
+        event.preventDefault()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      // 焦点在面板容器本身（刚打开时）或已跑到外面时，也拉回弹窗里。
+      if (!panelRef.current.contains(document.activeElement)) {
+        event.preventDefault()
+        ;(event.shiftKey ? last : first).focus()
+        return
+      }
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = previousOverflow
+      const previous = previouslyFocusedRef.current
+      if (previous instanceof HTMLElement) previous.focus()
+    }
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -325,8 +377,10 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-label="找新岗位">
-      <div className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-card-border bg-card shadow-2xl">
+    // 全屏模态：z-[60] 高于右下角更新卡片（z-50，无遮罩）和验证弹窗（z-50），
+    // 不管挂载顺序如何都盖在最上面；更新卡片只是被暂时盖住，关掉弹窗后还在，能继续点。
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-label="找新岗位">
+      <div ref={panelRef} tabIndex={-1} className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-card-border bg-card shadow-2xl focus:outline-none">
         <div className="flex items-start justify-between gap-4 px-6 pt-6">
           <div className="min-w-0">
             <div className="text-xs font-black tracking-[0.18em] text-primary">COLLECT JOBS</div>

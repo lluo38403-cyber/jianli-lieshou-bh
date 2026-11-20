@@ -253,7 +253,7 @@ class WorkbenchLoginStateTests(_ServerTestBase):
                 "id": "browser_runtime",
                 "title": "浏览器运行组件",
                 "status": "pass",
-                "message": "BossHunter 浏览器运行组件正常",
+                "message": "简历猎手浏览器运行组件正常",
                 "detail": "本地连接地址：http://127.0.0.1:3456。",
             }
         ]

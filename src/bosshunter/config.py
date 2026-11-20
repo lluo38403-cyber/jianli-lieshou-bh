@@ -155,7 +155,7 @@ DEFAULTS: dict[str, Any] = {
         "resume_output_dir": "./data/resumes",
         "target_cities": ["北京"],
         "education": "",
-        "recruitment_type": "",
+        "recruitment_type": "both",
         "greeting_preference": "",
         "ai_greeting_enabled": False,
         "fixed_greeting": "您好，我对贵公司的这个岗位很感兴趣，简历已附上，期待与您进一步沟通，谢谢！",
