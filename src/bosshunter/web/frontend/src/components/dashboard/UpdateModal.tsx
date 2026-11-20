@@ -135,6 +135,7 @@ export function UpdateModal({ update, manualCheckSignal = 0, onOpenChange }: Upd
       {phase === 'error' ? (
         <p className="mt-1 text-sm text-muted">
           {errorCopy?.tip || '点“再试一次”。'}
+          {info.downloadCached ? '安装包已经下好了，再试一次不用重新下载。' : null}
           {manualDownloadUrl
             ? '也可以点“手动下载”去店铺拿最新安装包。'
             : '也可以去群里或店铺拿最新安装包。'}

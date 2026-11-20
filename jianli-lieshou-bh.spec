@@ -40,7 +40,6 @@ a = Analysis(
         "bosshunter.browser",
         "bosshunter.browser.client",
         "bosshunter.browser.runtime",
-        "bosshunter.browser.session",
         "bosshunter.browser.diagnostics",
         "bosshunter.browser.ownership",
         "patchright",

@@ -465,6 +465,41 @@ def build_update_script() -> str:
     also logs its exit code to update.log immediately (captured
     before the errorlevel check), so the next copy failure names
     its cause in the log instead of guessing.
+
+    No bare console program in this file: CREATE_NO_WINDOW on the
+    directly created cmd.exe does NOT hide the grandchildren it
+    launches (robocopy / ping / taskkill would each allocate their own
+    visible console — the black window users saw). Every console call
+    therefore runs inside `powershell -WindowStyle Hidden -Command`,
+    whose hidden console the child inherits; delays use Start-Sleep
+    inside the same hidden PowerShell instead of ping, and robocopy's
+    exit code is carried out with `exit $LASTEXITCODE` so the
+    `set "RC=%errorlevel%"` lines still see the real robocopy code.
+    `start /min` is not a substitute (still visible on the taskbar).
+
+    Before any copy, :procsweep kills processes by ExecutablePath, not
+    by image name: the browser runtime's node.exe
+    (`_internal\\patchright\\driver\\node.exe`) becomes an orphan when
+    the exe exits without killing its children, and the old same-name
+    sweep could not reach it, so robocopy failed on _internal. Only
+    processes whose executable lives inside the install directory are
+    killed (they can only be our own packaged files); `taskkill
+    node.exe` / `chrome.exe` by image name would kill the user's
+    browser and unrelated node processes and must never come back.
+    After the kill the script waits 2s and proves node.exe can be
+    opened for read/write; if it is still locked it logs the fact and
+    goes to :fail_stuck instead of failing halfway through the copy.
+
+    Single-window handoff: the old panel closes itself first (the
+    frontend closes its own window once apply succeeds, and
+    apply_update also tries the held --app handle), the swap runs with
+    no visible console at all, and the batch relaunches the new exe,
+    which opens one fresh panel. At no point are two panels (or a
+    panel plus a black console) on screen together. The batch never
+    trusts that the panel is gone: :waitloop waits for the old exe
+    PID to die, and :precopy re-probes that PID immediately before
+    any robocopy — if it is still alive the update fails safe
+    (:fail_stuck) instead of copying over a live process.
     """
     return (
         "@echo off\r\n"
@@ -486,6 +521,28 @@ def build_update_script() -> str:
         "rem 进程还活着：上游命令早退出了，它还在等管道输入不返回。\r\n"
         "rem 改用 PowerShell 按 PID+进程名直接查（无管道），每次约\r\n"
         "rem 1 秒，60 次上限仍在一到两分钟里。\r\n"
+        "rem 黑窗口：CREATE_NO_WINDOW 只让直接创建的 cmd 不开窗口，cmd 拉起的\r\n"
+        "rem robocopy / ping / taskkill 是控制台程序，没有可继承的控制台时会\r\n"
+        "rem 自己分配可见窗口——这就是 v1.1.9 用户看到的黑窗口。所以 bat 里\r\n"
+        "rem 所有控制台调用都经 powershell -WindowStyle Hidden 走：隐藏的\r\n"
+        "rem PowerShell 自带隐藏控制台，子进程继承它、不再自己开可见窗口；\r\n"
+        "rem 延时不用 ping，改用隐藏 PowerShell 里的 Start-Sleep；输出照旧\r\n"
+        "rem 重定向到 update.log。start /min 不接受（任务栏仍可见）。\r\n"
+        "rem 占住文件的进程：主程序退出时不杀子进程，浏览器运行时的 node.exe\r\n"
+        "rem （安装目录下 _internal\\patchright\\driver\\node.exe）会变成孤儿，\r\n"
+        "rem :procsweep 只杀同名 exe 杀不到它，robocopy 换 _internal 就失败。\r\n"
+        "rem 所以换文件前先按 ExecutablePath 精确杀：只杀可执行路径在安装\r\n"
+        "rem 目录里的进程（只能是我们自己的打包文件），绝不按映像名\r\n"
+        "rem taskkill node.exe / chrome.exe（会误杀用户浏览器和其他 node）。\r\n"
+        "rem 杀后等 2 秒、确认 node.exe 能打开再继续；还占着就写进 update.log\r\n"
+        "rem 并走失败流程，不静默跳过。\r\n"
+        "rem 单窗口接力：点更新后旧面板自己先关（前端 apply 成功就\r\n"
+        "rem window.close() 自关，exe 这里再经句柄关一次），换文件全程\r\n"
+        "rem 不弹黑窗口，换完 bat 重拉新 exe、新 exe 再开一个新面板；\r\n"
+        "rem 任何时刻只能有一个窗口。旧面板没关掉时 bat 也绝不硬拷：\r\n"
+        "rem :waitloop 等旧 exe PID 死透，:precopy 里任何 robocopy 之前\r\n"
+        "rem 再查一次 PID，活着就走失败流程（用户可能在等待那几秒里\r\n"
+        "rem 又双击打开了旧版）。\r\n"
         "setlocal\r\n"
         'set "STAGING=%~1"\r\n'
         'if "%STAGING:~-1%"=="\\" set "STAGING=%STAGING:~0,-1%"\r\n'
@@ -501,36 +558,47 @@ def build_update_script() -> str:
         'echo [%date% %time%] 开始更新，正在等主程序退出... > "%LOG%"\r\n'
         "set /a WAITED=0\r\n"
         ":waitloop\r\n"
-        'powershell -NoProfile -NonInteractive -Command "$p = Get-Process -Id %PID% -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq [System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) { exit 0 } else { exit 1 }" <nul\r\n'
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "$p = Get-Process -Id %PID% -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq [System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) { exit 0 } else { exit 1 }" <nul\r\n'
         "if %errorlevel% neq 0 goto :procsweep\r\n"
         "set /a WAITED+=1\r\n"
         "if %WAITED% geq 60 goto :killtree\r\n"
-        "ping -n 2 127.0.0.1 >nul\r\n"
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Sleep -Seconds 1" <nul\r\n'
         "goto :waitloop\r\n"
         ":killtree\r\n"
         'echo [%date% %time%] 等了 60 次（约一分钟）主程序还没退出，正在强制结束它和它打开的子程序... >> "%LOG%"\r\n'
-        'taskkill /PID %PID% /T /F >> "%LOG%" 2>&1\r\n'
-        "ping -n 6 127.0.0.1 >nul\r\n"
-        'powershell -NoProfile -NonInteractive -Command "$p = Get-Process -Id %PID% -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq [System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) { exit 0 } else { exit 1 }" <nul\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"& taskkill /PID %PID% /T /F; exit $LASTEXITCODE\" >> \"%LOG%\" 2>&1\r\n"
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Sleep -Seconds 5" <nul\r\n'
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "$p = Get-Process -Id %PID% -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq [System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) { exit 0 } else { exit 1 }" <nul\r\n'
         "if %errorlevel% equ 0 goto :fail_stuck\r\n"
         ":procsweep\r\n"
-        'powershell -NoProfile -NonInteractive -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
+        'echo [%date% %time%] 正在结束安装目录里的残留进程（浏览器运行时的 node.exe 等）... >> "%LOG%"\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$installDir = '%INSTALL_DIR%'; $nodePath = $installDir + '\\_internal\\patchright\\driver\\node.exe'; $doomed = @(); foreach ($p in Get-CimInstance Win32_Process) { if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($installDir + '\\', [System.StringComparison]::OrdinalIgnoreCase)) { $doomed += $p } }; foreach ($p in $doomed) { try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop } catch { Write-Output 'kill failed' } }; Start-Sleep -Seconds 2; if (Test-Path $nodePath) { try { $fs = [System.IO.File]::Open($nodePath, 'Open', 'ReadWrite', 'None'); $fs.Close(); exit 0 } catch { Write-Output 'node.exe still locked'; exit 1 } } else { exit 0 }\" >> \"%LOG%\" 2>&1\r\n"
+        'set "KILL_RC=%errorlevel%"\r\n'
+        'if %KILL_RC% neq 0 echo [%date% %time%] 安装目录里的 node.exe 还占着，换文件会失败，先停在这里。 >> "%LOG%"\r\n'
+        "if %KILL_RC% neq 0 goto :fail_stuck\r\n"
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
         "if %errorlevel% neq 0 goto :precopy\r\n"
         'echo [%date% %time%] 还有同名程序在跑（会占住要换的文件），正在结束... >> "%LOG%"\r\n'
-        'taskkill /F /IM "%EXE_NAME%" /T >> "%LOG%" 2>&1\r\n'
-        "ping -n 4 127.0.0.1 >nul\r\n"
-        'powershell -NoProfile -NonInteractive -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"& taskkill /F /IM '%EXE_NAME%' /T; exit $LASTEXITCODE\" >> \"%LOG%\" 2>&1\r\n"
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Sleep -Seconds 3" <nul\r\n'
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
         "if %errorlevel% equ 0 goto :fail_stuck\r\n"
         ":precopy\r\n"
+        'rem 最后关口：任何 robocopy 之前再确认一次旧 exe PID 已死。\r\n'
+        'rem :waitloop 等过、:procsweep 杀过，但用户可能在这几秒里又双击\r\n'
+        'rem 打开了旧版（或杀失败了）：活着就先停在这里走失败流程，\r\n'
+        'rem 绝不带着活进程硬拷——硬拷必然撞锁，还可能把新旧文件混在一起。\r\n'
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "$p = Get-Process -Id %PID% -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq [System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) { exit 0 } else { exit 1 }" <nul\r\n'
+        'if %errorlevel% equ 0 goto :fail_stuck\r\n'
         'if not exist "%STAGING%\\%EXE_NAME%" goto :fail_nopkg\r\n'
         'if not exist "%STAGING%\\_internal\\" goto :fail_nopkg\r\n'
         ":copy\r\n"
         'echo [%date% %time%] 主程序已退出，正在换上新版本... >> "%LOG%"\r\n'
-        'robocopy "%STAGING%" "%INSTALL_DIR%" /E /IS /R:5 /W:3 /XD data /XF config.yaml >> "%LOG%" 2>&1\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"& robocopy '%STAGING%' '%INSTALL_DIR%' /E /IS /R:5 /W:3 /XD data /XF config.yaml; exit $LASTEXITCODE\" >> \"%LOG%\" 2>&1\r\n"
         'set "RC=%errorlevel%"\r\n'
         'echo [%date% %time%] robocopy 换主文件退出码 %RC% >> "%LOG%"\r\n'
         'if %RC% geq 8 goto :rollback\r\n'
-        'robocopy "%STAGING%\\_internal" "%INSTALL_DIR%\\_internal" /MIR /R:3 /W:2 >> "%LOG%" 2>&1\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"& robocopy '%STAGING%\\_internal' '%INSTALL_DIR%\\_internal' /MIR /R:3 /W:2; exit $LASTEXITCODE\" >> \"%LOG%\" 2>&1\r\n"
         'set "RC=%errorlevel%"\r\n'
         'echo [%date% %time%] robocopy 换 _internal 退出码 %RC% >> "%LOG%"\r\n'
         'if %RC% geq 8 goto :rollback\r\n'
@@ -543,11 +611,11 @@ def build_update_script() -> str:
         ":rollback\r\n"
         'echo [%date% %time%] 复制失败，正在用备份恢复旧版本... >> "%LOG%"\r\n'
         'if "%BACKUP%"=="" goto :fail_copy\r\n'
-        'robocopy "%INSTALL_DIR%\\%BACKUP%" "%INSTALL_DIR%" /E /IS /R:3 /W:2 /XD data /XF config.yaml >> "%LOG%" 2>&1\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"& robocopy '%INSTALL_DIR%\\%BACKUP%' '%INSTALL_DIR%' /E /IS /R:3 /W:2 /XD data /XF config.yaml; exit $LASTEXITCODE\" >> \"%LOG%\" 2>&1\r\n"
         'set "RC=%errorlevel%"\r\n'
         'echo [%date% %time%] robocopy 恢复主文件退出码 %RC% >> "%LOG%"\r\n'
         'if not exist "%INSTALL_DIR%\\%BACKUP%\\_internal\\" goto :rollback_after_internal\r\n'
-        'robocopy "%INSTALL_DIR%\\%BACKUP%\\_internal" "%INSTALL_DIR%\\_internal" /MIR /R:3 /W:2 >> "%LOG%" 2>&1\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"& robocopy '%INSTALL_DIR%\\%BACKUP%\\_internal' '%INSTALL_DIR%\\_internal' /MIR /R:3 /W:2; exit $LASTEXITCODE\" >> \"%LOG%\" 2>&1\r\n"
         'set "RC=%errorlevel%"\r\n'
         'echo [%date% %time%] robocopy 恢复 _internal 退出码 %RC% >> "%LOG%"\r\n'
         ":rollback_after_internal\r\n"
@@ -565,7 +633,7 @@ def build_update_script() -> str:
         ":fail_write\r\n"
         'echo [%date% %time%] 更新没换成，旧版本还能用。 >> "%LOG%"\r\n'
         '> "%RESULT%" echo {"status": "failed", "expected_version": "%EXPECTED%", "reason_code": "%FAIL_CODE%"}\r\n'
-        'powershell -NoProfile -NonInteractive -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
         "if %errorlevel% equ 0 goto :fail_exit\r\n"
         'if exist "%INSTALL_DIR%\\%EXE_NAME%" start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
         ":fail_exit\r\n"
@@ -682,6 +750,8 @@ def consume_pending_update(install_dir: str | Path) -> dict | None:
             "actual_version": __version__,
             "reason": "",
         }
+        # 换版成功：缓存的包已经用完，清掉，免得下次更新误认旧包。
+        clear_cached_update(install_dir)
     elif isinstance(expected, str) and expected:
         if bat_status == "failed":
             code = bat_code if isinstance(bat_code, str) else "unknown"
@@ -807,12 +877,16 @@ def _progress(downloaded: int, total: int) -> None:
         _set_status(progress=-1)
 
 
-def run_check(config: dict, timeout: float = CHECK_TIMEOUT, force: bool = False) -> dict[str, Any]:
+def run_check(config: dict, timeout: float = CHECK_TIMEOUT, force: bool = False,
+              install_dir: str | Path | None = None) -> dict[str, Any]:
     """Synchronous version check with a freshness cache. Never raises.
 
     A check done less than CHECK_CACHE_SECONDS ago is reused unless
     `force` is set. Check failures are silent: they leave the state
-    as "no update known" instead of erroring.
+    as "no update known" instead of erroring. When a newer version is
+    found and the release zip is already cached on disk (see
+    load_cached_update), the state goes straight to "ready" without
+    downloading again.
     """
     now = time.monotonic()
     with _STATE_LOCK:
@@ -826,6 +900,17 @@ def run_check(config: dict, timeout: float = CHECK_TIMEOUT, force: bool = False)
         info = check_for_update(config, timeout=timeout)
     except Exception:
         info = None
+    if info:
+        target = Path(install_dir) if install_dir is not None else get_install_dir()
+        if target is not None and _restore_from_cache(target, info):
+            _set_status(
+                status="ready",
+                update_available=True,
+                info=info,
+                checked_at=time.monotonic(),
+                message="新版本下好了",
+            )
+            return get_status()
     _set_status(
         status="idle",
         update_available=bool(info),
@@ -836,11 +921,13 @@ def run_check(config: dict, timeout: float = CHECK_TIMEOUT, force: bool = False)
     return get_status()
 
 
-def start_download(config: dict) -> dict[str, Any]:
+def start_download(config: dict, install_dir: str | Path | None = None) -> dict[str, Any]:
     """Start the background download of the checked release.
 
     Raises UpdateError when there is nothing to download or a download
-    is already running. Returns the current state immediately.
+    is already running. Returns the current state immediately. When
+    the release zip is already cached on disk, restores the ready
+    state from the cache instead of downloading again.
     """
     with _STATE_LOCK:
         info = _STATE.get("info")
@@ -851,19 +938,27 @@ def start_download(config: dict) -> dict[str, Any]:
         return get_status()
     if status == "ready":
         return get_status()
+    target = Path(install_dir) if install_dir is not None else get_install_dir()
+    if target is not None and _restore_from_cache(target, info):
+        return get_status()
     _set_status(status="downloading", progress=0, message="正在下载新版本…", error="")
-    thread = threading.Thread(target=_download_worker, args=(config, dict(info)), daemon=True)
+    thread = threading.Thread(target=_download_worker, args=(config, dict(info), target), daemon=True)
     thread.start()
     return get_status()
 
 
-def _download_worker(config: dict, info: dict) -> None:
+def _download_worker(config: dict, info: dict, install_dir: str | Path | None = None) -> None:
     tmpdir = tempfile.mkdtemp(prefix="jianli-update-")
     try:
         zip_path = download_update(config, info, tmpdir, progress_cb=_progress)
         _set_status(status="verifying", progress=100, message="正在检查下载好的文件…")
         staging = extract_update(zip_path, Path(tmpdir) / "staging")
         payload_root = validate_staged_payload(find_payload_root(staging))
+        # 包下好、校验通过就把指针落盘：exe 退出时内存里的 tmpdir
+        # 路径就丢了，下次启动只能认 data/update-cache 里的包。
+        target = Path(install_dir) if install_dir is not None else get_install_dir()
+        if target is not None:
+            save_cached_update(target, info, zip_path)
         _set_status(
             status="ready",
             progress=100,
@@ -877,6 +972,187 @@ def _download_worker(config: dict, info: dict) -> None:
     except Exception:
         _remove_quietly(Path(tmpdir))
         _set_status(status="error", progress=0, message="", error="下载出问题了，稍后再试。", zip_path=None, staging_dir=None)
+
+
+# ─── 已下载包的落盘缓存 ─────────────────────────────────────
+# 旧版 exe 退出时不杀子进程、内存里的 zip/staging 路径随 os._exit
+# 一起消失：包其实还在磁盘上（bat 失败时不删 staging），但重开后
+# 后端认不出它，只能重下。改成下载+校验通过就把包和指针落盘到
+# 安装目录下的 data/update-cache/（data/ 已被换文件排除，更新卷
+# 不进去；换版成功后清掉）。
+
+UPDATE_CACHE_DIRNAME = "update-cache"
+UPDATE_CACHE_MANIFEST = "update-ready.json"
+
+
+def _update_cache_dir(install_dir: str | Path | None = None) -> Path | None:
+    """data/update-cache/ 的位置；拿不到安装目录时返回 None（不缓存）。"""
+    target = Path(install_dir) if install_dir is not None else get_install_dir()
+    if target is None:
+        return None
+    return target / "data" / UPDATE_CACHE_DIRNAME
+
+
+def _cached_zip_name(version: str) -> str:
+    return f"jianli-lieshou-{version}.zip"
+
+
+def save_cached_update(install_dir: str | Path, info: dict, zip_path: str | Path) -> dict | None:
+    """把校验通过的 zip 存进缓存并写 manifest，返回 manifest 或 None。
+
+    只存 sha256 与 info 一致的包；写文件先落 .tmp 再 os.replace，
+    免得半截文件被当成好包。任何一步出错都只返回 None，绝不挡更新。
+    """
+    try:
+        cache_dir = _update_cache_dir(install_dir)
+        if cache_dir is None:
+            return None
+        version = info.get("version") if isinstance(info, dict) else None
+        sha = str(info.get("sha256", "")).lower() if isinstance(info, dict) else ""
+        if not isinstance(version, str) or not version:
+            return None
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            return None
+        src = Path(zip_path)
+        if not src.is_file():
+            return None
+        digest = hashlib.sha256()
+        size = 0
+        with open(src, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+                size += len(chunk)
+        if digest.hexdigest() != sha:
+            return None
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cached_zip = cache_dir / _cached_zip_name(version)
+        tmp_zip = cache_dir / (cached_zip.name + ".tmp")
+        shutil.copyfile(src, tmp_zip)
+        os.replace(tmp_zip, cached_zip)
+        # 新包进来，旧版本的缓存 zip 就没用了，顺手清掉。
+        for old in cache_dir.glob("jianli-lieshou-*.zip"):
+            if old != cached_zip:
+                _remove_quietly(old)
+        manifest = {
+            "version": version,
+            "sha256": sha,
+            "size": size,
+            "zip_path": str(cached_zip),
+            "downloaded_at": time.time(),
+        }
+        tmp_manifest = cache_dir / (UPDATE_CACHE_MANIFEST + ".tmp")
+        tmp_manifest.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp_manifest, cache_dir / UPDATE_CACHE_MANIFEST)
+        return dict(manifest)
+    except Exception:
+        return None
+
+
+def load_cached_update(install_dir: str | Path | None = None) -> dict | None:
+    """读缓存 manifest，校验通过才返回；否则返回 None。
+
+    校验：manifest 是合法 JSON、版本非空、sha256 是 64 位 hex、
+    zip_path 必须就是缓存目录里该版本的包（防篡改的 manifest 把
+    路径指到别处）、文件存在、大小对得上、内容 sha256 对得上。
+    只读不删：清缓存是调用方（恢复失败 / 版本不符 / 换版成功）的事。
+    """
+    cache_dir = _update_cache_dir(install_dir)
+    if cache_dir is None:
+        return None
+    try:
+        manifest = json.loads((cache_dir / UPDATE_CACHE_MANIFEST).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    version = manifest.get("version")
+    sha = manifest.get("sha256")
+    size = manifest.get("size")
+    zip_path = manifest.get("zip_path")
+    if not isinstance(version, str) or not version:
+        return None
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha):
+        return None
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        return None
+    if not isinstance(zip_path, str) or not zip_path:
+        return None
+    expected = cache_dir / _cached_zip_name(version)
+    try:
+        if Path(zip_path).resolve() != expected.resolve():
+            return None
+    except OSError:
+        return None
+    if not expected.is_file():
+        return None
+    if expected.stat().st_size != size:
+        return None
+    digest = hashlib.sha256()
+    try:
+        with open(expected, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    if digest.hexdigest() != sha.lower():
+        return None
+    return {
+        "version": version,
+        "sha256": sha.lower(),
+        "size": size,
+        "zip_path": str(expected),
+        "downloaded_at": manifest.get("downloaded_at"),
+    }
+
+
+def clear_cached_update(install_dir: str | Path | None = None) -> None:
+    """清掉缓存 manifest 和缓存 zip（换版成功 / 版本不符 / 校验失败时调）。"""
+    cache_dir = _update_cache_dir(install_dir)
+    if cache_dir is None:
+        return
+    _remove_quietly(cache_dir / UPDATE_CACHE_MANIFEST)
+    try:
+        for old in list(cache_dir.glob("jianli-lieshou-*.zip")) + list(cache_dir.glob("*.tmp")):
+            _remove_quietly(old)
+    except OSError:
+        pass
+
+
+def _restore_from_cache(install_dir: str | Path, info: dict) -> bool:
+    """从缓存恢复 ready 态：不重新下载。
+
+    manifest 在、zip 在、sha256 对得上、且版本与 info 一致时，从
+    缓存 zip 重新解压出 staging（旧 staging 可能随上次退出丢了）
+    并跑 validate_staged_payload，成功就把状态置 ready。版本不符
+    或任何一步校验失败都清掉缓存、返回 False 走正常重下。
+    """
+    manifest = load_cached_update(install_dir)
+    cache_dir = _update_cache_dir(install_dir)
+    if manifest is None:
+        if cache_dir is not None and (cache_dir / UPDATE_CACHE_MANIFEST).is_file():
+            clear_cached_update(install_dir)
+        return False
+    if manifest.get("version") != info.get("version") or \
+            str(manifest.get("sha256", "")).lower() != str(info.get("sha256", "")).lower():
+        clear_cached_update(install_dir)
+        return False
+    zip_path = Path(manifest["zip_path"])
+    tmpdir = tempfile.mkdtemp(prefix="jianli-update-")
+    try:
+        staging = extract_update(zip_path, Path(tmpdir) / "staging")
+        payload_root = validate_staged_payload(find_payload_root(staging))
+    except Exception:
+        _remove_quietly(Path(tmpdir))
+        clear_cached_update(install_dir)
+        return False
+    _set_status(
+        status="ready",
+        progress=100,
+        message="新版本下好了",
+        zip_path=str(zip_path),
+        staging_dir=str(payload_root),
+    )
+    return True
 
 
 # Windows 创建标志的真实值（CREATE_NO_WINDOW 0x08000000、
@@ -895,8 +1171,14 @@ def _windows_launch_flags() -> int:
     拉起的 ping / PowerShell / robocopy / taskkill 各自会新开一个黑框
     （v1.0.8 用户实拍：findstr /C:"2108" 黑框弹在面板前面——旧 bat
     的 tasklist | findstr 里 findstr 卡在等管道输入，自己的黑框一直
-    挂在前面）。CREATE_NO_WINDOW 让 cmd 和它拉起的控制台程序都不开
-    窗口；bat 的输出本来就写 update.log，不靠控制台看。
+    挂在前面）。CREATE_NO_WINDOW 只作用于直接创建的 cmd.exe：它能
+    让 cmd 本身不开窗口，但 cmd 拉起的孙进程（robocopy / ping /
+    taskkill / PowerShell）并不会因此也不开窗口——旧注释称
+    CREATE_NO_WINDOW 能让孙进程也不开窗口，这个说法是错的。孙进程
+    的黑窗口靠 bat 里解决：所有控制台调用都经
+    powershell -WindowStyle Hidden 调用，隐藏的 PowerShell 自带
+    隐藏控制台，子进程继承它、不再自己开可见窗口。bat 的输出本来
+    就写 update.log，不靠控制台看。
     """
     return (
         getattr(subprocess, "CREATE_NO_WINDOW", _NO_WINDOW_FLAG)
@@ -1051,6 +1333,61 @@ def ensure_desktop_shortcut(
     return True
 
 
+def _kill_install_dir_processes(install_dir: str | Path) -> bool:
+    """换文件前（Python 侧第一道防御）：结束可执行路径在安装目录里的进程。
+
+    只认 ExecutablePath 前缀——安装目录里只能是我们自己的打包文件，
+    包括变成孤儿的浏览器运行时 node.exe
+    (`_internal\\patchright\\driver\\node.exe`)。绝不按映像名杀
+    node.exe / chrome.exe（会误杀用户浏览器和其他 node）。只在
+    Windows 上做；PowerShell 起不来或杀失败都只写进 update.log、
+    返回 False，绝不阻断更新（bat 里的 :procsweep 是第二道防御，
+    杀不掉会在那里走失败流程）。
+    """
+    if not _is_windows():
+        return False
+    install = Path(install_dir)
+    log_path = install / "update.log"
+    script = (
+        "$installDir = " + _ps_quote(str(install)) + "; "
+        "$prefix = $installDir + '\\'; "
+        "$doomed = @(); "
+        "foreach ($p in Get-CimInstance Win32_Process) { "
+        "if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { $doomed += $p } }; "
+        "$killed = 0; $failed = 0; "
+        "foreach ($p in $doomed) { try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } }; "
+        "Start-Sleep -Seconds 1; "
+        "Write-Output \"killed=$killed failed=$failed\""
+    )
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+             "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+        )
+    except Exception as exc:
+        try:
+            with open(log_path, "a", encoding="utf-8") as fh:
+                fh.write(f"[{stamp}] 更新前结束安装目录内进程失败（没拦住更新）：{exc}\n")
+        except OSError:
+            pass
+        return False
+    killed = failed = 0
+    match = re.search(r"killed=(\d+)\s+failed=(\d+)", result.stdout or "")
+    if match:
+        killed, failed = int(match.group(1)), int(match.group(2))
+    try:
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(f"[{stamp}] 更新前结束安装目录内进程：杀了 {killed} 个，失败 {failed} 个。\n")
+    except OSError:
+        pass
+    return True
+
+
 def apply_update(install_dir: str | Path, exe_name: str) -> Path:
     """Prepare the swap: backup, write update.bat, launch it detached.
 
@@ -1091,10 +1428,43 @@ def apply_update(install_dir: str | Path, exe_name: str) -> Path:
     # 窗口不关，换文件时可能被占住、端口也交接不干净；关窗口不删
     # profile，登录会话下次还能恢复。关不掉也不挡更新，bat 的等待
     # 循环是后备。
+    # 注意：句柄关窗经常是空操作——Chrome 把 --app 交给已在跑的
+    # Chrome 实例时，拉窗那个子进程立刻就退出了（poll() 不为 None），
+    # close_app_window 直接返回 False，旧面板继续开着；真正关掉旧
+    # 面板靠前端 apply 成功后 window.close() 自关。换文件的安全不
+    # 靠关窗，靠 bat 等旧 exe PID 死透（:waitloop + :precopy 最后
+    # 关口）。这里只把关没关掉记进 update.log，供排障时看。
+    closed = False
     try:
         from bosshunter.app_window import close_app_window
 
-        close_app_window()
+        closed = bool(close_app_window())
+    except Exception:
+        closed = False
+    if not closed:
+        try:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            with open(install / "update.log", "a", encoding="utf-8") as fh:
+                fh.write(
+                    f"[{stamp}] 旧面板窗口没能经句柄关掉（可能是 Chrome 交给了已在跑的实例），"
+                    "靠前端自关；换文件仍等旧进程退出后才开始。\n"
+                )
+        except OSError:
+            pass
+    # 先停浏览器运行时（另一位同事在 browser/runtime 里新增的
+    # stop_runtime，停 _runtime_process 及其进程树）：这里懒导入，
+    # 它还没合进来时 ImportError 直接跳过，不阻断更新。
+    # 时机：起 bat 之前、杀 node 之前。
+    try:
+        from bosshunter.browser.runtime import stop_runtime
+
+        stop_runtime()
+    except Exception:
+        pass
+    # Python 侧第一道防御：按 ExecutablePath 杀安装目录里的残留进程
+    #（变成孤儿的 node.exe 等）；杀不掉只记日志，bat 里还有第二道。
+    try:
+        _kill_install_dir_processes(install)
     except Exception:
         pass
     flags = _windows_launch_flags()

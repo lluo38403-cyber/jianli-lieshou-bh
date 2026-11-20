@@ -7,6 +7,10 @@ export interface UpdateInfo {
   sha256: string
   notes: string
   current_version: string
+  /** 失败原因（后端原话）：error 态的 info 也留着它，横幅和弹窗才有话可说。 */
+  reason?: string
+  /** 安装包是不是本地已验过的缓存包：是就不用重新下载，再试一次直接恢复。 */
+  downloadCached?: boolean
 }
 
 export type UpdatePhase = 'idle' | 'checking' | 'downloading' | 'verifying' | 'ready' | 'applying' | 'error'
@@ -30,6 +34,9 @@ interface CheckPayload {
   status?: string
   progress?: number
   error?: string
+  reason?: string
+  download_cached?: boolean
+  cached_version?: string | null
 }
 
 /**
@@ -182,16 +189,24 @@ export function useUpdate() {
     if (typeof data?.current_version === 'string' && data.current_version) {
       setCurrentVersion(data.current_version)
     }
+    const downloadCached = data?.download_cached === true
+    const reason = typeof data?.reason === 'string' ? data.reason : ''
+    const buildInfo = (): UpdateInfo => ({
+      version: String(data.version),
+      size: Number(data.size) || 0,
+      sha256: String(data.sha256 || ''),
+      notes: String(data.notes || ''),
+      current_version: String(data.current_version || ''),
+      reason: reason || undefined,
+      downloadCached,
+    })
     if (data?.update_available && typeof data?.version === 'string' && data.version) {
-      setInfo({
-        version: data.version,
-        size: Number(data.size) || 0,
-        sha256: String(data.sha256 || ''),
-        notes: String(data.notes || ''),
-        current_version: String(data.current_version || ''),
-      })
+      setInfo(buildInfo())
       setError('')
       setErrorKind(null)
+    } else if (data?.status === 'error' && typeof data?.version === 'string' && data.version) {
+      // 失败也留着版本信息：横幅和弹窗要靠它显示原因和“再试一次”，不能置空。
+      setInfo(buildInfo())
     } else if (phaseRef.current === 'idle') {
       setInfo(null)
     }
@@ -204,6 +219,13 @@ export function useUpdate() {
       const res = await fetchWithRetry(force ? '/api/update/check?force=1' : '/api/update/check', {}, { timeoutMs: 8000, retries: 3 })
       const data = (await res.json().catch(() => ({}))) as CheckPayload
       applyPayload(data)
+      if (data?.status === 'error') {
+        // 失败也算“有新版要处理”：横幅和弹窗要显示原因和“再试一次”，
+        // 而不是告诉用户“已经是最新版”。
+        setPhaseBoth('error')
+        setErrorBoth(String(data?.error || '这次没换上，稍后再试。'), 'downloading')
+        return Boolean(data?.version)
+      }
       return Boolean(data?.update_available)
     } catch {
       // 查不到就当没有新版，不打扰正常用。
@@ -211,7 +233,7 @@ export function useUpdate() {
     } finally {
       if (mountedRef.current) setChecking(false)
     }
-  }, [applyPayload])
+  }, [applyPayload, setPhaseBoth, setErrorBoth])
 
   const fetchHealth = useCallback(async () => {
     try {
@@ -250,6 +272,8 @@ export function useUpdate() {
         const res = await fetch('/api/update/status')
         const data = (await res.json().catch(() => ({}))) as CheckPayload
         consecutiveFailures = 0
+        // 每轮都把版本信息接回来：失败时 info 也留着，不置空。
+        applyPayload(data)
         const status = String(data?.status || '')
         if (status === 'downloading' || status === 'verifying') {
           setPhaseBoth(status)
@@ -273,7 +297,7 @@ export function useUpdate() {
         // 没到次数就下次轮询再试。
       }
     }, 1000)
-  }, [setPhaseBoth, setErrorBoth, stopPolling])
+  }, [applyPayload, setPhaseBoth, setErrorBoth, stopPolling])
 
   /** 启动时从服务端把下载状态接回来：刷新页面、或上次打开时下载已在
    * 进行中，进度不从 0 重来——服务端一直在下，问它现在到哪了就行。 */
@@ -290,6 +314,8 @@ export function useUpdate() {
           sha256: String(data.sha256 || ''),
           notes: String(data.notes || ''),
           current_version: String(data.current_version || ''),
+          reason: typeof data?.reason === 'string' && data.reason ? data.reason : undefined,
+          downloadCached: data?.download_cached === true,
         })
         setError('')
         setErrorKind(null)
@@ -350,27 +376,57 @@ export function useUpdate() {
       setErrorBoth(err instanceof Error ? err.message : '这次没换上，稍后再试。', 'applying')
       return
     }
-    // 面板要重启了：等它重新打开再刷新页面。
-    let tries = 0
+    // 面板要重启了：新版会自己重新打开面板，旧窗口现在就关掉——
+    // 之前是等新版起来再原地刷新，旧窗口复活、跟新窗口冲突（两个窗口
+    // 同时存在，换文件还撞锁）。关窗和退进程是两回事：关窗只关这个
+    // 页面，服务端 1.5 秒后才退出进程，bat 是等进程退出后才换文件，
+    // 所以立即关窗不会打断换文件。
+    // 关窗只在 --app 独立窗口里调：普通浏览器标签页不让脚本关窗
+    // （调了会被忽略），display-mode: standalone 是 --app 窗口的标志。
     stopHealthPolling()
-    healthTimer.current = window.setInterval(async () => {
-      tries += 1
-      try {
-        const res = await fetch('/api/health')
-        if (res.ok) {
+    const startFallbackPolling = () => {
+      // 关不掉（普通标签页）才走这里：等新版起来再刷新本页（旧行为兜底）。
+      let tries = 0
+      healthTimer.current = window.setInterval(async () => {
+        tries += 1
+        if (window.closed) {
           stopHealthPolling()
-          window.location.reload()
           return
         }
+        try {
+          const res = await fetch('/api/health')
+          if (res.ok) {
+            stopHealthPolling()
+            window.location.reload()
+            return
+          }
+        } catch {
+          // 还没起来，继续等。
+        }
+        if (tries >= 45) {
+          stopHealthPolling()
+          setPhaseBoth('error')
+          setErrorBoth('新版本应该换好了，但面板没重新打开，关掉再双击打开一次就行。', 'applying')
+        }
+      }, 2000)
+    }
+    const standalone =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(display-mode: standalone)').matches
+    if (standalone) {
+      try {
+        window.close()
       } catch {
-        // 还没起来，继续等。
+        // 关不掉就走下面的兜底。
       }
-      if (tries >= 45) {
-        stopHealthPolling()
-        setPhaseBoth('error')
-        setErrorBoth('新版本应该换好了，但面板没重新打开，关掉再双击打开一次就行。', 'applying')
-      }
-    }, 2000)
+      // 给关窗一点时间：真关掉了这个定时器随窗口一起消失；关不掉
+      // （个别浏览器限制）就走兜底，不一直卡在“正在换上”。
+      window.setTimeout(() => {
+        if (!window.closed) startFallbackPolling()
+      }, 1000)
+      return
+    }
+    startFallbackPolling()
   }, [setPhaseBoth, setErrorBoth, stopHealthPolling])
 
   const dismiss = useCallback(() => {
@@ -378,16 +434,34 @@ export function useUpdate() {
   }, [])
 
   const retry = useCallback(async () => {
-    // 失败后回到能重试的状态：清掉错误和进度，再查一次有没有新版。
-    // 查不到也不卡着：旧的版本信息留着，横幅上的“再试一次”还能点。
+    // 先走缓存重试：安装包已经下好验过，后端直接恢复成 ready，不重新下载。
+    // 失败信息留着，横幅上的“再试一次”还能点。
     setError('')
     setErrorKind(null)
     setProgress(0)
+    try {
+      const res = await fetch('/api/update/start', { method: 'POST' })
+      const data = (await res.json().catch(() => ({}))) as CheckPayload
+      if (res.ok) {
+        applyPayload(data)
+        if (String(data?.status) === 'ready') {
+          setPhaseBoth('ready')
+          setProgress(100)
+          return
+        }
+        setPhaseBoth('downloading')
+        startPolling()
+        return
+      }
+      // 没有缓存可复用（或缓存对不上）：回退到重新检查新版本再下载。
+    } catch {
+      // 服务断了也别卡着：同样回退到重新检查。
+    }
     if (phaseRef.current === 'error') {
       setPhaseBoth('idle')
     }
     await check(true)
-  }, [check, setPhaseBoth])
+  }, [applyPayload, check, setPhaseBoth, startPolling])
 
   return {
     info,

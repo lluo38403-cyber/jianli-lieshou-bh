@@ -30,6 +30,7 @@ from bosshunter.updater import (
     apply_update,
     build_update_script,
     check_for_update,
+    clear_cached_update,
     clear_update_result,
     consume_pending_update,
     create_backup,
@@ -39,16 +40,20 @@ from bosshunter.updater import (
     get_last_update_failure,
     get_status,
     is_newer,
+    load_cached_update,
     overlay_staging,
     parse_version,
     prune_old_backups,
     prune_stale_files,
     reconcile_pending_update,
     run_check,
+    save_cached_update,
     start_download,
     validate_staged_payload,
     write_pending_update,
     write_update_result,
+    _kill_install_dir_processes,
+    _restore_from_cache,
 )
 from bosshunter.web import server
 
@@ -105,7 +110,7 @@ class VersionCompareTests(unittest.TestCase):
 class UpdateStubHandler(BaseHTTPRequestHandler):
     """Stub for the relay update contract: /api/version + /download/latest."""
 
-    version_payload = {"version": "1.1.10", "size": 0, "sha256": "0" * 64, "notes": ""}
+    version_payload = {"version": "1.1.11", "size": 0, "sha256": "0" * 64, "notes": ""}
     zip_bytes = b""
     status = 200
     requests: list = []
@@ -160,7 +165,7 @@ class UpdateCheckTests(unittest.TestCase):
     def setUp(self):
         _reset_update_state()
         UpdateStubHandler.version_payload = {
-            "version": "1.1.10",
+            "version": "1.1.11",
             "size": 123,
             "sha256": hashlib.sha256(_make_zip()).hexdigest(),
             "notes": "更快更稳",
@@ -193,7 +198,7 @@ class UpdateCheckTests(unittest.TestCase):
         info = check_for_update(self._config())
         self.assertIsNotNone(info)
         assert info is not None
-        self.assertEqual(info["version"], "1.1.10")
+        self.assertEqual(info["version"], "1.1.11")
         self.assertEqual(info["current_version"], __version__)
         self.assertEqual(info["size"], 123)
         self.assertEqual(info["notes"], "更快更稳")
@@ -222,9 +227,9 @@ class UpdateCheckTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         for bad in (
             {"size": 1, "sha256": "a" * 64},
-            {"version": "1.1.10", "size": 1},
-            {"version": "1.1.10", "size": 1, "sha256": "not-a-hash"},
-            {"version": "1.1.10", "size": 1, "sha256": "a" * 64, "notes": 5},
+            {"version": "1.1.11", "size": 1},
+            {"version": "1.1.11", "size": 1, "sha256": "not-a-hash"},
+            {"version": "1.1.11", "size": 1, "sha256": "a" * 64, "notes": 5},
         ):
             with self.subTest(bad=bad):
                 UpdateStubHandler.version_payload = bad
@@ -262,7 +267,7 @@ class UpdateDownloadTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.10",
+            "version": "1.1.11",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -290,7 +295,7 @@ class UpdateDownloadTests(unittest.TestCase):
 
     def _info(self):
         return {
-            "version": "1.1.10",
+            "version": "1.1.11",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -391,7 +396,7 @@ class UpdateDownloadTests(unittest.TestCase):
         bad = buf.getvalue()
         UpdateStubHandler.zip_bytes = bad
         UpdateStubHandler.version_payload = {
-            "version": "1.1.10",
+            "version": "1.1.11",
             "size": len(bad),
             "sha256": hashlib.sha256(bad).hexdigest(),
             "notes": "",
@@ -647,21 +652,35 @@ class UpdateScriptTests(unittest.TestCase):
     def test_batch_kills_stuck_process_tree_and_other_instances(self):
         # 回归：旧 bat 只等主进程 pid；残留/多开的同名进程占住文件时
         # robocopy 直接半路失败。超时后要 taskkill 整棵进程树，换
-        # 之前还要清掉其他同名进程。
+        # 之前还要清掉其他同名进程。taskkill 现在走隐藏 PowerShell
+        # 调用（黑窗口修法），路径里的引号在 PowerShell 里是单引号。
         script = build_update_script()
         self.assertIn("taskkill /PID %PID% /T /F", script)
-        self.assertIn('taskkill /F /IM "%EXE_NAME%" /T', script)
+        self.assertIn("taskkill /F /IM '%EXE_NAME%' /T", script)
 
-    def test_batch_waits_with_ping_not_timeout(self):
+    def test_batch_waits_with_hidden_sleep_not_ping_or_timeout(self):
         # 回归：timeout /t N /nobreak 在 detached、无控制台的进程里
         # 不返回，bat 卡在等主进程退出的循环里走不到 robocopy
         # （CI 更新全流程测试两次复现；与 lucky 在无影云电脑上
-        # v10 点更新的故障现象一致）。等待必须用 ping 延时。
+        # v10 点更新的故障现象一致）。等待先用 ping 延时修过；但
+        # ping 本身是控制台程序，没有可继承的控制台时会自己分配
+        # 可见窗口——这就是黑窗口。现在延时改用隐藏 PowerShell 里
+        # 的 Start-Sleep：1 秒（等主进程）、5 秒（强制结束之后）、
+        # 3 秒（清同名进程之后），不许再出现裸 ping 或 timeout。
         script = build_update_script()
         self.assertNotIn("timeout /t", script.lower())
-        self.assertIn("ping -n 2 127.0.0.1 >nul", script)
-        self.assertIn("ping -n 6 127.0.0.1 >nul", script)
-        self.assertIn("ping -n 4 127.0.0.1 >nul", script)
+        self.assertEqual(
+            [line for line in script.splitlines() if line.strip().lower().startswith("ping")],
+            [],
+        )
+        self.assertIn('"Start-Sleep -Seconds 1"', script)
+        self.assertIn('"Start-Sleep -Seconds 5"', script)
+        self.assertIn('"Start-Sleep -Seconds 3"', script)
+        for line in script.splitlines():
+            if line.strip().lower().startswith("rem"):
+                continue
+            if "Start-Sleep" in line:
+                self.assertIn("powershell -NoProfile -NonInteractive -WindowStyle Hidden", line)
 
     def test_batch_has_no_findstr_pipe(self):
         # 回归：tasklist | findstr 管道在全流程测试里三次卡死在
@@ -705,13 +724,14 @@ class UpdateScriptTests(unittest.TestCase):
             script,
         )
         # 去掉反斜杠后，拼路径必须显式加反斜杠，不许再出现靠末尾
-        # 反斜杠拼出来的路径。
+        # 反斜杠拼出来的路径。robocopy 里的路径现在是隐藏 PowerShell
+        # 调用里的单引号形式（黑窗口修法），反斜杠仍要显式拼。
         self.assertNotIn('"%INSTALL_DIR%%EXE_NAME%"', script)
         self.assertNotIn('"%INSTALL_DIR%%BACKUP%"', script)
         self.assertNotIn('"%INSTALL_DIR%_internal"', script)
         self.assertIn('"%INSTALL_DIR%\\%EXE_NAME%"', script)
-        self.assertIn('"%INSTALL_DIR%\\%BACKUP%"', script)
-        self.assertIn('"%INSTALL_DIR%\\_internal"', script)
+        self.assertIn("'%INSTALL_DIR%\\%BACKUP%'", script)
+        self.assertIn("'%INSTALL_DIR%\\_internal'", script)
         self.assertIn('set "LOG=%INSTALL_DIR%\\update.log"', script)
         self.assertIn('set "RESULT=%INSTALL_DIR%\\update-result.json"', script)
 
@@ -719,15 +739,22 @@ class UpdateScriptTests(unittest.TestCase):
         # 回归：v16→v17 测试里 robocopy 0.22 秒失败，但它的输出没进
         # update.log，失败原因只能猜。每条 robocopy 之后立刻把退出
         # 码写进日志（先 set RC 再写、再判断，判断本身不改码）。
+        # robocopy 现在走隐藏 PowerShell 调用（黑窗口修法）：行里
+        # 仍是同一条 robocopy 命令，退出码经 exit $LASTEXITCODE
+        # 带出，下一行照旧是 set RC + 写日志。
         script = build_update_script()
         lines = script.splitlines()
         rc_lines = [
             i
             for i, line in enumerate(lines)
-            if line.strip().lower().startswith("robocopy")
+            if "& robocopy" in line.lower()
         ]
         self.assertEqual(len(rc_lines), 4)
         for i in rc_lines:
+            line = lines[i]
+            self.assertIn("powershell -NoProfile -NonInteractive -WindowStyle Hidden", line)
+            self.assertIn("exit $LASTEXITCODE", line)
+            self.assertIn('>> "%LOG%"', line)
             following = "\n".join(lines[i + 1 : i + 3])
             self.assertIn('set "RC=%errorlevel%"', following)
             self.assertIn("robocopy", following)
@@ -837,15 +864,19 @@ class UpdateScriptTests(unittest.TestCase):
         script = build_update_script()
         self.assertIn('if not exist "%STAGING%\\%EXE_NAME%"', script)
         self.assertIn('if not exist "%STAGING%\\_internal\\"', script)
-        self.assertIn('robocopy "%STAGING%\\_internal" "%INSTALL_DIR%\\_internal" /MIR', script)
+        # _internal 的 /MIR 现在走隐藏 PowerShell 调用（黑窗口修法），
+        # 命令本身不变，只是包在 powershell -WindowStyle Hidden 里。
+        self.assertIn("robocopy '%STAGING%\\_internal' '%INSTALL_DIR%\\_internal' /MIR", script)
         self.assertIn("/R:5 /W:3", script)
 
     def test_batch_restores_backup_on_copy_failure(self):
         # 回归：旧 bat 复制失败就扔下半新半旧的安装目录走人。
         # 现在必须从备份恢复（包括 _internal 的 /MIR 还原），再报错。
         script = build_update_script()
-        self.assertIn('robocopy "%INSTALL_DIR%\\%BACKUP%" "%INSTALL_DIR%"', script)
-        self.assertIn('"%INSTALL_DIR%\\%BACKUP%\\_internal"', script)
+        # 回滚的两条 robocopy 现在走隐藏 PowerShell 调用（黑窗口修法），
+        # 命令本身不变，只是包在 powershell -WindowStyle Hidden 里。
+        self.assertIn("robocopy '%INSTALL_DIR%\\%BACKUP%' '%INSTALL_DIR%'", script)
+        self.assertIn("'%INSTALL_DIR%\\%BACKUP%\\_internal'", script)
         self.assertIn("%EXPECTED%", script)
 
 
@@ -869,7 +900,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.10"},
+                "info": {"version": "1.1.11"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -884,9 +915,11 @@ class UpdateApplyTests(unittest.TestCase):
         # 回归：更新换文件前必须先关主界面 --app 窗口（只关 exe 启动时
         # 持有的那个句柄，绝不碰登录浏览器），再以不带控制台窗口的
         # 方式拉起 update.bat。顺序不能反：窗口不关，文件可能被占住、
-        # 端口也交接不干净。Windows 路径在 Linux 上用 mock 走一遍
-        # （扮 _is_windows 而不是 os.name——patch os.name 会连
-        # pathlib.Path 一起改成 WindowsPath，在 Linux 上建不出来）。
+        # 端口也交接不干净。v24 的完整顺序是：关窗口 → 停浏览器运行
+        # 时（stop_runtime，停 node 子进程树）→ 按 ExecutablePath
+        # 杀安装目录里的残留进程 → 起 bat。Windows 路径在 Linux 上
+        # 用 mock 走一遍（扮 _is_windows 而不是 os.name——patch os.name
+        # 会连 pathlib.Path 一起改成 WindowsPath，在 Linux 上建不出来）。
         from unittest.mock import patch
 
         order: list[str] = []
@@ -898,7 +931,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.10"},
+                "info": {"version": "1.1.11"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -906,16 +939,81 @@ class UpdateApplyTests(unittest.TestCase):
             with (
                 patch("bosshunter.updater._is_windows", return_value=True),
                 patch("bosshunter.app_window.close_app_window") as close,
+                patch("bosshunter.browser.runtime.stop_runtime") as stop,
+                patch("bosshunter.updater._kill_install_dir_processes") as kill,
                 patch("bosshunter.updater.subprocess.Popen") as popen,
             ):
-                close.side_effect = lambda: order.append("close")
+                close.side_effect = lambda: order.append("close") or True
+                stop.side_effect = lambda *args, **kwargs: order.append("stop_runtime") or True
+                kill.side_effect = lambda *args, **kwargs: order.append("kill") or True
                 popen.side_effect = lambda *args, **kwargs: order.append("popen")
                 apply_update(install, "简历猎手.exe")
-            self.assertEqual(order, ["close", "popen"])
+            self.assertEqual(order, ["close", "stop_runtime", "kill", "popen"])
             close.assert_called_once()
+            stop.assert_called_once()
+            kill.assert_called_once()
             popen.assert_called_once()
             flags = popen.call_args.kwargs.get("creationflags", 0)
             self.assertTrue(flags & 0x08000000, "拉起 update.bat 必须带 CREATE_NO_WINDOW")
+
+    def test_apply_logs_when_app_window_handle_cannot_close_it(self):
+        # 回归：Chrome 把 --app 交给已在跑的 Chrome 实例时，拉窗那个
+        # 子进程立刻就退出了，close_app_window 直接返回 False、旧面板
+        # 继续开着（2026-11-20 1.1.7 用户实拍：面板还开着、黑窗口弹
+        # 在上面）。关不掉不挡更新，但要记进 update.log 供排障——
+        # 真正关旧面板靠前端 apply 成功后 window.close() 自关，换文件
+        # 的安全靠 bat 等旧 PID 死透，不靠关窗。
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp) / "staging"
+            (staging / "_internal").mkdir(parents=True)
+            (staging / "简历猎手.exe").write_bytes(b"new-exe")
+            (staging / "_internal" / "app.bin").write_bytes(b"new-app")
+            updater._STATE.update({
+                "status": "ready",
+                "staging_dir": str(staging),
+                "info": {"version": "1.1.11"},
+            })
+            install = Path(tmp) / "install"
+            install.mkdir()
+            (install / "简历猎手.exe").write_bytes(b"old-exe")
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.app_window.close_app_window", return_value=False),
+                patch("bosshunter.browser.runtime.stop_runtime", return_value=True),
+                patch("bosshunter.updater._kill_install_dir_processes", return_value=True),
+                patch("bosshunter.updater.subprocess.Popen"),
+            ):
+                apply_update(install, "简历猎手.exe")
+            log = (install / "update.log").read_text(encoding="utf-8")
+            self.assertIn("没能经句柄关掉", log)
+
+    def test_apply_does_not_log_when_app_window_closed(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp) / "staging"
+            (staging / "_internal").mkdir(parents=True)
+            (staging / "简历猎手.exe").write_bytes(b"new-exe")
+            (staging / "_internal" / "app.bin").write_bytes(b"new-app")
+            updater._STATE.update({
+                "status": "ready",
+                "staging_dir": str(staging),
+                "info": {"version": "1.1.11"},
+            })
+            install = Path(tmp) / "install"
+            install.mkdir()
+            (install / "简历猎手.exe").write_bytes(b"old-exe")
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.app_window.close_app_window", return_value=True),
+                patch("bosshunter.browser.runtime.stop_runtime", return_value=True),
+                patch("bosshunter.updater._kill_install_dir_processes", return_value=True),
+                patch("bosshunter.updater.subprocess.Popen"),
+            ):
+                apply_update(install, "简历猎手.exe")
+            self.assertFalse((install / "update.log").exists())
 
     def test_apply_rejects_bad_staging_before_touching_install(self):
         # 回归：staging 里没有新版 payload 时，旧实现只查安装目录的
@@ -926,7 +1024,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(Path(tmp) / "empty-staging"),
-                "info": {"version": "1.1.10"},
+                "info": {"version": "1.1.11"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1033,7 +1131,7 @@ class UpdateRouteTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.10",
+            "version": "1.1.11",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "更快更稳",
@@ -1125,7 +1223,7 @@ class UpdateRouteTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             data = json.loads(body)
             self.assertTrue(data["update_available"])
-            self.assertEqual(data["version"], "1.1.10")
+            self.assertEqual(data["version"], "1.1.11")
             self.assertEqual(data["current_version"], __version__)
             self.assertEqual(data["notes"], "更快更稳")
 
@@ -1135,9 +1233,9 @@ class UpdateRouteTests(unittest.TestCase):
         # 后才能重新查到新版。
         with tempfile.TemporaryDirectory() as tmp:
             base = self._base_dir(tmp)
-            updater.write_pending_update(base, "1.1.10")
+            updater.write_pending_update(base, "1.1.11")
             updater.write_update_result(
-                base, {"status": "failed", "expected_version": "1.1.10", "reason_code": "copy"}
+                base, {"status": "failed", "expected_version": "1.1.11", "reason_code": "copy"}
             )
             original_get_install_dir = updater.get_install_dir
             updater.get_install_dir = lambda: base
@@ -1156,7 +1254,7 @@ class UpdateRouteTests(unittest.TestCase):
                 self.assertTrue(status.startswith("200"), body)
                 data = json.loads(body)
                 self.assertTrue(data["update_available"])
-                self.assertEqual(data["version"], "1.1.10")
+                self.assertEqual(data["version"], "1.1.11")
             finally:
                 updater.get_install_dir = original_get_install_dir
 
@@ -1203,6 +1301,450 @@ class UpdateRouteTests(unittest.TestCase):
             status, _, body = self._request("/api/update/apply", "POST", {})
             self.assertTrue(status.startswith("400"), body)
             self.assertIn("正式安装", json.loads(body)["error"])
+
+
+class UpdatePathKillTests(unittest.TestCase):
+    """bat :procsweep 按 ExecutablePath 杀残留进程（v24）。
+
+    回归：旧版 exe 退出时不杀子进程，浏览器运行时的 node.exe
+    （安装目录下 _internal\\patchright\\driver\\node.exe）变成孤儿，
+    :procsweep 只杀同名 exe 杀不到它，robocopy 换 _internal 就报
+    错误 32 文件被占用（2026-11-20 1.1.7 用户实拍：robocopy 拷到
+    patchright\\driver\\node.exe 时错误 32）。换文件前必须按路径
+    精确杀，绝不按映像名滥杀。
+    """
+
+    def test_bat_kills_by_executable_path_before_any_copy(self):
+        script = build_update_script()
+        lines = script.splitlines()
+        first_robocopy = next(
+            i for i, line in enumerate(lines) if "& robocopy" in line.lower()
+        )
+        procsweep = next(i for i, line in enumerate(lines) if line.strip() == ":procsweep")
+        kill = next(
+            i for i, line in enumerate(lines) if "Get-CimInstance Win32_Process" in line
+        )
+        self.assertLess(procsweep, kill)
+        self.assertLess(kill, first_robocopy)
+        self.assertIn("ExecutablePath", script)
+        self.assertIn("_internal\\patchright\\driver\\node.exe", script)
+        self.assertIn("Stop-Process", script)
+        self.assertIn("StartsWith", script)
+        # 只杀可执行路径在安装目录里的进程：前缀匹配，不是映像名。
+        self.assertIn("%INSTALL_DIR%", lines[kill])
+
+    def test_bat_never_kills_by_image_name(self):
+        # 映像名滥杀会误杀用户浏览器和其他 node：taskkill node.exe /
+        # chrome.exe、Get-Process -Name node 一律不许出现。同名 exe
+        # 的 taskkill /IM '%EXE_NAME%' 是我们自己的程序，不在此限。
+        script = build_update_script()
+        lowered = script.lower()
+        self.assertNotIn("taskkill /im node.exe", lowered)
+        self.assertNotIn("taskkill /im chrome.exe", lowered)
+        self.assertNotIn("get-process -name node", lowered)
+        self.assertNotIn("/im node", lowered)
+        self.assertNotIn("/im chrome", lowered)
+        self.assertIn("taskkill /F /IM '%EXE_NAME%' /T", script)
+
+    def test_bat_verifies_node_exe_is_free_after_kill(self):
+        # 杀后等一等、确认文件能打开再继续；杀不掉要写进 update.log
+        # 并走失败流程（:fail_stuck），不要静默跳过、不要硬拷。
+        script = build_update_script()
+        self.assertIn("[System.IO.File]::Open", script)
+        self.assertIn("'node.exe still locked'", script)
+        # 杀进程那行里的 Start-Sleep -Seconds 2 是 -Command 串里的
+        # 一句，没有单独加引号（单独的延时行才有 "..." 包着）。
+        self.assertIn("Start-Sleep -Seconds 2", script)
+        self.assertIn('set "KILL_RC=%errorlevel%"', script)
+        self.assertIn("if %KILL_RC% neq 0 goto :fail_stuck", script)
+        self.assertIn("node.exe 还占着", script)
+
+
+class UpdateHiddenConsoleTests(unittest.TestCase):
+    """bat 里不许有裸控制台程序调用（v24 黑窗口修法）。
+
+    回归：CREATE_NO_WINDOW 只作用于直接创建的 cmd.exe，cmd 拉起的
+    孙进程（robocopy / ping / taskkill / PowerShell）没有可继承的
+    控制台时会自己分配可见窗口——这就是用户看到的黑窗口。所有
+    控制台调用必须经 powershell -WindowStyle Hidden 走，隐藏的
+    PowerShell 自带隐藏控制台，子进程继承它。
+    """
+
+    def test_no_bare_console_program_lines(self):
+        script = build_update_script()
+        for line in script.splitlines():
+            stripped = line.strip().lower()
+            if stripped.startswith("rem"):
+                continue
+            self.assertFalse(stripped.startswith("robocopy"), line)
+            self.assertFalse(stripped.startswith("ping"), line)
+            self.assertFalse(stripped.startswith("taskkill"), line)
+
+    def test_every_powershell_call_is_hidden(self):
+        script = build_update_script()
+        hidden = 0
+        for line in script.splitlines():
+            if line.strip().lower().startswith("rem"):
+                continue
+            if "powershell" not in line.lower():
+                continue
+            hidden += 1
+            self.assertIn(
+                "powershell -NoProfile -NonInteractive -WindowStyle Hidden",
+                line,
+                line,
+            )
+        # 探针 + 延时 + 杀进程 + 复制 + 回滚：隐藏调用必须有这么多，
+        # 少一条就是漏了一处黑窗口。
+        self.assertGreaterEqual(hidden, 10)
+
+    def test_no_start_min(self):
+        # start /min 不接受：任务栏仍可见，不算隐藏。只查真正的命令
+        # 行，rem 注释里提到它不算。
+        script = build_update_script()
+        commands = [
+            line
+            for line in script.splitlines()
+            if not line.strip().lower().startswith("rem")
+        ]
+        self.assertNotIn("start /min", "\n".join(commands).lower())
+
+
+class UpdateFinalGateTests(unittest.TestCase):
+    """bat :precopy 最后关口：任何 robocopy 之前再确认旧 exe PID 已死。
+
+    回归（2026-11-20 1.1.7 用户实拍）：旧面板窗口还开着、黑窗口弹
+    在上面，robocopy 撞锁。单窗口接力的要求是：旧面板先关、换文件
+    全程无窗口、换完重开新面板。关窗可能失败（Chrome 交给已在跑的
+    实例时句柄是空的），但换文件的安全不能靠关窗：:waitloop 等过、
+    :procsweep 杀过，:precopy 里任何 robocopy 之前还要再查一次旧
+    PID——活着就走失败流程，绝不带着活进程硬拷。
+    """
+
+    def test_precopy_reprobes_old_pid_before_any_robocopy(self):
+        script = build_update_script()
+        lines = script.splitlines()
+        precopy = next(i for i, line in enumerate(lines) if line.strip() == ":precopy")
+        first_robocopy = next(
+            i for i, line in enumerate(lines) if "& robocopy" in line.lower()
+        )
+        gate = next(
+            i
+            for i in range(precopy, len(lines))
+            if "Get-Process -Id %PID%" in lines[i]
+        )
+        self.assertLess(precopy, gate)
+        self.assertLess(gate, first_robocopy)
+        window = "\n".join(lines[gate:first_robocopy])
+        self.assertIn("GetFileNameWithoutExtension('%EXE_NAME%')", window)
+        self.assertIn("if %errorlevel% equ 0 goto :fail_stuck", window)
+
+    def test_pid_is_probed_three_times(self):
+        # :waitloop、:killtree 重查、:precopy 最后关口，三处都按
+        # PID+进程名一起匹配（防 PID 重用误判）。
+        script = build_update_script()
+        probes = [
+            line for line in script.splitlines() if "Get-Process -Id %PID%" in line
+        ]
+        self.assertEqual(len(probes), 3)
+        for line in probes:
+            self.assertIn("GetFileNameWithoutExtension('%EXE_NAME%')", line)
+
+
+class KillInstallDirProcessesTests(unittest.TestCase):
+    def test_returns_false_off_windows_without_running_anything(self):
+        from unittest.mock import Mock, patch
+
+        with patch("bosshunter.updater.subprocess.run") as run:
+            self.assertFalse(_kill_install_dir_processes(Path("/tmp/nowhere")))
+        run.assert_not_called()
+
+    def test_kills_by_executable_path_prefix_and_logs(self):
+        from unittest.mock import Mock, patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.updater.subprocess.run") as run,
+            ):
+                run.return_value = Mock(stdout="killed=2 failed=1\n", returncode=0)
+                self.assertTrue(_kill_install_dir_processes(install))
+            run.assert_called_once()
+            argv = run.call_args.args[0]
+            self.assertEqual(argv[0], "powershell.exe")
+            self.assertIn("-WindowStyle", argv)
+            self.assertIn("Hidden", argv)
+            script = argv[-1]
+            self.assertIn("Get-CimInstance Win32_Process", script)
+            self.assertIn("ExecutablePath", script)
+            self.assertIn("StartsWith", script)
+            self.assertIn("Stop-Process", script)
+            # 只认路径前缀，绝不按映像名杀。
+            self.assertNotIn("Get-Process -Name", script)
+            self.assertNotIn("/IM node", script)
+            self.assertNotIn("chrome.exe", script)
+            flags = run.call_args.kwargs.get("creationflags", 0)
+            self.assertTrue(flags & 0x08000000, "杀进程自己也不能弹黑框")
+            log = (install / "update.log").read_text(encoding="utf-8")
+            self.assertIn("杀了 2 个，失败 1 个", log)
+
+    def test_returns_false_when_powershell_itself_fails(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.updater.subprocess.run", side_effect=OSError("no powershell")),
+            ):
+                self.assertFalse(_kill_install_dir_processes(install))
+            log = (install / "update.log").read_text(encoding="utf-8")
+            self.assertIn("失败", log)
+
+
+class UpdateCacheTests(unittest.TestCase):
+    """已下载包落盘复用（v24）：data/update-cache/。
+
+    回归：旧版 exe 退出时内存里的 zip/staging 路径随 os._exit 一起
+    消失，包其实还在磁盘上，但重开后后端认不出它，只能重下。现在
+    下载+校验通过就把包和指针落盘，启动/查状态时校验通过就恢复
+    ready 态，不重新下载。
+    """
+
+    def setUp(self):
+        _reset_update_state()
+        self.zip_bytes = _make_zip()
+        UpdateStubHandler.zip_bytes = self.zip_bytes
+        UpdateStubHandler.status = 200
+        UpdateStubHandler.requests = []
+        UpdateStubHandler.version_payload = {
+            "version": "1.1.11",
+            "size": len(self.zip_bytes),
+            "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
+            "notes": "",
+        }
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), UpdateStubHandler)
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        _reset_update_state()
+
+    def _config(self, **ai_overrides):
+        ai = {
+            "service": "relay",
+            "provider": "relay",
+            "relay_url": f"http://127.0.0.1:{self.port}",
+            "relay_token": "test-app-token",
+        }
+        ai.update(ai_overrides)
+        return {"ai": ai}
+
+    def _info(self, version="1.1.11", zip_bytes=None):
+        data = zip_bytes if zip_bytes is not None else self.zip_bytes
+        return {
+            "version": version,
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "notes": "",
+        }
+
+    def _write_zip(self, tmp, zip_bytes=None):
+        data = zip_bytes if zip_bytes is not None else self.zip_bytes
+        zip_path = Path(tmp) / "rel.zip"
+        zip_path.write_bytes(data)
+        return zip_path
+
+    def _cache_dir(self, install):
+        return install / "data" / "update-cache"
+
+    def test_save_and_load_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            zip_path = self._write_zip(tmp)
+            manifest = save_cached_update(install, self._info(), zip_path)
+            assert manifest is not None
+            self.assertEqual(manifest["version"], "1.1.11")
+            self.assertEqual(manifest["sha256"], hashlib.sha256(self.zip_bytes).hexdigest())
+            self.assertEqual(manifest["size"], len(self.zip_bytes))
+            self.assertIn("downloaded_at", manifest)
+            cached_zip = self._cache_dir(install) / "jianli-lieshou-1.1.11.zip"
+            self.assertTrue(cached_zip.is_file())
+            self.assertEqual(cached_zip.read_bytes(), self.zip_bytes)
+            self.assertEqual(manifest["zip_path"], str(cached_zip))
+            loaded = load_cached_update(install)
+            assert loaded is not None
+            self.assertEqual(loaded["version"], "1.1.11")
+            self.assertEqual(loaded["sha256"], manifest["sha256"])
+            self.assertEqual(loaded["size"], len(self.zip_bytes))
+            self.assertEqual(loaded["zip_path"], str(cached_zip))
+
+    def test_load_rejects_corrupt_zip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            save_cached_update(install, self._info(), self._write_zip(tmp))
+            cached_zip = self._cache_dir(install) / "jianli-lieshou-1.1.11.zip"
+            with open(cached_zip, "ab") as fh:
+                fh.write(b"junk")
+            self.assertIsNone(load_cached_update(install))
+
+    def test_load_rejects_missing_zip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            save_cached_update(install, self._info(), self._write_zip(tmp))
+            (self._cache_dir(install) / "jianli-lieshou-1.1.11.zip").unlink()
+            self.assertIsNone(load_cached_update(install))
+
+    def test_load_rejects_missing_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            self.assertIsNone(load_cached_update(install))
+
+    def test_load_rejects_tampered_zip_path(self):
+        # manifest 把 zip_path 指到缓存目录外面：不认。
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            save_cached_update(install, self._info(), self._write_zip(tmp))
+            elsewhere = Path(tmp) / "evil.zip"
+            elsewhere.write_bytes(self.zip_bytes)
+            manifest_path = self._cache_dir(install) / "update-ready.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["zip_path"] = str(elsewhere)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertIsNone(load_cached_update(install))
+
+    def test_load_rejects_wrong_size(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            save_cached_update(install, self._info(), self._write_zip(tmp))
+            manifest_path = self._cache_dir(install) / "update-ready.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["size"] = manifest["size"] + 1
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertIsNone(load_cached_update(install))
+
+    def test_save_rejects_sha_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            bad_info = dict(self._info(), sha256="b" * 64)
+            self.assertIsNone(save_cached_update(install, bad_info, self._write_zip(tmp)))
+            self.assertFalse((self._cache_dir(install) / "update-ready.json").exists())
+
+    def test_version_mismatch_clears_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            save_cached_update(install, self._info(), self._write_zip(tmp))
+            other = dict(self._info(), version="1.1.12", sha256="c" * 64)
+            self.assertFalse(_restore_from_cache(install, other))
+            self.assertFalse((self._cache_dir(install) / "update-ready.json").exists())
+            self.assertEqual(list(self._cache_dir(install).glob("*.zip")), [])
+
+    def test_restore_rebuilds_staging_when_missing(self):
+        from bosshunter.updater import _remove_quietly
+
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            save_cached_update(install, self._info(), self._write_zip(tmp))
+            self.assertTrue(_restore_from_cache(install, self._info()))
+            first_staging = Path(get_status()["staging_dir"])
+            self.assertTrue((first_staging / "简历猎手.exe").is_file())
+            # 上次退出把 staging 丢了：从缓存 zip 重新解压，必须还能 ready。
+            _remove_quietly(first_staging.parent)
+            self.assertFalse(first_staging.exists())
+            self.assertTrue(_restore_from_cache(install, self._info()))
+            second_staging = Path(get_status()["staging_dir"])
+            self.assertTrue((second_staging / "简历猎手.exe").is_file())
+            _remove_quietly(second_staging.parent)
+
+    def test_restore_rejects_bad_payload_and_clears_cache(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("简历猎手-windows/readme.txt", b"hi")
+        bad = buf.getvalue()
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            save_cached_update(install, self._info(zip_bytes=bad), self._write_zip(tmp, bad))
+            self.assertFalse(_restore_from_cache(install, self._info(zip_bytes=bad)))
+            self.assertFalse((self._cache_dir(install) / "update-ready.json").exists())
+
+    def test_download_worker_persists_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            run_check(self._config(), install_dir=install)
+            self.assertTrue(get_status()["update_available"])
+            start_download(self._config(), install_dir=install)
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                if get_status()["status"] == "ready":
+                    break
+                time.sleep(0.2)
+            self.assertEqual(get_status()["status"], "ready", get_status())
+            loaded = load_cached_update(install)
+            assert loaded is not None
+            self.assertEqual(loaded["version"], "1.1.11")
+            self.assertTrue(Path(loaded["zip_path"]).is_file())
+
+    def test_start_download_restores_from_cache_without_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            save_cached_update(install, self._info(), self._write_zip(tmp))
+            updater._STATE.update({
+                "status": "idle",
+                "update_available": True,
+                "info": self._info(),
+                "staging_dir": None,
+                "zip_path": None,
+            })
+            # 中转地址根本不通：恢复走缓存就一次也不用联网。
+            dead = {"ai": {"relay_url": "http://127.0.0.1:1", "relay_token": "x"}}
+            state = start_download(dead, install_dir=install)
+            self.assertEqual(state["status"], "ready", state)
+            self.assertTrue(Path(state["staging_dir"]).is_dir())
+            self.assertTrue((Path(state["staging_dir"]) / "简历猎手.exe").is_file())
+            self.assertEqual(UpdateStubHandler.requests, [])
+
+    def test_successful_swap_clears_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            info = self._info(version=__version__)
+            save_cached_update(install, info, self._write_zip(tmp))
+            self.assertIsNotNone(load_cached_update(install))
+            write_pending_update(install, __version__)
+            write_update_result(install, {"status": "applied", "expected_version": __version__, "reason_code": ""})
+            verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "ok")
+            self.assertIsNone(load_cached_update(install))
+
+    def test_clear_cached_update_removes_manifest_and_zip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            save_cached_update(install, self._info(), self._write_zip(tmp))
+            clear_cached_update(install)
+            self.assertFalse((self._cache_dir(install) / "update-ready.json").exists())
+            self.assertEqual(list(self._cache_dir(install).glob("*.zip")), [])
+            self.assertIsNone(load_cached_update(install))
 
 
 if __name__ == "__main__":

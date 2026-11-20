@@ -7,7 +7,11 @@ Serves:
 
 from bosshunter.employment import classify_employment, internship_rejection
 
+import hashlib
 import json
+import re
+import shutil
+import tempfile
 from ipaddress import ip_address
 from urllib.parse import urlsplit
 import math
@@ -1164,15 +1168,283 @@ def health():
 # update-result.json 判断：启动时先核对，换失败了就报失败、不再
 # 自动弹同一个更新；手动点“检查更新”才会清掉失败记录重新查。
 
-def _update_payload(state):
-	"""Flatten the update state for the frontend: release info on top."""
+def _update_payload(state, cached=None, install_dir=None):
+	"""Flatten the update state for the frontend: release info on top.
+
+	cached 是已验证的缓存安装包（见 _load_cached_update）：有就多报
+	download_cached / cached_version 两个字段；error 态的 info 也不再
+	置空——版本号和失败原因都留着，横幅和弹窗才能显示“再试一次”。
+	只增字段，不改现有字段的含义。
+	"""
 	payload = dict(state)
+	if payload.get("status") == "error":
+		enriched = _error_info_with_reason(state, cached, install_dir)
+		if enriched is not None:
+			payload["info"] = enriched
 	info = payload.get("info")
 	if isinstance(info, dict):
-		for key in ("version", "size", "sha256", "notes"):
-			payload[key] = info.get(key)
+		for key in ("version", "size", "sha256", "notes", "reason"):
+			if info.get(key) is not None:
+				payload[key] = info.get(key)
 	payload["current_version"] = __version__
+	payload["download_cached"] = bool(cached)
+	payload["cached_version"] = cached["version"] if cached else None
 	return payload
+
+
+# ─── 已下好的安装包缓存 ─────────────────────────────────────
+# 另一位同事在 updater.py 里落盘（data/update-cache/update-ready.json
+# + data/update-cache/jianli-lieshou-<version>.zip）；这里只读这份磁盘
+# 格式。updater.py 还没提供 load_cached_update() / clear_cached_update()
+# 时用本地同格式读取兜底——读出来先验大小和 sha256，对不上就当没有，
+# 不让坏包进更新流程。重启后内存里的 _STATE 丢了，包还在磁盘上，
+# 这就是“不用重新下载”的依据。
+_UPDATE_CACHE_FILENAME = "update-ready.json"
+
+
+def _update_cache_dirs():
+	"""缓存安装包可能在的目录：先认 DATA_DIR，再认安装目录下的 data。"""
+	dirs = [DATA_DIR / "update-cache"]
+	try:
+		from bosshunter import updater
+
+		install_dir = updater.get_install_dir()
+	except Exception:
+		install_dir = None
+	if install_dir is not None:
+		candidate = Path(install_dir) / "data" / "update-cache"
+		if candidate not in dirs:
+			dirs.append(candidate)
+	return dirs
+
+
+def _verify_cached_record(record, cache_dir):
+	"""校验一条缓存记录：字段齐、版本比当前新、zip 在、大小和 sha256 都对得上。
+
+	返回可用的记录 dict（含绝对路径 zip_path），否则 None。绝不抛错。
+	"""
+	if not isinstance(record, dict):
+		return None
+	version = record.get("version")
+	sha256 = record.get("sha256")
+	size = record.get("size")
+	zip_path = record.get("zip_path")
+	if not isinstance(version, str) or not version:
+		return None
+	if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+		return None
+	if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+		return None
+	if not isinstance(zip_path, str) or not zip_path:
+		return None
+	try:
+		from bosshunter.updater import is_newer
+
+		if not is_newer(__version__, version):
+			return None
+	except Exception:
+		return None
+	path = Path(zip_path)
+	if not path.is_absolute():
+		path = Path(cache_dir) / path
+	try:
+		if not path.is_file() or path.stat().st_size != size:
+			return None
+		digest = hashlib.sha256()
+		with open(path, "rb") as fh:
+			for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+				digest.update(chunk)
+		if digest.hexdigest() != sha256.lower():
+			return None
+	except OSError:
+		return None
+	return {
+		"version": version,
+		"sha256": sha256.lower(),
+		"size": size,
+		"zip_path": str(path),
+		"downloaded_at": record.get("downloaded_at") or "",
+	}
+
+
+def _load_cached_update():
+	"""读已验证的缓存安装包：有就返回 dict，没有/坏了返回 None，绝不抛错。
+
+	优先用 updater.load_cached_update()（同事在 updater.py 里实现的那份，
+	以它的实际落地为准）；没有这个函数时按同一份磁盘格式自己读。
+	"""
+	try:
+		from bosshunter import updater
+
+		loader = getattr(updater, "load_cached_update", None)
+		if callable(loader):
+			try:
+				cached = loader()
+			except Exception:
+				cached = None
+			if isinstance(cached, dict):
+				zip_path = cached.get("zip_path")
+				base = Path(zip_path).parent if isinstance(zip_path, str) and zip_path else _update_cache_dirs()[0]
+				verified = _verify_cached_record(cached, base)
+				if verified is not None:
+					return verified
+	except Exception:
+		pass
+	for cache_dir in _update_cache_dirs():
+		try:
+			record = json.loads((cache_dir / _UPDATE_CACHE_FILENAME).read_text(encoding="utf-8"))
+		except Exception:
+			continue
+		verified = _verify_cached_record(record, cache_dir)
+		if verified is not None:
+			return verified
+	return None
+
+
+def _clear_cached_update():
+	"""清掉缓存包记录（中继有了更新的版本、旧缓存作废时才用；绝不抛错）。
+
+	优先用 updater.clear_cached_update()；没有时只删本地的记录文件和
+	对应的 zip——失败记录（update-result.json）不在这里动。
+	"""
+	try:
+		from bosshunter import updater
+
+		clearer = getattr(updater, "clear_cached_update", None)
+		if callable(clearer):
+			try:
+				clearer()
+			except Exception:
+				pass
+			return
+	except Exception:
+		pass
+	for cache_dir in _update_cache_dirs():
+		try:
+			(cache_dir / _UPDATE_CACHE_FILENAME).unlink(missing_ok=True)
+			for stale in cache_dir.glob("jianli-lieshou-*.zip"):
+				try:
+					stale.unlink()
+				except OSError:
+					pass
+		except OSError:
+			pass
+
+
+def _cached_update_info(cached):
+	"""缓存包转成前端能用的版本信息（不含内部路径）。"""
+	return {
+		"version": cached["version"],
+		"current_version": __version__,
+		"size": cached["size"],
+		"sha256": cached["sha256"],
+		"notes": "",
+		"update_available": True,
+	}
+
+
+def _restore_ready_from_cache(cached, notes=""):
+	"""把已验证的缓存包恢复成 ready 态：秒回，不重新下载。
+
+	staging 在重启后丢了，真正换文件前在 /api/update/apply 里从缓存
+	zip 重解（见 _restage_from_cached_zip），这里先把 staging_dir 留空。
+	"""
+	from bosshunter import updater
+
+	info = _cached_update_info(cached)
+	if notes:
+		info["notes"] = notes
+	updater._set_status(
+		status="ready",
+		update_available=True,
+		progress=100,
+		message="新版本下好了",
+		error="",
+		info=info,
+		zip_path=cached["zip_path"],
+		staging_dir=None,
+	)
+	return updater.get_status()
+
+
+def _restage_from_cached_zip(cached):
+	"""staging 丢了时从缓存 zip 重解出一份，返回校验过的 payload 根目录。
+
+	失败就报白话原因（UpdateError），绝不把解不开的包交给更新流程。
+	"""
+	import tempfile
+
+	from bosshunter import updater
+
+	tmpdir = tempfile.mkdtemp(prefix="jianli-update-")
+	try:
+		staging = updater.extract_update(cached["zip_path"], Path(tmpdir) / "staging")
+		return updater.validate_staged_payload(updater.find_payload_root(staging))
+	except updater.UpdateError:
+		shutil.rmtree(tmpdir, ignore_errors=True)
+		raise
+	except Exception:
+		shutil.rmtree(tmpdir, ignore_errors=True)
+		raise updater.UpdateError("安装包解不开，重新下载一次再试。")
+
+
+def _cached_retry_applies(cached, install_dir):
+	"""缓存包能不能用来重试这次失败：没有失败记录，或失败的就是缓存这一版。"""
+	if cached is None:
+		return False
+	if install_dir is None:
+		return True
+	try:
+		from bosshunter import updater
+
+		failure = updater.get_last_update_failure(install_dir)
+	except Exception:
+		failure = None
+	expected = failure.get("expected_version") if failure else None
+	return expected is None or expected == cached["version"]
+
+
+def _error_info_with_reason(state, cached, install_dir):
+	"""error 态的 info：保留版本号 + 失败原因，别置空。
+
+	版本先看上次失败记录（update-result.json），再看缓存包；原因就是
+	state 里的 error 原话。都没有版本号时返回 None（编不出来就不编）。
+	"""
+	info = state.get("info")
+	if isinstance(info, dict) and info.get("version"):
+		enriched = dict(info)
+		if state.get("error"):
+			enriched.setdefault("reason", state["error"])
+		return enriched
+	version = None
+	reason = state.get("error") or ""
+	if install_dir is not None:
+		try:
+			from bosshunter import updater
+
+			failure = updater.get_last_update_failure(install_dir)
+		except Exception:
+			failure = None
+		if failure:
+			version = failure.get("expected_version")
+			reason = reason or failure.get("reason") or ""
+	if not version and cached:
+		version = cached["version"]
+	if not version:
+		return None
+	if cached and cached["version"] == version:
+		enriched = _cached_update_info(cached)
+	else:
+		enriched = {
+			"version": version,
+			"current_version": __version__,
+			"size": 0,
+			"sha256": "",
+			"notes": "",
+			"update_available": False,
+		}
+	enriched["reason"] = reason
+	return enriched
 
 
 @app.route("/api/update/check")
@@ -1181,31 +1453,75 @@ def api_update_check():
 
 	force = (request.query.get("force") or "").lower() in {"1", "true", "yes"}
 	install_dir = updater.get_install_dir()
-	if force:
-		# 手动点“检查更新”是跳出失败循环的出口：清掉上次失败的记录再查。
-		if install_dir is not None:
-			updater.clear_update_result(install_dir)
-	else:
+	cached = _load_cached_update()
+	if not force:
 		# 非手动检查绝不能把上次更新失败的状态盖回“有新版本”——
-		# 那就是用户报的重复循环提示。失败记录在，状态就保持报错。
+		# 那就是用户报的重复循环提示。失败记录在，状态就保持报错，
+		# 但 payload 里留着版本号、失败原因和缓存包情况，能点“再试一次”。
 		if install_dir is not None and updater.reconcile_pending_update(install_dir):
-			return _json_response(_update_payload(updater.get_status()))
-	return _json_response(_update_payload(updater.run_check(load_config(CONFIG_PATH), force=force)))
+			return _json_response(_update_payload(updater.get_status(), cached, install_dir))
+	elif install_dir is not None:
+		# 手动点“检查更新”是跳出失败循环的出口：只清失败记录，
+		# 绝不清缓存包记录——清掉缓存，重试就又变重下了。
+		updater.clear_update_result(install_dir)
+	state = updater.run_check(load_config(CONFIG_PATH), force=force)
+	# 中继刚查到的和本地缓存对一遍：中继有更新的，旧缓存作废；
+	# 中继没给新版（或查不到），但本地有验过的包，就报缓存的 ready，
+	# 不重新下载；同版也直接报缓存的 ready，不重复下。
+	info = state.get("info")
+	latest = info.get("version") if isinstance(info, dict) else None
+	latest_notes = info.get("notes") if isinstance(info, dict) else ""
+	if cached is not None:
+		if latest and latest != cached["version"]:
+			_clear_cached_update()
+			cached = None
+		else:
+			state_version = latest
+			if state_version is None or state_version == cached["version"]:
+				state = _restore_ready_from_cache(cached, notes=latest_notes if isinstance(latest_notes, str) else "")
+	return _json_response(_update_payload(state, cached, install_dir))
 
 
 @app.route("/api/update/status")
 def api_update_status():
 	from bosshunter import updater
 
-	return _json_response(_update_payload(updater.get_status()))
+	state = updater.get_status()
+	cached = _load_cached_update()
+	install_dir = updater.get_install_dir()
+	if state.get("status") == "idle" and cached is not None and _cached_retry_applies(cached, install_dir):
+		# 重启后内存态丢了，但安装包还在本地验过：直接报 ready，不重新下载。
+		# error 态不自动升 ready——失败要留着给横幅显示原因，点“再试一次”
+		# 才由 /api/update/start 恢复（见下面）；失败记录还在时也不升
+		# ready，不然状态会在 ready 和 error 之间来回翻（启动 3 秒后的
+		# reconcile 一定会把它翻回 error）。
+		state = _restore_ready_from_cache(cached)
+	return _json_response(_update_payload(state, cached, install_dir))
 
 
 @app.route("/api/update/start", method="POST")
 def api_update_start():
 	from bosshunter import updater
 
+	cached = _load_cached_update()
+	state = updater.get_status()
+	info = state.get("info")
+	info_version = info.get("version") if isinstance(info, dict) else None
+	if (
+		cached is not None
+		and state.get("status") in {"idle", "error"}
+		and (info_version is None or info_version == cached["version"])
+		and _cached_retry_applies(cached, updater.get_install_dir())
+	):
+		# 缓存重试：安装包已经下好验过，直接恢复 ready，秒回，不重新下载。
+		# 失败记录也清掉——用户已经明确点了重试，下次检查不再翻回旧的报错。
+		# 清的只是失败记录，缓存包记录不动。
+		install_dir = updater.get_install_dir()
+		if install_dir is not None:
+			updater.clear_update_result(install_dir)
+		return _json_response(_update_payload(_restore_ready_from_cache(cached), cached, install_dir))
 	try:
-		payload = _update_payload(updater.start_download(load_config(CONFIG_PATH)))
+		payload = _update_payload(updater.start_download(load_config(CONFIG_PATH)), cached)
 	except updater.UpdateError as exc:
 		return _json_response({"error": exc.user_message}, 400)
 	return _json_response(payload)
@@ -1219,6 +1535,16 @@ def api_update_apply():
 		install_dir = updater.get_install_dir()
 		if install_dir is None:
 			raise updater.UpdateError("一键更新只在正式安装的版本里能用。")
+		state = updater.get_status()
+		staging = state.get("staging_dir")
+		if state.get("status") == "ready" and (not staging or not Path(staging).is_dir()):
+			# 重启后 staging 丢了：从已验证的缓存安装包重解一份再换，
+			# 不用重新下载。没有可用的缓存包才报“还没下好”。
+			cached = _load_cached_update()
+			if cached is None:
+				raise updater.UpdateError("新版本还没下好，先等它下载完。")
+			payload_root = _restage_from_cached_zip(cached)
+			updater._set_status(staging_dir=str(payload_root), zip_path=cached["zip_path"])
 		updater.apply_update(install_dir, updater.get_exe_name())
 	except updater.UpdateError as exc:
 		return _json_response({"error": exc.user_message}, 400)

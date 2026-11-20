@@ -52,6 +52,12 @@ export function UpdateBanner({ update }: UpdateBannerProps) {
                   </>
                 ) : null}
                 <span className="font-medium text-foreground">{errorCopy?.tip || '点“再试一次”。'}</span>
+                {info.downloadCached ? (
+                  <>
+                    <br />
+                    <span>安装包已经下好了，再试一次不用重新下载。</span>
+                  </>
+                ) : null}
               </>
             ) : (
               <>

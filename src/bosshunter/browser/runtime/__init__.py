@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -17,6 +18,8 @@ from typing import Any
 import httpx
 
 from bosshunter.config import DEFAULTS
+
+_logger = logging.getLogger(__name__)
 
 _browser_config: dict[str, Any] | None = None
 _runtime_process: subprocess.Popen | None = None
@@ -378,6 +381,13 @@ def launch_debuggable_browser(config: dict[str, Any] | None = None, target_url: 
         time.sleep(0.5)
 
 
+def _is_windows() -> bool:
+    """是不是 Windows。单独成函数是为了测试能扮成 Windows 走一遍：
+    直接 patch os.name 会连 pathlib.Path 一起改成 WindowsPath，
+    在 Linux 上根本建不出来（与 updater.py 的同名 helper 同理）。"""
+    return os.name == "nt"
+
+
 def start_runtime(config: dict[str, Any] | None = None, node_executable: str = "node") -> subprocess.Popen:
     """Start the bundled Node.js browser runtime."""
     global _runtime_process
@@ -388,6 +398,68 @@ def start_runtime(config: dict[str, Any] | None = None, node_executable: str = "
     }
     _runtime_process = subprocess.Popen([node_executable, str(script_path)], **kwargs)
     return _runtime_process
+
+
+def stop_runtime(timeout: float = 10.0) -> bool:
+    """Stop the Browser Runtime started by start_runtime().
+
+    只停我们自己拉起的那个 node 子进程（_runtime_process）及其后代：
+    用户自己的浏览器绝不是它的子进程——launch_debuggable_browser
+    是另外拉起的、用户自己拉的更不是；cdp-proxy.mjs 自己也不拉
+    浏览器（只连 CDP），所以按进程树杀不会碰到用户浏览器。
+    杀树的原因：更新换文件时，_internal 里被孤儿 node 占住的文件
+    （如 patchright driver 的 node.exe）会让 robocopy 换不上去；
+    更新前先停掉 runtime，bat 的等待/强制结束循环是后备。
+
+    幂等：没拉起过、已经退了、重复调用都返回 True。失败只记日志、
+    不抛异常——apply_update 起 bat 之前调它，停不掉也不能挡更新。
+    """
+    global _runtime_process
+    proc = _runtime_process
+    _runtime_process = None
+    if proc is None:
+        return True
+    try:
+        if proc.poll() is not None:
+            return True
+    except Exception as exc:
+        _logger.warning("stop_runtime: 检查 runtime 进程状态失败：%s", exc)
+        return False
+    try:
+        if _is_windows():
+            # Windows 上按进程树杀：runtime node 下面可能还有子进程；
+            # 只认我们拉起的这个 PID 的树，不碰别的 node/浏览器。
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True,
+                    timeout=15,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+                )
+            except Exception as exc:
+                _logger.warning("stop_runtime: taskkill 失败：%s", exc)
+        else:
+            # POSIX：start_runtime 用 start_new_session 拉起，先温柔停。
+            try:
+                proc.terminate()
+            except Exception as exc:
+                _logger.warning("stop_runtime: terminate 失败：%s", exc)
+        try:
+            proc.wait(timeout=max(0.0, float(timeout)))
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception as exc:
+                _logger.warning("stop_runtime: kill 失败：%s", exc)
+            try:
+                proc.wait(timeout=5)
+            except Exception as exc:
+                _logger.warning("stop_runtime: 等 runtime 进程退出失败：%s", exc)
+                return False
+        return proc.poll() is not None
+    except Exception as exc:
+        _logger.warning("stop_runtime: 停 runtime 进程失败：%s", exc)
+        return False
 
 
 def _wait_for_targets(browser: dict[str, Any], wait_seconds: float) -> bool:
@@ -474,5 +546,6 @@ __all__ = [
     "is_bosshunter_runtime",
     "runtime_targets",
     "start_runtime",
+    "stop_runtime",
     "ensure_runtime",
 ]

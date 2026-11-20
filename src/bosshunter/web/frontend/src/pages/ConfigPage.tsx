@@ -724,14 +724,17 @@ export default function ConfigPage() {
             <p className="text-sm text-foreground">
               现在是 {update.currentVersion ? `${update.currentVersion} 版` : '…'}
             </p>
-            {update.info ? (
+            {update.phase === 'error' ? (
+              <p className="text-sm text-muted">
+                {update.error || '这次没换上，稍后再试。'}
+                {update.info?.downloadCached ? '安装包已经下好了，再试一次不用重新下载。' : ''}
+              </p>
+            ) : update.info ? (
               <p className="text-sm text-muted">
                 有新版本 {update.info.version} 了
                 {formatUpdateSize(update.info.size) ? `，大概 ${formatUpdateSize(update.info.size)}` : ''}
                 {` — ${formatUpdateNotes(update.info.notes)}`}，点一下就能换上，不用重新下载。
               </p>
-            ) : update.phase === 'error' && update.error ? (
-              <p className="text-sm text-muted">{update.error}</p>
             ) : updateNote ? (
               <p className="text-sm text-muted">{updateNote}</p>
             ) : (
