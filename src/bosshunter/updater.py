@@ -1274,6 +1274,88 @@ def cleanup_stale_update_processes(install_dir: str | Path | None = None) -> boo
 DESKTOP_SHORTCUT_MARKER_FILENAME = "desktop_shortcut_created"
 _DESKTOP_SHORTCUT_NAME = "简历猎手.lnk"
 
+# 快捷方式带上产品 logo 的版本：1.1.12 起 spec 给 exe 嵌了 logo.ico，
+# 快捷方式 IconLocation 指 exe 就显示 logo。marker 里记的是建快捷方式
+# 时的版本号，低于这个版本说明快捷方式建在没图标的版本上，启动时要
+# 重写一次 .lnk（只刷新已存在的，不复活用户删掉的）。
+_DESKTOP_SHORTCUT_ICON_VERSION = "1.1.12"
+
+
+def _parse_version_tuple(text: str) -> tuple[int, ...] | None:
+    """把 "1.1.12" 这类版本号读成可比的整数元组；读不出来返回 None。"""
+    parts = (text or "").strip().split(".")
+    if not parts or any(not p.isdigit() for p in parts):
+        return None
+    return tuple(int(p) for p in parts)
+
+
+def _desktop_shortcut_script(exe: Path, refresh_only: bool = False) -> str:
+    """建/刷新桌面快捷方式的 PowerShell 脚本。
+
+    refresh_only=True 时只刷新已存在的 .lnk：先 Test-Path，桌面上没有
+    就什么都不做（用户删了就不再补建），有才重写并输出 refreshed。
+    """
+    prefix = (
+        "$desktop = [Environment]::GetFolderPath('Desktop'); "
+        "$shell = New-Object -ComObject WScript.Shell; "
+        "$lnkPath = Join-Path $desktop " + _ps_quote(_DESKTOP_SHORTCUT_NAME) + "; "
+    )
+    body = (
+        "$lnk = $shell.CreateShortcut($lnkPath); "
+        f"$lnk.TargetPath = {_ps_quote(str(exe))}; "
+        f"$lnk.WorkingDirectory = {_ps_quote(str(exe.parent))}; "
+        f"$lnk.IconLocation = {_ps_quote(str(exe))}; "
+        "$lnk.Save()"
+    )
+    if not refresh_only:
+        return prefix + body
+    return (
+        prefix
+        + "if (Test-Path $lnkPath) { " + body + " Write-Output 'refreshed' } "
+        + "else { Write-Output 'missing' }"
+    )
+
+
+def _refresh_desktop_shortcut_if_needed(marker: Path, exe: Path) -> bool:
+    """marker 在但版本旧：刷新已存在的桌面快捷方式。
+
+    marker 版本 >= 图标版本（1.1.12）就不用动；低于它才重写 .lnk。
+    .lnk 不存在（用户删了）不复活，只把 marker 版本写到当前版；
+    重写失败不改 marker，下次启动再试。返回 True 当且仅当重写成功。
+    """
+    try:
+        marker_version = _parse_version_tuple(marker.read_text(encoding="utf-8"))
+    except Exception:
+        marker_version = None
+    icon_version = _parse_version_tuple(_DESKTOP_SHORTCUT_ICON_VERSION)
+    if (
+        marker_version is not None
+        and icon_version is not None
+        and marker_version >= icon_version
+    ):
+        return False
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+             _desktop_shortcut_script(exe, refresh_only=True)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+        )
+    except Exception:
+        return False
+    if result.returncode != 0:
+        return False
+    stdout = result.stdout if isinstance(result.stdout, str) else ""
+    refreshed = "refreshed" in stdout
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{__version__}\n", encoding="utf-8")
+    except Exception:
+        pass
+    return refreshed
+
 
 def _is_frozen() -> bool:
     """是不是打包后的 exe。单独成函数是为了测试能扮 frozen：
@@ -1300,8 +1382,14 @@ def ensure_desktop_shortcut(
     用户手动删了快捷方式就不再补建；新解压的包没有 marker，第一次
     启动就建；面板更新不删 marker 也不删快捷方式。
 
+    图标刷新：1.1.12 起 exe 嵌了产品 logo，marker 里版本低于 1.1.12
+    说明快捷方式建在没图标的版本上，启动时重写一次已存在的 .lnk
+    （TargetPath/WorkingDirectory/IconLocation 都指回当前 exe），
+    桌面图标跟着换成 logo；.lnk 已经被用户删了就不复活，只把 marker
+    版本写到当前版，下次启动不再重复检查。
+
     只在 Windows + frozen 的 exe 里做；任何一步出错都悄悄返回
-    False，绝不挡启动。建成了才返回 True。
+    False，绝不挡启动。新建或刷新成功才返回 True。
     """
     if not _is_windows() or not _is_frozen():
         return False
@@ -1311,17 +1399,8 @@ def ensure_desktop_shortcut(
     exe = Path(exe_path) if exe_path is not None else Path(sys.executable).resolve()
     marker = target / "data" / DESKTOP_SHORTCUT_MARKER_FILENAME
     if marker.is_file():
-        return False
-    script = (
-        "$desktop = [Environment]::GetFolderPath('Desktop'); "
-        "$shell = New-Object -ComObject WScript.Shell; "
-        "$lnkPath = Join-Path $desktop " + _ps_quote(_DESKTOP_SHORTCUT_NAME) + "; "
-        "$lnk = $shell.CreateShortcut($lnkPath); "
-        f"$lnk.TargetPath = {_ps_quote(str(exe))}; "
-        f"$lnk.WorkingDirectory = {_ps_quote(str(exe.parent))}; "
-        f"$lnk.IconLocation = {_ps_quote(str(exe))}; "
-        "$lnk.Save()"
-    )
+        return _refresh_desktop_shortcut_if_needed(marker, exe)
+    script = _desktop_shortcut_script(exe)
     try:
         result = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],

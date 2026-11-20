@@ -78,6 +78,11 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    # 产品 logo：从 src/bosshunter/web/frontend/public/logo.png 生成的
+    # logo.ico（16/32/48/256 四尺寸），打出来的 exe 本身带图标，桌面
+    # 快捷方式 IconLocation 指 exe 就够了。相对路径按打包时的工作目录
+    # （仓库根目录，CI 也一样）解析，与上面 datas 的相对路径同理。
+    icon="logo.ico",
 )
 
 coll = COLLECT(

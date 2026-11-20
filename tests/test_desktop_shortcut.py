@@ -88,7 +88,9 @@ class EnsureDesktopShortcutTests(unittest.TestCase):
             self.assertIn(str(exe), script)
 
     def test_marker_means_do_not_recreate(self):
-        # 用户手动删了快捷方式也不再补建：marker 在就跳过。
+        # 用户手动删了快捷方式也不再补建：marker 旧版 + 桌面上没 .lnk，
+        # 刷新脚本跑一次（Test-Path 守着不重建），返回 False，marker
+        # 版本写到当前版，下次启动不再重复检查。
         with tempfile.TemporaryDirectory() as tmp:
             install, exe = self._install(tmp)
             marker = install / "data" / "desktop_shortcut_created"
@@ -100,8 +102,93 @@ class EnsureDesktopShortcutTests(unittest.TestCase):
                 frozen,
                 patch("bosshunter.updater.subprocess.run") as run,
             ):
+                run.return_value = Mock(returncode=0, stdout="missing\n")
+                self.assertFalse(updater.ensure_desktop_shortcut(install, exe))
+            run.assert_called_once()
+            script = run.call_args.args[0][-1]
+            self.assertIn("if (Test-Path $lnkPath)", script)
+            self.assertIn("Write-Output 'missing'", script)
+            self.assertEqual(marker.read_text(encoding="utf-8").strip(), updater.__version__)
+
+    def test_old_marker_refreshes_existing_shortcut(self):
+        # marker 是 1.1.7（没图标的版本）+ 桌面上有 .lnk：重写一次，
+        # TargetPath/IconLocation 都指回当前 exe，marker 写到当前版。
+        with tempfile.TemporaryDirectory() as tmp:
+            install, exe = self._install(tmp)
+            marker = install / "data" / "desktop_shortcut_created"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("1.1.7\n", encoding="utf-8")
+            win, frozen = self._windows_frozen()
+            with (
+                win,
+                frozen,
+                patch("bosshunter.updater.subprocess.run") as run,
+            ):
+                run.return_value = Mock(returncode=0, stdout="refreshed\n")
+                self.assertTrue(updater.ensure_desktop_shortcut(install, exe))
+            run.assert_called_once()
+            script = run.call_args.args[0][-1]
+            self.assertIn("if (Test-Path $lnkPath)", script)
+            self.assertIn(str(exe), script)
+            self.assertIn("IconLocation", script)
+            self.assertEqual(marker.read_text(encoding="utf-8").strip(), updater.__version__)
+
+    def test_current_marker_does_nothing(self):
+        # marker 已经是当前版：什么都不做，PowerShell 一次都不跑。
+        with tempfile.TemporaryDirectory() as tmp:
+            install, exe = self._install(tmp)
+            marker = install / "data" / "desktop_shortcut_created"
+            marker.parent.mkdir(parents=True)
+            marker.write_text(f"{updater.__version__}\n", encoding="utf-8")
+            win, frozen = self._windows_frozen()
+            with (
+                win,
+                frozen,
+                patch("bosshunter.updater.subprocess.run") as run,
+            ):
                 self.assertFalse(updater.ensure_desktop_shortcut(install, exe))
             run.assert_not_called()
+
+    def test_unparseable_marker_treated_as_old(self):
+        # marker 内容读不懂：当旧版处理，刷新走一遍。
+        with tempfile.TemporaryDirectory() as tmp:
+            install, exe = self._install(tmp)
+            marker = install / "data" / "desktop_shortcut_created"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("garbage\n", encoding="utf-8")
+            win, frozen = self._windows_frozen()
+            with (
+                win,
+                frozen,
+                patch("bosshunter.updater.subprocess.run") as run,
+            ):
+                run.return_value = Mock(returncode=0, stdout="refreshed\n")
+                self.assertTrue(updater.ensure_desktop_shortcut(install, exe))
+            run.assert_called_once()
+
+    def test_refresh_failure_keeps_old_marker(self):
+        # 刷新失败不改 marker，下次启动再试。
+        with tempfile.TemporaryDirectory() as tmp:
+            install, exe = self._install(tmp)
+            marker = install / "data" / "desktop_shortcut_created"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("1.1.7\n", encoding="utf-8")
+            win, frozen = self._windows_frozen()
+            with (
+                win,
+                frozen,
+                patch("bosshunter.updater.subprocess.run") as run,
+            ):
+                run.return_value = Mock(returncode=1)
+                self.assertFalse(updater.ensure_desktop_shortcut(install, exe))
+            self.assertEqual(marker.read_text(encoding="utf-8").strip(), "1.1.7")
+
+    def test_parse_version_tuple(self):
+        self.assertEqual(updater._parse_version_tuple("1.1.12"), (1, 1, 12))
+        self.assertEqual(updater._parse_version_tuple("1.1.7\n"), (1, 1, 7))
+        self.assertIsNone(updater._parse_version_tuple("garbage"))
+        self.assertIsNone(updater._parse_version_tuple(""))
+        self.assertTrue(updater._parse_version_tuple("1.1.7") < updater._parse_version_tuple("1.1.12"))
 
     def test_powershell_failure_returns_false_and_writes_no_marker(self):
         with tempfile.TemporaryDirectory() as tmp:
