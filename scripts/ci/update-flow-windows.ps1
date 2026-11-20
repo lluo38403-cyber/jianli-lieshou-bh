@@ -819,15 +819,19 @@ try {
   # ---- 阶段 result：换文件结果文件 verdict 为 ok，pending 已消费 ----
   # 注意顺序：这一步必须在 no-loop 之前，因为 force 检查会清掉
   # update-result.json（clear_update_result），先读结果再查更新。
-  # Retry 第一遍期望 failed/copy（回滚），第二遍见 result2。
+  # Retry 第一遍期望 failed/copy 或 failed/stuck（回滚），第二遍见 result2。
   Measure-Stage 'result' {
     $resultPath = Join-Path $ExeDir 'update-result.json'
     $pendingPath = Join-Path $ExeDir 'update-pending.json'
     if ($script:expectVerdict -eq 'failed') {
-      # 回滚结果：bat 写 failed/copy，重开的旧版核对 pending 后会
-      # 把 verdict 重写一遍（带中文 reason、不带 reason_code），
+      # 回滚结果：bat 写 failed/copy 或 failed/stuck，重开的旧版核对
+      # pending 后会把 verdict 重写一遍（带中文 reason、不带 reason_code），
       # 所以只要求两者至少其一在场且对得上：reason 文案须是 copy
-      # 对应的“换文件的时候出问题了”，reason_code 在场时须是 copy。
+      # 对应的“换文件的时候出问题了”或 stuck 对应的“主程序关不掉”，
+      # reason_code 在场时须是 copy 或 stuck。stuck 也算数的原因：
+      # v24 的 bat 在拷文件前先探锁，看门狗 1 秒内就会重拉占位进程，
+      # 锁永远清不掉，bat 在 :fail_stuck 就停了，根本到不了 robocopy；
+      # 两种都是安全回滚（旧版还在、缓存包留着、能直接重试）。
       $verdict = $null
       $deadline = (Get-Date).AddSeconds(60)
       while ((Get-Date) -lt $deadline) {
@@ -848,13 +852,13 @@ try {
       if ($verdict.expected_version -ne $ToVersion -or $verdict.actual_version -ne $FromVersion) {
         throw "stage=result 回滚结果里的版本不对：expected=$($verdict.expected_version)，actual=$($verdict.actual_version)，期望 expected=v$ToVersion、actual=v$FromVersion"
       }
-      if ($verdict.reason -and $verdict.reason -notmatch '换文件的时候出问题了') {
-        throw "stage=result 回滚原因不对：reason=$($verdict.reason)（期望 copy 对应的'换文件的时候出问题了'）"
+      if ($verdict.reason -and $verdict.reason -notmatch '换文件的时候出问题了|主程序关不掉') {
+        throw "stage=result 回滚原因不对：reason=$($verdict.reason)（期望 copy 对应的'换文件的时候出问题了'或 stuck 对应的'主程序关不掉'）"
       }
-      if ($null -ne $verdict.reason_code -and $verdict.reason_code -ne 'copy') {
-        throw "stage=result 回滚原因码不对：reason_code=$($verdict.reason_code)，期望 copy"
+      if ($null -ne $verdict.reason_code -and $verdict.reason_code -notin @('copy', 'stuck')) {
+        throw "stage=result 回滚原因码不对：reason_code=$($verdict.reason_code)，期望 copy 或 stuck"
       }
-      Write-Host 'stage=result OK：回滚 verdict 为 failed/copy，update-pending.json 已消费'
+      Write-Host 'stage=result OK：回滚 verdict 为 failed/copy 或 failed/stuck，update-pending.json 已消费'
     } else {
       $verdict = $null
       $deadline = (Get-Date).AddSeconds(30)
