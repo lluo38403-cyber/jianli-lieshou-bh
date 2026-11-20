@@ -478,7 +478,7 @@ function Assert-SwapOrder {
     if ($copyStarted) {
       $copySeen = $true
       if ($oldAlive) {
-        throw "stage=swap-watch bat 在旧进程没死透时就开始拷文件：$oldDesc，update.log 已出现“正在换上新版本”——旧面板窗口没关就换文件必然撞锁（lucky 2026-11-20 定性）"
+        throw "stage=swap-watch bat 在旧进程没死透时就开始拷文件：$oldDesc，update.log 已出现'正在换上新版本'——旧面板窗口没关就换文件必然撞锁（lucky 2026-11-20 定性）"
       }
       if ($ExpectInstallDirClear -and $installProcs) {
         $names = ($installProcs | ForEach-Object { "$($_.Name) PID $($_.ProcessId)（$($_.ExecutablePath)）" }) -join '；'
@@ -842,7 +842,7 @@ try {
         throw "stage=result 回滚结果里的版本不对：expected=$($verdict.expected_version)，actual=$($verdict.actual_version)，期望 expected=v$ToVersion、actual=v$FromVersion"
       }
       if ($verdict.reason -and $verdict.reason -notmatch '换文件的时候出问题了') {
-        throw "stage=result 回滚原因不对：reason=$($verdict.reason)（期望 copy 对应的“换文件的时候出问题了”）"
+        throw "stage=result 回滚原因不对：reason=$($verdict.reason)（期望 copy 对应的'换文件的时候出问题了'）"
       }
       if ($null -ne $verdict.reason_code -and $verdict.reason_code -ne 'copy') {
         throw "stage=result 回滚原因码不对：reason_code=$($verdict.reason_code)，期望 copy"
