@@ -198,14 +198,12 @@ open(sys.argv[2], 'wb').write(build_pdf(''))
     throw "stage=pdf 带文字的 PDF 上传失败：$($_.Exception.Message)"
   }
   Write-Host 'stage=pdf OK：带文字的 PDF 上传成功'
-  try {
-    $blankUpload = Invoke-WebRequest -Uri "$base/api/resume/upload" -Method Post -Form @{ file = Get-Item $pdfBlank } -TimeoutSec 15
-    throw 'stage=pdf 空白 PDF 应该报扫描件错，却上传成功了'
-  } catch {
-    if ($_.Exception.Message -like 'stage=pdf*') { throw $_ }
-    $body = $_.ErrorDetails.Message
-    if (-not $body -or $body -notmatch '扫描版') { throw "stage=pdf 空白 PDF 没报扫描件错：$body" }
-  }
+  # 400 的错误体不走异常的 ErrorDetails（CI 的 pwsh 下它是空的）：
+  # 用 -SkipHttpErrorCheck 直接读状态码与正文。
+  $blankResponse = Invoke-WebRequest -Uri "$base/api/resume/upload" -Method Post -Form @{ file = Get-Item $pdfBlank } -TimeoutSec 15 -SkipHttpErrorCheck
+  if ($blankResponse.StatusCode -eq 200) { throw 'stage=pdf 空白 PDF 应该报扫描件错，却上传成功了' }
+  $blankBody = $blankResponse.Content
+  if (-not $blankBody -or $blankBody -notmatch '扫描版') { throw "stage=pdf 空白 PDF 没报扫描件错（HTTP $($blankResponse.StatusCode)）：$blankBody" }
   Write-Host 'stage=pdf OK：空白 PDF 报了扫描件错'
   Remove-Item $pdfGen, $pdfText, $pdfBlank -ErrorAction SilentlyContinue
 } catch {

@@ -77,6 +77,7 @@ jobs:
           pwsh -File scripts/ci/smoke-windows.ps1 -ExeDir "$env:RUNNER_TEMP\smoke-run" -ExpectedVersion "${{ steps.version.outputs.version }}"
       - name: "负向验证：版本号故意写错，冒烟必须失败"
         id: neg-version
+        if: always()
         continue-on-error: true
         shell: pwsh
         run: |
@@ -89,6 +90,7 @@ jobs:
           Write-Host '负向验证通过：错版本号被冒烟测试抓住了'
       - name: "负向验证：产物目录是空的，冒烟必须失败"
         id: neg-package
+        if: always()
         continue-on-error: true
         shell: pwsh
         run: |
