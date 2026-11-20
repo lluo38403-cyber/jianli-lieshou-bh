@@ -202,3 +202,30 @@ it('switches platform tabs and only shows the selected platform config', async (
   expect(screen.getByRole('button', { name: '保存设置' })).toBeTruthy()
   expect(screen.getByRole('button', { name: '保存' })).toBeTruthy()
 })
+
+it('lets the user pick a browser and fill the manual path from the detected list', async () => {
+  let saved: Record<string, any> = { browser: { browser_choice: 'auto', executable_path: '' } }
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    let body: unknown = {}
+    if (url === '/api/config') {
+      if (init?.method === 'POST') { saved = JSON.parse(String(init.body)); body = { success: true } }
+      else body = saved
+    } else if (url === '/api/browser/diagnostics') {
+      body = { ok: false, discovered: { chrome: 'C:/Chrome/chrome.exe', edge: 'C:/Edge/msedge.exe' } }
+    } else if (url.startsWith('/api/cities')) body = { cities: [] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<ConfigPage />)
+  expect(await screen.findByText('用哪个浏览器')).toBeTruthy()
+  expect(screen.getByRole('radio', { name: /自动选择/ })).toBeTruthy()
+  fireEvent.click(screen.getByRole('radio', { name: /只用 Edge/ }))
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  await screen.findByText('设置已经保存了')
+  expect(saved.browser.browser_choice).toBe('edge')
+  // 手动模式：点已检测到的 Edge 就把路径填进去，不用手打。
+  fireEvent.click(screen.getByRole('radio', { name: /手动指定浏览器/ }))
+  const fill = await screen.findByRole('button', { name: /Edge：C:\/Edge\/msedge\.exe/ })
+  fireEvent.click(fill)
+  expect((screen.getByPlaceholderText(/例如 C:/) as HTMLInputElement).value).toBe('C:/Edge/msedge.exe')
+})

@@ -9,8 +9,9 @@ function statusOf(info: PlatformLoginInfo | undefined): PlatformLoginStatus {
   return 'unknown'
 }
 
-export function PlatformStatusCard({ platformLogin }: {
+export function PlatformStatusCard({ platformLogin, browserName = '浏览器' }: {
   platformLogin?: Partial<Record<string, PlatformLoginInfo>> | null
+  browserName?: string
 }) {
   const loggedOut = PLATFORM_IDS.filter(platform => statusOf(platformLogin?.[platform]) === 'logged_out')
   // 四个平台提示完全一样时（比如都没连上浏览器），只在卡片顶部显示一次。
@@ -81,7 +82,7 @@ export function PlatformStatusCard({ platformLogin }: {
       </div>
       {loggedOut.length > 0 && (
         <p className="mt-2 text-xs leading-5 text-danger">
-          掉线的平台跑起来会失败，点“重新登录”在 Chrome 里登好，再回来点“检查能不能跑”。
+          掉线的平台跑起来会失败，点“重新登录”在{browserName}里登好，再回来点“检查能不能跑”。
         </p>
       )}
     </section>

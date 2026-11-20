@@ -24,10 +24,10 @@ def _client() -> RuntimeClient:
     return RuntimeClient()
 
 
-def _ready() -> bool:
+def _ready(allow_launch: bool = True, target_url: str | None = None) -> bool:
     from bosshunter.browser.ownership import browser_execution
     with browser_execution():
-        return ensure_runtime()
+        return ensure_runtime(allow_launch=allow_launch, target_url=target_url)
 
 
 def check_chrome_connection() -> dict | None:
@@ -80,8 +80,12 @@ def find_liepin_tab() -> dict | None:
 
 
 def new_tab(url: str, background: bool = False) -> str | None:
-    """Open a tab and return its target ID."""
-    if not _ready():
+    """Open a tab and return its target ID.
+
+    用户主动点的“去登录”走这里：需要拉起浏览器时直接打开目标登录页，
+    不再先停在任何起始页（target_url 直达，兜底才是 data: 说明页）。
+    """
+    if not _ready(target_url=url):
         return None
     return _client().new_tab(url, background=background)
 

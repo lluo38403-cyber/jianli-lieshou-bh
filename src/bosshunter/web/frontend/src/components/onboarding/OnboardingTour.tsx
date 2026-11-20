@@ -13,7 +13,7 @@ const steps: TourStep[] = [
   { route: '/config', target: 'search-city', title: '选想去的城市', body: '搜一下、选上你想去的城市。平台都没打开的话，先打开一个。', click: false, placement: 'above' },
   { route: '/config', target: 'config-save', title: '保存一下', body: '改完点一下发光的“保存”。点完按钮变灰了，就是保存好了。', click: false, waitForSave: true, scroll: false },
   { route: '/config', target: 'nav-workbench', title: '回到首页', body: '点左边的“首页”，回去检查能不能正常跑。', click: true },
-  { route: '/', target: 'chrome-guide', title: '连上 Chrome', body: '先在 Chrome 里打开远程调试、登录好招聘网站，再回到这里。', click: false },
+  { route: '/', target: 'chrome-guide', title: '连上浏览器', body: '先在浏览器里打开远程调试、登录好招聘网站，再回到这里。', click: false },
   { route: '/', target: 'check-preflight', title: '检查能不能跑', body: '点一下发光的按钮做检查，结果会直接显示在上面。', click: true },
 ]
 

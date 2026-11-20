@@ -8,6 +8,8 @@ export interface BrowserDiagnostics {
   ok: boolean
   diagnostics?: Record<string, unknown>
   discovered?: { chrome?: string | null; edge?: string | null }
+  browser_choice?: string
+  selected_browser_name?: string
   error_kind?: 'not_found' | 'connection_failed' | null
   message?: string
   next_steps?: string[]
@@ -30,10 +32,10 @@ export function BrowserDiagnosticsPanel({ diagnostics, onRefresh }: {
   const isNotFound = diagnostics.error_kind === 'not_found'
   const title = isNotFound ? '没找到能用的浏览器' : '浏览器连不上了'
   const fallbackMessage = isNotFound
-    ? '电脑上没找到 Chrome 或 Edge，简历猎手要用你的 Chrome 打开招聘网站。'
+    ? '电脑上没找到能用的浏览器，简历猎手要用你的浏览器打开招聘网站。'
     : '浏览器已经装好了，但是现在连不上，点“一键启动浏览器”就行。'
-  // 连不上时主按钮就是一键启动：后端会自动拉起带调试端口的浏览器，
-  // 不用用户自己排错；没找到浏览器时只能重新检测。
+  // 连不上时主按钮就是一键启动：后端会拉起所选浏览器（带调试端口），
+  // 不用用户自己排错；没找到浏览器时只能重新检测（检测不拉起浏览器）。
   const primaryLabel = checking ? '正在启动…' : isNotFound ? '重新检测' : '一键启动浏览器'
 
   const handleFilePick = (file: File | undefined) => {
@@ -51,7 +53,7 @@ export function BrowserDiagnosticsPanel({ diagnostics, onRefresh }: {
   const handleSelect = async () => {
     const path = pathInput.trim()
     if (!path) {
-      setSelectMessage('先填一下浏览器在哪，比如 Chrome 或 Edge 的完整路径。')
+      setSelectMessage('先填一下浏览器程序的完整路径。')
       return
     }
     setSelecting(true)
@@ -76,7 +78,9 @@ export function BrowserDiagnosticsPanel({ diagnostics, onRefresh }: {
   const handleRecheck = async () => {
     setChecking(true)
     try {
-      await fetch('/api/browser/diagnostics', { method: 'POST' })
+      // 没找到浏览器：只重新检测，不拉起；连不上：一键启动才拉起。
+      const endpoint = isNotFound ? '/api/browser/diagnostics' : '/api/browser/launch'
+      await fetch(endpoint, { method: 'POST' })
     } catch {
       // 重新检测失败也刷新一次，让界面显示最新结果。
     } finally {
@@ -124,7 +128,7 @@ export function BrowserDiagnosticsPanel({ diagnostics, onRefresh }: {
           <label className="block text-xs font-bold text-foreground">
             手动选一下浏览器（chrome.exe / msedge.exe）
             <span className="mt-1 flex gap-2">
-              <Input value={pathInput} onChange={event => setPathInput(event.target.value)} placeholder="填入浏览器程序的完整路径，例如 Chrome 的安装路径" />
+              <Input value={pathInput} onChange={event => setPathInput(event.target.value)} placeholder="填入浏览器程序的完整路径" />
               <label className="flex h-9 shrink-0 cursor-pointer items-center rounded-md border border-card-border bg-card px-3 text-xs font-bold text-primary hover:border-primary/40">
                 选文件
                 <input

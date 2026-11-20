@@ -29,6 +29,8 @@ def _fake_diagnostics(*, chrome=True, discovered=None, error_kind=None):
         "browser_product": "Chrome/138.0",
         "browser_name": "Google Chrome",
         "discovered": discovered if discovered is not None else {"chrome": None, "edge": None},
+        "browser_choice": "auto",
+        "selected_browser_name": "浏览器",
         "error_kind": error_kind,
         "message": "浏览器连接正常。" if chrome else "这台电脑上没找到 Chrome 或 Edge 浏览器。",
         "next_steps": ["可以直接开始采集或投递任务。"] if chrome else ["请先安装 Chrome 或 Edge 浏览器。"],
@@ -150,15 +152,28 @@ class BrowserDiagnosticsApiTests(_ServerTestBase):
         diagnostics.assert_called_once()
         self.assertEqual(diagnostics.call_args.kwargs, {"allow_launch": False})
 
-    def test_post_diagnostics_launches_browser(self):
-        # 用户点的重新检测 / 一键启动浏览器：允许自动拉起。
+    def test_post_diagnostics_does_not_launch_browser(self):
+        # 重新检测只是检测，不拉起浏览器；拉起只走“一键启动浏览器”。
         with patch.object(
             server, "run_browser_diagnostics", return_value=_fake_diagnostics()
         ) as diagnostics:
             status, body = self._request("/api/browser/diagnostics", "POST")
         self.assertTrue(status.startswith("200"), body)
         diagnostics.assert_called_once()
+        self.assertEqual(diagnostics.call_args.kwargs, {"allow_launch": False})
+
+    def test_post_launch_endpoint_launches_browser(self):
+        # 用户主动点的“一键启动浏览器”才允许拉起。
+        with patch.object(
+            server, "run_browser_diagnostics", return_value=_fake_diagnostics()
+        ) as diagnostics:
+            status, body = self._request("/api/browser/launch", "POST")
+        self.assertTrue(status.startswith("200"), body)
+        diagnostics.assert_called_once()
         self.assertEqual(diagnostics.call_args.kwargs, {"allow_launch": True})
+        payload = json.loads(body)
+        self.assertEqual(payload["browser_choice"], "auto")
+        self.assertEqual(payload["selected_browser_name"], "浏览器")
 
     def test_browser_open_opens_url_in_runtime_browser(self):
         with patch("bosshunter.browser.new_tab", return_value="target-1") as new_tab:
@@ -197,6 +212,8 @@ class BrowserDiagnosticsApiTests(_ServerTestBase):
         status, body = self._request("/api/config")
         saved = json.loads(body)
         self.assertEqual(saved["browser"]["executable_path"], str(chrome_path))
+        # 手动选了文件 = 切到手动模式。
+        self.assertEqual(saved["browser"]["browser_choice"], "manual")
 
     def test_select_missing_path_returns_400_with_plain_message(self):
         status, body = self._request(
@@ -340,8 +357,7 @@ class RunBrowserDiagnosticsTabsTests(unittest.TestCase):
             patch("bosshunter.browser.diagnostics.runtime_health",
                   return_value={"browserProduct": "Chrome/138.0", "browserName": "Google Chrome"}),
             patch("bosshunter.browser.diagnostics.runtime_targets", return_value=targets),
-            patch("bosshunter.browser.diagnostics.find_boss_tab", return_value=targets[0]),
-            patch("bosshunter.browser.diagnostics.find_zhilian_tab", return_value=None),
+            # boss_tab / zhilian_tab 直接从 targets 里按域名找，不再走 facade。
             patch("bosshunter.browser.diagnostics.evaluate",
                   return_value='{"status": "ready", "message": "ok"}'),
         ):

@@ -168,7 +168,7 @@ describe('DashboardPage workbench task panel', () => {
     render(<DashboardPage view="workbench" />)
 
     const guide = await screen.findByRole('region', { name: '开始使用' })
-    expect(within(guide).getByText(/先在 Chrome 里登录好招聘网站/)).toBeTruthy()
+    expect(within(guide).getByText(/先在浏览器里登录好招聘网站/)).toBeTruthy()
     expect(within(guide).getByText(/只想先搜搜岗位/)).toBeTruthy()
     const started = vi.fn()
     window.addEventListener('jianli-lieshou:start-onboarding', started, { once: true })

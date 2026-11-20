@@ -677,6 +677,11 @@ export default function ConfigPage() {
           </div>
         </SectionCard>
 
+        {/* Browser Section：登录页 / 投递页 / 主界面窗口用哪个浏览器 */}
+        <SectionCard title="用哪个浏览器">
+          <BrowserSettingsSection config={config} updateConfig={updateConfig} />
+        </SectionCard>
+
         {/* Version Section */}
         <SectionCard title="版本">
           <div className="space-y-3">
@@ -751,6 +756,91 @@ export default function ConfigPage() {
 }
 
 // Helper components
+type BrowserChoice = 'auto' | 'chrome' | 'edge' | 'manual'
+
+function BrowserSettingsSection({ config, updateConfig }: {
+  config: Record<string, any>
+  updateConfig: (path: string, value: any) => void
+}) {
+  const [discovered, setDiscovered] = useState<{ chrome?: string | null; edge?: string | null }>({})
+  const [detecting, setDetecting] = useState(false)
+  const choice = (config.browser?.browser_choice as BrowserChoice) || 'auto'
+  const manualPath = (config.browser?.executable_path as string) || ''
+  // 本机检测到的浏览器列表：只做检测，不拉起浏览器。
+  useEffect(() => {
+    let cancelled = false
+    setDetecting(true)
+    fetch('/api/browser/diagnostics', { cache: 'no-store' })
+      .then(res => res.json())
+      .then(data => { if (!cancelled && data?.discovered) setDiscovered(data.discovered) })
+      .catch(() => { /* 检测不到就只显示选项，不挡设置 */ })
+      .finally(() => { if (!cancelled) setDetecting(false) })
+    return () => { cancelled = true }
+  }, [])
+  const detectedList = [
+    { kind: 'chrome' as const, label: 'Chrome', path: discovered.chrome || null },
+    { kind: 'edge' as const, label: 'Edge', path: discovered.edge || null },
+  ]
+  const pickChoice = (next: BrowserChoice) => updateConfig('browser.browser_choice', next)
+  const options: { value: BrowserChoice; label: string; hint: string }[] = [
+    { value: 'auto', label: '自动选择', hint: discovered.chrome ? `优先用 Chrome（已检测到）` : discovered.edge ? '优先用 Chrome，没找到就用 Edge（已检测到）' : '优先用 Chrome，没找到就用 Edge' },
+    { value: 'chrome', label: '只用 Chrome', hint: discovered.chrome || '这台电脑上没检测到 Chrome' },
+    { value: 'edge', label: '只用 Edge', hint: discovered.edge || '这台电脑上没检测到 Edge' },
+    { value: 'manual', label: '手动指定浏览器', hint: '填浏览器启动文件（.exe）的完整路径，只用它' },
+  ]
+  return (
+    <div className="space-y-3">
+      <div className="space-y-2">
+        {options.map(option => (
+          <label key={option.value} className="flex cursor-pointer items-start gap-2 rounded-xl border border-card-border bg-surface px-3 py-2">
+            <input
+              type="radio"
+              name="browser-choice"
+              className="mt-0.5"
+              checked={choice === option.value}
+              onChange={() => pickChoice(option.value)}
+            />
+            <span>
+              <span className="block text-sm font-bold text-foreground">{option.label}</span>
+              <span className="mt-0.5 block break-all text-xs text-muted">{option.hint}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+      {choice === 'manual' && (
+        <div className="space-y-2">
+          <Field label="浏览器启动文件完整路径">
+            <Input
+              value={manualPath}
+              onChange={event => updateConfig('browser.executable_path', event.target.value)}
+              placeholder="例如 C:\Program Files\Google\Chrome\Application\chrome.exe"
+            />
+          </Field>
+          {detectedList.some(item => item.path) && (
+            <div className="space-y-1">
+              <p className="text-xs text-muted">已检测到的浏览器，点一下就填进去：</p>
+              {detectedList.filter(item => item.path).map(item => (
+                <button
+                  key={item.kind}
+                  type="button"
+                  onClick={() => updateConfig('browser.executable_path', item.path)}
+                  className="block w-full break-all rounded-lg border border-card-border bg-card px-3 py-1.5 text-left text-xs text-primary hover:border-primary/40"
+                >
+                  {item.label}：{item.path}
+                </button>
+              ))}
+            </div>
+          )}
+          <p className="text-xs text-muted">手动路径不存在时会自动回落到检测到的 Chrome 或 Edge，不会直接打不开。</p>
+        </div>
+      )}
+      <p className="text-xs text-muted">
+        {detecting ? '正在看电脑上装了哪些浏览器…' : '换了马上生效：下次点“去登录”或开始找工作时就用新的，不用重启。'}
+      </p>
+    </div>
+  )
+}
+
 function SectionCard({ title, children }: {
   title: string; children: React.ReactNode
 }) {

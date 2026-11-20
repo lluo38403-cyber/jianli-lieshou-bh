@@ -201,3 +201,7 @@ browser:
   auto_start_proxy: true
   enable_port_guard: true
   site_patterns: true
+  # 用哪个浏览器：auto 自动选择（优先 Chrome，没有再用 Edge）/ chrome / edge / manual 手动路径
+  browser_choice: "auto"
+  # 手动模式才用的浏览器启动文件完整路径；其他模式下忽略它
+  executable_path: ""

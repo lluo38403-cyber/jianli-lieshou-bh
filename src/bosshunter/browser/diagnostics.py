@@ -11,8 +11,104 @@ from typing import Any
 import httpx
 from rich.console import Console
 
-from bosshunter.browser import evaluate, find_boss_tab, find_zhilian_tab
+from bosshunter.browser import evaluate
 from bosshunter.browser.runtime import check_node_available, ensure_runtime, get_browser_config, get_runtime_url, runtime_health, runtime_targets
+
+
+# browser.browser_choice 的合法取值（与 config.DEFAULTS 的 browser 段一致）。
+BROWSER_CHOICES = ("auto", "chrome", "edge", "manual")
+
+# 选择值 → 界面显示名（所选浏览器缺失、回落到另一个时以实际用的为准）。
+_BROWSER_CHOICE_NAMES = {"auto": "浏览器", "chrome": "Chrome", "edge": "Edge", "manual": "浏览器"}
+
+
+def _display_name_for_executable(path: str | None) -> str | None:
+    """Return Chrome / Edge for a known executable filename, else None."""
+    if not path:
+        return None
+    name = Path(path).name.lower()
+    if "msedge" in name or name.startswith("edge"):
+        return "Edge"
+    if "chrome" in name or "chromium" in name:
+        return "Chrome"
+    return None
+
+
+def resolve_browser_executable(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Pick the browser executable honoring browser.browser_choice.
+
+    返回 {"executable", "name", "choice", "fallback"}：
+    - manual：只用 browser.executable_path（文件不存在时回落）；
+    - chrome / edge：只用本机检测到的那一个（没找到时回落到另一个）；
+    - auto：Chrome 优先，没有再用 Edge。
+    executable_path 只在 manual 模式下参与检测：其他模式下先把它
+    清掉再调 discover_browsers，否则手动留下的旧路径会悄悄抢占选择。
+    仍找不到时 executable 为 None、name 为通用“浏览器”，调用方据此
+    给面板中文提示，不要静默失败。
+    """
+    browser_cfg = get_browser_config(config)
+    choice = str(browser_cfg.get("browser_choice") or "auto")
+    if choice not in BROWSER_CHOICES:
+        choice = "auto"
+
+    manual_path = ""
+    raw_path = browser_cfg.get("executable_path")
+    if isinstance(raw_path, str) and raw_path.strip():
+        manual_path = os.path.expandvars(raw_path.strip())
+
+    # 非手动模式：手动路径不参与检测。
+    effective_config: dict[str, Any] | None = config
+    if choice != "manual" and isinstance(config, dict):
+        effective_config = dict(config)
+        browser_section = config.get("browser")
+        if isinstance(browser_section, dict):
+            section = dict(browser_section)
+            section["executable_path"] = ""
+            effective_config["browser"] = section
+        elif "browser" not in effective_config:
+            effective_config["browser"] = {"executable_path": ""}
+    discovered = discover_browsers(effective_config)
+
+    def _pick(kind: str) -> str | None:
+        return discovered.get(kind) or None
+
+    executable: str | None = None
+    fallback = False
+    if choice == "manual" and manual_path:
+        try:
+            if Path(manual_path).is_file():
+                executable = manual_path
+        except (OSError, ValueError):
+            executable = None
+        if executable is None:
+            # 手动路径找不到了（删了/挪了）：回落到自动检测的 Chrome→Edge，
+            # 别直接报没浏览器；界面仍可用，提示里会说明用的是回落的浏览器。
+            executable = _pick("chrome") or _pick("edge")
+            fallback = True
+    elif choice == "chrome":
+        executable = _pick("chrome")
+        if executable is None:
+            executable = _pick("edge")
+            fallback = True
+    elif choice == "edge":
+        executable = _pick("edge")
+        if executable is None:
+            executable = _pick("chrome")
+            fallback = True
+    else:  # auto：Chrome 优先，没有再用 Edge。
+        executable = _pick("chrome") or _pick("edge")
+
+    name = _display_name_for_executable(executable)
+    if name is None:
+        # 没找到可用浏览器时按选择给名：指名要 Chrome/Edge 就报它，
+        # 自动/手动就报通用名，界面不凭空编一个浏览器出来。
+        name = _BROWSER_CHOICE_NAMES.get(choice, "浏览器")
+    return {"executable": executable, "name": name, "choice": choice, "fallback": fallback}
+
+
+def selected_browser_name(config: dict[str, Any] | None = None) -> str:
+    """Return the display name of the browser the current choice resolves to."""
+    return str(resolve_browser_executable(config).get("name") or "浏览器")
 
 
 # 各平台页面状态检测脚本模板：只读已打开标签页的 DOM，不开新页、不发请求。
@@ -237,8 +333,10 @@ def run_browser_diagnostics(config: dict[str, Any] | None = None, allow_launch: 
     """Collect Browser Runtime readiness state.
 
     allow_launch=False 时只连已有的可调试浏览器，绝不替用户拉新窗口
-    （首页被动刷新、后台巡检用）；用户点的重新检测、检查、去登录走
-    默认 True，程序会自动拉起带调试端口的浏览器实例。
+    （首页被动刷新、后台巡检、重新检测都用它）；只有用户点的“一键
+    启动浏览器”才走默认 True。注意标签页一律从本轮已取到的 targets
+    里按域名找——绝不走 browser facade 的 find_*_tab，那条路会经
+    ensure_runtime 默认拉起浏览器，检测就变拉起了。
     """
     node = check_node_available()
     runtime_ready = ensure_runtime(config, allow_launch=allow_launch)
@@ -249,8 +347,9 @@ def run_browser_diagnostics(config: dict[str, Any] | None = None, allow_launch: 
         # `/targets` establishes the CDP connection. Refresh health afterwards
         # so browser product/version information is available to diagnostics.
         health = runtime_health(config) or health
-    boss_tab = find_boss_tab() if runtime_ready else None
-    zhilian_tab = find_zhilian_tab() if runtime_ready else None
+    # 只读本轮已取到的 targets，不再为找标签页触发新的 ensure_runtime。
+    boss_tab = _find_tab_by_domain(targets, "zhipin.com") if runtime_ready else None
+    zhilian_tab = _find_tab_by_domain(targets, "zhaopin.com") if runtime_ready else None
     zhilian_page = inspect_zhilian_page(zhilian_tab) if runtime_ready and zhilian_tab else None
     # 51job / 猎聘：复用已取到的 targets 找标签页，只读已打开页面的 DOM，
     # 不新开页面、不触发额外请求。
@@ -260,6 +359,7 @@ def run_browser_diagnostics(config: dict[str, Any] | None = None, allow_launch: 
     liepin_page = inspect_liepin_page(liepin_tab) if runtime_ready and liepin_tab else None
     browser_product, browser_name = _browser_identity(health)
     discovered = discover_browsers(config)
+    selected = resolve_browser_executable(config)
     chrome_connected = isinstance(targets, list)
     error_kind, message, next_steps = _browser_problem(chrome_connected, discovered)
 
@@ -292,6 +392,11 @@ def run_browser_diagnostics(config: dict[str, Any] | None = None, allow_launch: 
         "browser_product": browser_product,
         "browser_name": browser_name,
         "discovered": discovered,
+        # 当前浏览器选择（供“我的设置”与面板文案用）：choice 是配置值，
+        # selected_browser_name 是按选择实际解析到的浏览器显示名。
+        "browser_choice": selected.get("choice"),
+        "selected_browser_name": selected.get("name"),
+        "selected_browser_executable": selected.get("executable"),
         "error_kind": error_kind,
         "message": message,
         "next_steps": next_steps,

@@ -324,10 +324,20 @@ DEFAULTS: dict[str, Any] = {
         # 不替用户开新窗口。后台巡检也不拉起。
         "auto_launch_browser": True,
         # 用户手动选的浏览器启动文件完整路径（POST /api/browser/select 写入）：
-        # 为空时按系统默认查找 Chrome / Edge；填了就优先用它。
+        # 只在 browser_choice="manual" 时生效；其他模式下忽略它，只按
+        # 选择走自动检测（避免两个字段打架：手动路径留着，改回手动
+        # 模式时不用重新填）。
         "executable_path": "",
+        # 用哪个浏览器打开登录页 / 投递页 / 主界面窗口：
+        # "auto" 自动选择（优先 Chrome，没有再用 Edge），
+        # "chrome" / "edge" 只用本机检测到的那一个（没找到时按
+        # Chrome→Edge 回落），"manual" 只用 executable_path。
+        "browser_choice": "auto",
     },
 }
+
+# browser.browser_choice 的合法取值（见 DEFAULTS 注释）。
+BROWSER_CHOICES = ("auto", "chrome", "edge", "manual")
 
 
 def credentials_path_for(config_path: Path | None = None) -> Path:
@@ -363,6 +373,10 @@ def save_config(config: dict[str, Any], config_path: Path | None = None) -> None
     config_path = Path(config_path or "config.yaml")
     public_config = _deep_copy_dict(config)
     _normalize_internship_salary_filter(public_config)
+    # 落盘前同样归一化 browser_choice：写错了回自动选择，别让脏值进文件。
+    browser_cfg = public_config.get("browser")
+    if isinstance(browser_cfg, dict) and browser_cfg.get("browser_choice") not in BROWSER_CHOICES:
+        browser_cfg["browser_choice"] = "auto"
     ai_cfg = public_config.get("ai")
     credentials: dict[str, Any] = {}
     if isinstance(ai_cfg, dict):
@@ -575,6 +589,13 @@ def _normalize_config_sections(config: dict[str, Any]) -> dict[str, Any]:
     for section, defaults in DEFAULTS.items():
         if isinstance(defaults, dict) and not isinstance(config.get(section), dict):
             config[section] = _deep_copy_dict(defaults)
+
+    # browser_choice 只认 auto / chrome / edge / manual，写错了回自动选择。
+    browser_cfg = config.get("browser")
+    if isinstance(browser_cfg, dict):
+        choice = browser_cfg.get("browser_choice", "auto")
+        if choice not in BROWSER_CHOICES:
+            browser_cfg["browser_choice"] = "auto"
 
     _normalize_internship_salary_filter(config)
     return remove_retired_collection_settings(config)

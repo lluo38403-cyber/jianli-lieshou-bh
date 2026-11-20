@@ -48,7 +48,7 @@ it('shows the recheck button and the manual browser picker only when no browser 
   expect(screen.getByText('没找到能用的浏览器')).toBeTruthy()
   expect(screen.getByRole('button', { name: '重新检测' })).toBeTruthy()
   expect(screen.queryByRole('button', { name: '一键启动浏览器' })).toBeNull()
-  expect(screen.getByPlaceholderText('填入浏览器程序的完整路径，例如 Chrome 的安装路径')).toBeTruthy()
+  expect(screen.getByPlaceholderText('填入浏览器程序的完整路径')).toBeTruthy()
   expect(document.querySelector('pre')).toBeNull()
 })
 
@@ -65,14 +65,33 @@ it('the copy button copies the full diagnostics JSON in the background', async (
   await waitFor(() => expect(screen.getByRole('button', { name: '已复制' })).toBeTruthy())
 })
 
-it('recheck posts to the diagnostics endpoint and calls onRefresh', async () => {
+it('one-click launch posts to the launch endpoint and calls onRefresh', async () => {
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }))
   vi.stubGlobal('fetch', fetchMock)
   const onRefresh = vi.fn()
   render(<BrowserDiagnosticsPanel diagnostics={failed} onRefresh={onRefresh} />)
   fireEvent.click(screen.getByRole('button', { name: '一键启动浏览器' }))
   await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1))
+  expect(fetchMock).toHaveBeenCalledWith('/api/browser/launch', expect.objectContaining({ method: 'POST' }))
+})
+
+it('recheck posts to the diagnostics endpoint only when no browser is found', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }))
+  vi.stubGlobal('fetch', fetchMock)
+  const onRefresh = vi.fn()
+  const notFound: BrowserDiagnostics = {
+    ok: false,
+    error_kind: 'not_found',
+    message: '电脑上没找到浏览器。',
+    next_steps: ['先装一个浏览器再回来。'],
+    discovered: { chrome: null, edge: null },
+    diagnostics: {},
+  }
+  render(<BrowserDiagnosticsPanel diagnostics={notFound} onRefresh={onRefresh} />)
+  fireEvent.click(screen.getByRole('button', { name: '重新检测' }))
+  await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1))
   expect(fetchMock).toHaveBeenCalledWith('/api/browser/diagnostics', expect.objectContaining({ method: 'POST' }))
+  expect(fetchMock).not.toHaveBeenCalledWith('/api/browser/launch', expect.anything())
 })
 
 it('renders nothing when the browser is connected', () => {

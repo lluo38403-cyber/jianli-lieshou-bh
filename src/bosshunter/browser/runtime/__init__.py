@@ -306,14 +306,19 @@ def _launch_kwargs() -> dict[str, Any]:
     return kwargs
 
 
-def launch_debuggable_browser(config: dict[str, Any] | None = None) -> bool:
-    """Launch Chrome/Edge with a debug port when nothing debuggable is up.
+def launch_debuggable_browser(config: dict[str, Any] | None = None, target_url: str | None = None) -> bool:
+    """Launch the selected browser with a debug port when nothing debuggable is up.
 
     先看配置的 chrome_ports 有没有已经在监听的调试端口（用户自己拉的
-    也认）；没有才按 discovered 的启动文件拉一个：专用配置目录 +
-    --remote-debugging-port。拉起后等调试端口应答才算成功。用户关了自动拉起
+    也认）；没有才按 browser.browser_choice 解析到的启动文件拉一个：
+    专用配置目录 + --remote-debugging-port。手动路径优先于自动检测；
+    所选浏览器找不到时按 Chrome→Edge 回落（见 resolve_browser_executable），
+    仍找不到返回 False，调用方给面板中文提示，不要静默失败。
+    拉起后等调试端口应答才算成功。用户关了自动拉起
     （browser.auto_launch_browser=false）或运行组件本身就不自启时不动。
 
+    target_url：拉起后直接打开的目标页（去登录的登录页、任务页地址）；
+    不给时才用一句中文说明的 data: 起始页兜底，不再先停在任何起始页。
     注意：不加 --disable-blink-features=AutomationControlled——CDP 直连
     的真人 Chrome 里 navigator.webdriver 本来就是 false（见 antibot.py），
     这参数除了让 Chrome 顶上挂一条“您使用的是不受支持的命令行标记”
@@ -331,10 +336,10 @@ def launch_debuggable_browser(config: dict[str, Any] | None = None) -> bool:
             return True
     # diagnostics.py 在模块层 import 本模块，模块层反向 import 会循环；
     # 调用时两边都已加载完成，函数内 import 安全。
-    from bosshunter.browser.diagnostics import discover_browsers
+    from bosshunter.browser.diagnostics import resolve_browser_executable
 
-    discovered = discover_browsers(config)
-    executable = discovered.get("chrome") or discovered.get("edge")
+    resolved = resolve_browser_executable(config)
+    executable = resolved.get("executable")
     if not executable:
         return False
     port = None
@@ -349,6 +354,7 @@ def launch_debuggable_browser(config: dict[str, Any] | None = None) -> bool:
         profile_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
         return False
+    start_page = target_url if isinstance(target_url, str) and target_url.startswith(("http://", "https://")) else _AUTOMATION_START_PAGE
     try:
         subprocess.Popen(
             [
@@ -357,7 +363,7 @@ def launch_debuggable_browser(config: dict[str, Any] | None = None) -> bool:
                 f"--user-data-dir={profile_dir}",
                 "--no-first-run",
                 "--no-default-browser-check",
-                _AUTOMATION_START_PAGE,
+                start_page,
             ],
             **_launch_kwargs(),
         )
@@ -396,16 +402,18 @@ def _wait_for_targets(browser: dict[str, Any], wait_seconds: float) -> bool:
         time.sleep(0.5)
 
 
-def ensure_runtime(config: dict[str, Any] | None = None, wait_seconds: float = 15.0, allow_launch: bool = True) -> bool:
+def ensure_runtime(config: dict[str, Any] | None = None, wait_seconds: float = 15.0, allow_launch: bool = True, target_url: str | None = None) -> bool:
     """Ensure the local Browser Runtime is ready for page operations.
 
     启动连接失败时自动重试一次（重试间隔 3 秒），重试仍失败才返回错误；
     端口回退逻辑不变。配置本身就不允许自启（runtime 非 builtin 或
     auto_start_proxy 关闭）时不重试——那不是一次可以恢复的失败。
     allow_launch=False 时只连已有的可调试浏览器，绝不替用户拉新窗口
-    （后台巡检用）；重试那次也不再重复拉起，刚拉起的浏览器还在启动中。
+    （后台巡检、检测用）；重试那次也不再重复拉起，刚拉起的浏览器还在启动中。
+    target_url：需要拉起时直接打开的目标页（去登录的登录页）；不给时
+    才用 data: 说明起始页兜底。
     """
-    if _ensure_runtime_attempt(config, wait_seconds, allow_launch):
+    if _ensure_runtime_attempt(config, wait_seconds, allow_launch, target_url):
         return True
     browser = get_browser_config(config)
     if browser.get("runtime") != "builtin" or not browser.get("auto_start_proxy", True):
@@ -414,7 +422,7 @@ def ensure_runtime(config: dict[str, Any] | None = None, wait_seconds: float = 1
     return _ensure_runtime_attempt(config, wait_seconds, False)
 
 
-def _ensure_runtime_attempt(config: dict[str, Any] | None = None, wait_seconds: float = 15.0, allow_launch: bool = True) -> bool:
+def _ensure_runtime_attempt(config: dict[str, Any] | None = None, wait_seconds: float = 15.0, allow_launch: bool = True, target_url: str | None = None) -> bool:
     """One attempt to bring the local Browser Runtime up."""
     browser = get_browser_config(config)
     if runtime_targets(browser) is not None:
@@ -449,7 +457,7 @@ def _ensure_runtime_attempt(config: dict[str, Any] | None = None, wait_seconds: 
     first_wait = wait_seconds if (not allow_launch or wait_seconds <= 0) else min(wait_seconds, 5.0)
     if _wait_for_targets(browser, first_wait):
         return True
-    if allow_launch and launch_debuggable_browser(browser):
+    if allow_launch and launch_debuggable_browser(browser, target_url=target_url):
         return _wait_for_targets(browser, wait_seconds)
     return False
 

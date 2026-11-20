@@ -186,9 +186,7 @@ class DiagnosticsLaunchFlagTests(unittest.TestCase):
                          return_value={"browserProduct": "Chrome/138.0", "browserName": "Google Chrome"}),
             patch.object(diagnostics_module, "runtime_targets",
                          return_value=[{"targetId": "1", "url": "https://www.zhipin.com"}]),
-            patch.object(diagnostics_module, "find_boss_tab",
-                         return_value={"targetId": "1", "url": "https://www.zhipin.com"}),
-            patch.object(diagnostics_module, "find_zhilian_tab", return_value=None),
+            # 标签页直接从 targets 里找，不再走 facade 的 find_*_tab。
         ):
             diagnostics_module.run_browser_diagnostics(_config(), allow_launch=False)
             ensure.assert_called_once()

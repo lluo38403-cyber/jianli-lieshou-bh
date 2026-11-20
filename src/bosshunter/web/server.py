@@ -274,7 +274,7 @@ def _maybe_refresh_login_states(config: dict) -> None:
 	try:
 		if runtime_targets(config) is None:
 			return
-		result = run_browser_diagnostics(config)
+		result = run_browser_diagnostics(config, allow_launch=False)
 		db = get_db(DATA_DIR / "bosshunter.db")
 		try:
 			refresh_platform_login_states(db, config, result)
@@ -1829,6 +1829,8 @@ def _browser_diagnostics_payload(config: dict, allow_launch: bool = True) -> dic
 		"ok": bool(result.get("chrome")),
 		"diagnostics": result,
 		"discovered": result.get("discovered") or {"chrome": None, "edge": None},
+		"browser_choice": result.get("browser_choice") or "auto",
+		"selected_browser_name": result.get("selected_browser_name") or "浏览器",
 		"error_kind": result.get("error_kind"),
 		"message": result.get("message") or "",
 		"next_steps": result.get("next_steps") or [],
@@ -1848,14 +1850,31 @@ def api_browser_diagnostics():
 def api_browser_diagnostics_refresh():
 	"""重新执行一次诊断；第一次没连上浏览器时内部再试一次。
 
-	用户点的重新检测 / 一键启动浏览器：程序会自动拉起带调试端口的
-	浏览器实例，不用用户自己排错。
+	只做检测，不拉起浏览器（“检查一下能不能跑”也是检测，不是启动）：
+	拉起只走用户主动点的“一键启动浏览器”（POST /api/browser/launch）
+	或“去登录”（POST /api/browser/open）。
 	"""
 	try:
 		config = load_config(CONFIG_PATH)
-		payload = _browser_diagnostics_payload(config)
+		payload = _browser_diagnostics_payload(config, allow_launch=False)
 		if not payload["ok"]:
-			payload = _browser_diagnostics_payload(config)
+			payload = _browser_diagnostics_payload(config, allow_launch=False)
+		return _json_response(payload)
+	except Exception as e:
+		return _json_response({"ok": False, "error": str(e)}, 500)
+
+
+@app.route("/api/browser/launch", method="POST")
+def api_browser_launch():
+	"""用户主动点的“一键启动浏览器”：拉起所选浏览器，再返回最新诊断。
+
+	这是检测之外唯一允许拉起的面板入口；换浏览器后立即生效，下次
+	拉起就用新的，不用重启 exe。所选浏览器找不到时不静默失败，
+	返回的诊断里 error_kind / message 会说明。
+	"""
+	try:
+		config = load_config(CONFIG_PATH)
+		payload = _browser_diagnostics_payload(config, allow_launch=True)
 		return _json_response(payload)
 	except Exception as e:
 		return _json_response({"ok": False, "error": str(e)}, 500)
@@ -1912,11 +1931,15 @@ def api_browser_select():
 			browser_cfg = {}
 			config["browser"] = browser_cfg
 		browser_cfg["executable_path"] = str(path)
+		# 手动选了文件 = 切到手动模式：以后只用这个路径（换回自动/
+		# Chrome / Edge 在“我的设置”里改，路径留着不用重填）。
+		browser_cfg["browser_choice"] = "manual"
 		_write_config(config)
 		set_browser_config(config)
 		return _json_response({
 			"ok": True,
 			"executable_path": str(path),
+			"browser_choice": "manual",
 			"message": "已经记住了，下次就用这个浏览器。点“重新检测”确认一下。",
 		})
 	except Exception as e:
@@ -3565,7 +3588,9 @@ def api_agent_task_start():
 			else:
 				# 四个平台都支持投递（capabilities），不再有仅采集平台。
 				options["auto_score"] = True
-		checks = collect_preflight_checks(mode, config, options)
+		# Agent 任务启动门禁：启动任务本身就是用户主动要跑，浏览器没起来
+		# 时允许在这里拉起（只做检测会把没拉起的浏览器当失败拦住）。
+		checks = collect_preflight_checks(mode, config, options, allow_launch=True)
 		messages = [*_preflight_messages(mode, config, options), *error_messages(checks)]
 		if messages:
 			return _json_response({"error": "请先处理启动前检查", "messages": messages, "checks": checks}, 400)

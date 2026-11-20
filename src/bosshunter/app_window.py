@@ -59,19 +59,20 @@ def is_our_service_alive(host: str = "127.0.0.1", port: int = 8686, timeout: flo
 
 
 def find_app_browser(config: dict[str, Any] | None = None) -> str | None:
-    """Return a Chrome/Edge executable path for --app mode, or None.
+    """Return the selected browser executable path for --app mode, or None.
 
-    Chrome first, Edge second -- same order as the login browser. The
-    import is function-level: diagnostics imports browser config, and
-    module-level imports here would risk a cycle.
+    走用户在“我的设置”里选的浏览器（自动 / Chrome / Edge / 手动路径，
+    见 resolve_browser_executable）；所选浏览器找不到时按 Chrome→Edge
+    回落，仍找不到返回 None，调用方降级走默认浏览器。主窗口与登录
+    浏览器仍是两个独立窗口（见模块 docstring），这里只决定用哪个
+    可执行文件开 --app 窗口。
     """
     try:
-        from bosshunter.browser.diagnostics import discover_browsers
+        from bosshunter.browser.diagnostics import resolve_browser_executable
 
-        found = discover_browsers(config)
+        return resolve_browser_executable(config).get("executable")
     except Exception:
         return None
-    return found.get("chrome") or found.get("edge")
 
 
 def launch_app_window(url: str, config: dict[str, Any] | None = None) -> subprocess.Popen | None:

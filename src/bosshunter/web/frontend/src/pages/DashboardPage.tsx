@@ -134,7 +134,7 @@ function taskStopReasonLabel(reason?: string) {
   return reason
 }
 
-function taskErrorFeedback(error: string) {
+function taskErrorFeedback(error: string, browserName = '浏览器') {
   const normalized = error.toLowerCase()
   if (
     normalized.includes('api key')
@@ -156,14 +156,14 @@ function taskErrorFeedback(error: string) {
     || normalized.includes('not connected')
   ) {
     return {
-      title: 'Google Chrome 连接中断了',
-      detail: '请确认 Chrome 已经打开并开启了远程调试，再点上面的“检查能不能跑”。',
+      title: `${browserName}连接中断了`,
+      detail: `请确认${browserName}已经打开并开启了远程调试，再点上面的“检查能不能跑”。`,
     }
   }
   if (normalized.includes('zhipin') || normalized.includes('登录') || normalized.includes('login')) {
     return {
       title: '招聘平台页面或登录状态异常',
-      detail: '请在已连接的 Google Chrome 中打开 BOSS 直聘并确认账号仍处于登录状态。',
+      detail: `请在已连接的${browserName}中打开 BOSS 直聘并确认账号仍处于登录状态。`,
     }
   }
   return {
@@ -392,12 +392,14 @@ function GettingStartedCard({
   notice,
   checks,
   onRetry,
+  browserName = '浏览器',
 }: {
   onCheck: () => void
   checking: boolean
   notice: string
   checks: PreflightCheck[]
   onRetry: () => void
+  browserName?: string
 }) {
   return (
     <section aria-label="开始使用" className="animate-fade-up rounded-2xl border border-primary/30 bg-card p-3">
@@ -413,7 +415,7 @@ function GettingStartedCard({
         <Button size="sm" onClick={() => window.dispatchEvent(new Event(START_ONBOARDING_EVENT))}>带我走一遍</Button>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-card-border pt-3">
-        <span data-tour="chrome-guide" className="text-xs font-semibold text-primary">先在 Chrome 里登录好招聘网站，再回来点检查。</span>
+        <span data-tour="chrome-guide" className="text-xs font-semibold text-primary">先在{browserName}里登录好招聘网站，再回来点检查。</span>
         <div className="flex flex-wrap gap-1.5" aria-label="去各平台登录">
           {PLATFORM_IDS.map(platform => (
             <button
@@ -605,7 +607,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const pendingGreetingReviewCount = pendingGreetingJobs.length - reviewedGreetingJobs.length
   const activeTask = workbench.task
   const visibleTask = activeTask || workbench.last_task
-  const visibleTaskError = visibleTask?.error ? taskErrorFeedback(visibleTask.error) : null
+  // 面板文案里的浏览器名跟着“我的设置”里的选择走：没拿到诊断结果时
+  // 用通用名“浏览器”，不凭空写死 Chrome。
+  const browserName = browserDiag?.selected_browser_name || '浏览器'
+  const visibleTaskError = visibleTask?.error ? taskErrorFeedback(visibleTask.error, browserName) : null
   const fullStage = visibleTask ? currentTaskStage(visibleTask) : ''
   const hasStageDetails = fullStage.trim().includes('\n')
   const detailMetrics = taskMetricItems.filter(item => {
@@ -952,9 +957,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           notice={notice}
           checks={preflightChecks}
           onRetry={retryPreflight}
+          browserName={browserName}
         />
       )}
-      <PlatformStatusCard platformLogin={workbench.platform_login} />
+      <PlatformStatusCard platformLogin={workbench.platform_login} browserName={browserName} />
       <BrowserDiagnosticsPanel diagnostics={browserDiag} onRefresh={fetchBrowserDiagnostics} />
       <section id="today-workbench" className="animate-fade-up scroll-mt-6 rounded-2xl border border-card-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
@@ -2595,7 +2601,7 @@ function MonitorExecutionView({
   }
 
   const retryResumeGeneration = async (item: HistoryItem) => {
-    if (!window.confirm('确定要重新做这份定制简历吗？需要打分服务和 Chrome 都正常。')) return
+    if (!window.confirm('确定要重新做这份定制简历吗？需要打分服务和浏览器都正常。')) return
     try {
       const res = await fetch(`/api/history/${item.id}/resume-retry`, { method: 'POST' })
       if (!res.ok) {

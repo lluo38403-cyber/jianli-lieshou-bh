@@ -27,8 +27,13 @@ from bosshunter.collection.orchestrator import normalize_collection_options
 VALID_MODES = {"full", "collect", "rescore", "monitor"}
 
 
-def collect_preflight_checks(mode: str, config: dict, options: dict | None = None) -> list[dict[str, str]]:
-	"""Collect configuration, AI connectivity, and browser readiness checks."""
+def collect_preflight_checks(mode: str, config: dict, options: dict | None = None, allow_launch: bool = False) -> list[dict[str, str]]:
+	"""Collect configuration, AI connectivity, and browser readiness checks.
+
+	默认只做检测，不拉起浏览器（“检查一下能不能跑”走这里）；
+	allow_launch=True 只给真正启动任务的入口（Agent 任务启动门禁），
+	那时拉起是用户主动要跑任务的一部分。
+	"""
 	collection_options = None
 	if mode == "collect":
 		try:
@@ -56,7 +61,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 		# ``auto_score=false`` genuinely AI-free even when credentials are saved.
 		checks.append(_check("ai_connection", "AI 接口连接", "pass", "纯采集不需要 AI", "关闭“采集后自动评分”时不会调用 AI。"))
 		try:
-			checks.extend(check_browser_connection(deepcopy(config), collection_options))
+			checks.extend(check_browser_connection(deepcopy(config), collection_options, allow_launch=allow_launch))
 		except Exception:
 			checks.append(_check("browser_runtime", "浏览器连接", "error", "浏览器连接检测失败", "请重新启动 BossHunter 后再试。", "browser"))
 		return checks
@@ -69,7 +74,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 				_check("ai_connection", "AI 接口连接", "error", "AI 接口检测失败", "请检查 AI 设置后重试。", "config"),
 			))
 		pending_checks.append((
-			executor.submit(check_browser_connection, deepcopy(config), collection_options),
+			executor.submit(check_browser_connection, deepcopy(config), collection_options, allow_launch),
 			_check("browser_runtime", "浏览器连接", "error", "浏览器连接检测失败", "请重新启动 BossHunter 后再试。", "browser"),
 		))
 		for future, fallback in pending_checks:
@@ -357,9 +362,14 @@ def _python_runtime_checks() -> list[dict[str, str]]:
 	]
 
 
-def check_browser_connection(config: dict, collection_options: dict | None = None) -> list[dict[str, str]]:
-	"""Translate Browser Runtime diagnostics into actionable checks."""
-	result = run_browser_diagnostics(config)
+def check_browser_connection(config: dict, collection_options: dict | None = None, allow_launch: bool = False) -> list[dict[str, str]]:
+	"""Translate Browser Runtime diagnostics into actionable checks.
+
+	只做检测，不拉起浏览器（“检查一下能不能跑”是检测；拉起只在
+	用户点“去登录”/“一键启动浏览器”或真正启动找工作/投递任务时）。
+	allow_launch=True 只给任务启动门禁传。
+	"""
+	result = run_browser_diagnostics(config, allow_launch=allow_launch)
 	checks: list[dict[str, str]] = []
 	node = result.get("node") or {}
 	errors = [str(error) for error in result.get("errors") or []]
@@ -585,7 +595,8 @@ def refresh_platform_login_states(db, config: dict | None = None, result: dict |
 	from bosshunter.db import record_platform_login_state
 
 	if result is None:
-		result = run_browser_diagnostics(config)
+		# 没带结果时自己跑一次诊断：同样只做检测，不拉起浏览器。
+		result = run_browser_diagnostics(config, allow_launch=False)
 	states = derive_platform_login_states(result)
 	for platform, state in states.items():
 		record_platform_login_state(db, platform, str(state["status"]), state.get("detail"))

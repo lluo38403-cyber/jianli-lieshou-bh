@@ -25,17 +25,17 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(product, "Edg/138.0")
         self.assertEqual(name, "Microsoft Edge")
 
-    @patch("bosshunter.browser.diagnostics.find_boss_tab")
     @patch("bosshunter.browser.diagnostics.runtime_targets")
     @patch("bosshunter.browser.diagnostics.ensure_runtime")
     @patch("bosshunter.browser.diagnostics.check_node_available")
-    def test_run_browser_diagnostics_reports_ready_runtime(self, check_node, ensure_runtime, runtime_targets, find_boss_tab):
+    def test_run_browser_diagnostics_reports_ready_runtime(self, check_node, ensure_runtime, runtime_targets):
         from bosshunter.browser.diagnostics import run_browser_diagnostics
 
         check_node.return_value = {"available": True, "version": "v22.1.0"}
         ensure_runtime.return_value = True
-        runtime_targets.return_value = [{"targetId": "1", "url": "https://www.zhipin.com"}]
-        find_boss_tab.return_value = {"targetId": "1", "title": "BOSS直聘"}
+        # boss_tab 现在直接从本轮已取到的 targets 里按域名找，不再走
+        # facade 的 find_boss_tab（那条路会拉起浏览器）。
+        runtime_targets.return_value = [{"targetId": "1", "url": "https://www.zhipin.com", "title": "BOSS直聘"}]
 
         result = run_browser_diagnostics({"browser": {"proxy_port": 3456}})
 
@@ -45,7 +45,6 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["boss_tab"]["title"], "BOSS直聘")
         self.assertEqual(result["runtime_url"], "http://127.0.0.1:3456")
 
-    @patch("bosshunter.browser.diagnostics.find_boss_tab")
     @patch("bosshunter.browser.diagnostics.runtime_targets")
     @patch("bosshunter.browser.diagnostics.runtime_health")
     @patch("bosshunter.browser.diagnostics.ensure_runtime")
@@ -56,7 +55,6 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         ensure_runtime,
         runtime_health,
         runtime_targets,
-        find_boss_tab,
     ):
         from bosshunter.browser.diagnostics import run_browser_diagnostics
 
@@ -64,8 +62,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         check_node.return_value = {"available": True, "version": "v22.1.0"}
         ensure_runtime.side_effect = lambda cfg, **kwargs: cfg["browser"].update({"proxy_port": 3457}) or True
         runtime_health.return_value = {"status": "ok", "runtime": "bosshunter"}
-        runtime_targets.return_value = [{"targetId": "1", "url": "https://www.zhipin.com"}]
-        find_boss_tab.return_value = {"targetId": "1", "title": "BOSS直聘"}
+        runtime_targets.return_value = [{"targetId": "1", "url": "https://www.zhipin.com", "title": "BOSS直聘"}]
 
         result = run_browser_diagnostics(config)
 
@@ -87,7 +84,6 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertFalse(result["runtime"])
         self.assertIn("Node.js", result["errors"][0])
 
-    @patch("bosshunter.browser.diagnostics.find_boss_tab")
     @patch("bosshunter.browser.diagnostics.runtime_targets")
     @patch("bosshunter.browser.diagnostics.ensure_runtime")
     @patch("bosshunter.browser.diagnostics.check_node_available")
@@ -96,14 +92,12 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         check_node,
         ensure_runtime,
         runtime_targets,
-        find_boss_tab,
     ):
         from bosshunter.browser.diagnostics import run_browser_diagnostics
 
         check_node.return_value = {"available": False, "version": None, "error": "node missing"}
         ensure_runtime.return_value = True
-        runtime_targets.return_value = [{"targetId": "1", "url": "https://www.zhipin.com"}]
-        find_boss_tab.return_value = {"targetId": "1", "title": "BOSS直聘"}
+        runtime_targets.return_value = [{"targetId": "1", "url": "https://www.zhipin.com", "title": "BOSS直聘"}]
 
         result = run_browser_diagnostics({})
 
