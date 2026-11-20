@@ -8,11 +8,16 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-import httpx
 from rich.console import Console
 
 from bosshunter.browser import evaluate
 from bosshunter.browser.runtime import check_node_available, ensure_runtime, get_browser_config, get_runtime_url, runtime_health, runtime_targets
+from bosshunter.lazy_module import lazy_module
+
+# v30 启动提速：httpx 只在第一次真正发 HTTP 请求时才导入
+# （启动首屏用不上）。代理是真实的模块全局名，函数里直接用、
+# 测试照常 patch（见 bosshunter.lazy_module）。
+httpx = lazy_module("httpx")
 
 
 # browser.browser_choice 的合法取值（与 config.DEFAULTS 的 browser 段一致）。

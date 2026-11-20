@@ -176,6 +176,55 @@ def test_pdf_truncated_and_garbage_fail_as_damaged():
         pdf_to_markdown(_sample("garbage.pdf"))
 
 
+def test_pdf_program_error_is_not_reported_as_damaged_file():
+    # M-37（v30）：PdfReader 构造抛程序错误（NameError/ImportError，
+    # 如懒导入写坏）必须原样穿透，不能被吞成“PDF 文件无效或已损坏”
+    # ——以前的宽泛 except Exception 正是这样误报的。
+    with patch(
+        "bosshunter.web.resume_upload.PdfReader",
+        side_effect=NameError("name 'PdfReader' is not defined"),
+    ):
+        with pytest.raises(NameError):
+            pdf_to_markdown(b"fake-pdf-bytes")
+    with patch(
+        "bosshunter.web.resume_upload.PdfReader",
+        side_effect=ImportError("cannot import pypdf"),
+    ):
+        with pytest.raises(ImportError):
+            pdf_to_markdown(b"fake-pdf-bytes")
+
+
+def test_pdf_pages_list_program_error_is_not_reported_as_damaged_file():
+    # M-37（v30）：list(reader.pages) 抛程序错误同样放行。
+    from unittest.mock import MagicMock
+
+    class _RaisingPages(list):
+        def __iter__(self):
+            raise NameError("boom in pages")
+
+    fake_reader = MagicMock()
+    fake_reader.is_encrypted = False
+    fake_reader.pages = _RaisingPages()
+    with patch("bosshunter.web.resume_upload.PdfReader", return_value=fake_reader):
+        with pytest.raises(NameError):
+            pdf_to_markdown(b"fake-pdf-bytes")
+
+
+def test_pdf_real_parse_errors_still_reported_as_damaged_file():
+    # M-37 收窄后，真正的解析失败仍报“无效或已损坏”：
+    # 截断/乱码文件（PdfStreamError，PdfReadError 子类）+ OSError。
+    with pytest.raises(ResumeUploadError, match="无效或已损坏"):
+        pdf_to_markdown(_sample("truncated.pdf"))
+    with pytest.raises(ResumeUploadError, match="无效或已损坏"):
+        pdf_to_markdown(_sample("garbage.pdf"))
+    with patch(
+        "bosshunter.web.resume_upload.PdfReader",
+        side_effect=OSError("read failed"),
+    ):
+        with pytest.raises(ResumeUploadError, match="无效或已损坏"):
+            pdf_to_markdown(b"fake-pdf-bytes")
+
+
 def test_pdf_one_bad_page_keeps_good_pages():
     from unittest.mock import MagicMock
 

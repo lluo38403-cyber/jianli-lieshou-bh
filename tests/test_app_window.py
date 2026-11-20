@@ -318,7 +318,10 @@ class SplashServerTests(unittest.TestCase):
         with patch("bosshunter.app_window.is_our_service_alive", return_value=False):
             with urllib.request.urlopen(server.splash_url + "splash-health", timeout=5) as resp:
                 data = _json.load(resp)
-        self.assertEqual(data, {"ready": False})
+        # v30 启动提速：未就绪响应多了 stage 字段（启动页按阶段显示
+        # 文案），断言从整 dict 相等改成按字段核对。
+        self.assertFalse(data["ready"])
+        self.assertEqual(data["stage"], "正在等本地服务起来…")
 
     def test_health_proxy_reports_ready_and_server_stops_itself(self):
         import json as _json

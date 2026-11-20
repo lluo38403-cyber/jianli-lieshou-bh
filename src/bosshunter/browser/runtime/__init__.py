@@ -17,9 +17,14 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from bosshunter.config import DEFAULTS
+from bosshunter.lazy_module import lazy_module
+
+# v30 启动提速：httpx 只在第一次真正发 HTTP 请求时才导入（冷导入
+# 约 0.4 秒，启动首屏用不上）。见 bosshunter.lazy_module 的说明：
+# 代理是真实的模块全局名，函数里直接用、测试照常 patch。
+httpx = lazy_module("httpx")
+
 
 _logger = logging.getLogger(__name__)
 
@@ -801,13 +806,18 @@ def _clear_browser_state(data_dir: str | Path | None = None) -> None:
         pass
 
 
-def stop_launched_browser(timeout: float = 10.0) -> bool:
+def stop_launched_browser(timeout: float = 10.0, exclude_pid: int | None = None) -> bool:
     """Stop the automation Chrome we launched ourselves, nothing else.
 
     候选只来自两处：本进程的 _launched_browser 记录、落盘的 state
     文件。动手前先按 PID 查命令行，含专用配置目录或调试端口才杀；
     命令行对不上（PID 被复用、或根本不是我们的 Chrome）就跳过、
     只记日志。幂等：没拉起过、已经退了、重复调用都返回 True。
+    exclude_pid（v30）：本次启动刚拉起的浏览器不杀——复用分支先拉
+    了启动页、再停旧服务、再跑残留清理，清理走到这里时启动页 Chrome
+    已在记录里；不排除就把它当残留杀掉（v29 启动页只活 2.75 秒的
+    事故）。被排除的记录留着：内存记录恢复、state 文件不删，退出
+    清理/下次启动再处理。
     """
     global _launched_browser
     candidates: list[dict[str, Any]] = []
@@ -821,8 +831,12 @@ def stop_launched_browser(timeout: float = 10.0) -> bool:
         _clear_browser_state()
         return True
     ok = True
+    skipped: list[dict[str, Any]] = []
     for cand in candidates:
         pid = cand.get("pid")
+        if exclude_pid is not None and isinstance(pid, int) and pid == exclude_pid:
+            skipped.append(cand)
+            continue
         proc = cand.get("proc")
         if proc is not None:
             try:
@@ -846,6 +860,17 @@ def stop_launched_browser(timeout: float = 10.0) -> bool:
         if not _kill_process_tree(pid, timeout):
             _logger.warning("stop_launched_browser: pid=%s 没能停掉", pid)
             ok = False
+    if skipped:
+        # 本次启动刚拉起的浏览器：内存记录恢复，state 文件里若记的
+        # 就是它也留着；别的候选该清的上面已经清了。
+        for cand in skipped:
+            if cand.get("proc") is not None:
+                _launched_browser = cand
+                break
+        state_now = _read_browser_state()
+        if state_now is None or state_now.get("pid") != exclude_pid:
+            _clear_browser_state()
+        return ok
     _clear_browser_state()
     return ok
 
@@ -949,7 +974,7 @@ def _kill_processes_with_exe_under(install_dir: Path) -> bool:
     return killed_any
 
 
-def cleanup_stale_browser_resources(data_dir: str | Path | None = None, port: int = 8686, install_dir: str | Path | None = None) -> bool:
+def cleanup_stale_browser_resources(data_dir: str | Path | None = None, port: int = 8686, install_dir: str | Path | None = None, exclude_pid: int | None = None) -> bool:
     """Startup sweep for leftovers of a previous run that was force-killed.
 
     只在确认没有活着的本程序实例后才动手，判定两者结合（任一成立
@@ -960,6 +985,8 @@ def cleanup_stale_browser_resources(data_dir: str | Path | None = None, port: in
     目录下，与 bat 同款规则）+ 按 state 文件杀我们拉起的 Chrome
     （同样先核对命令行）。必须在拉起任何新 runtime 之前跑、只跑一次；
     清完删掉陈旧 state 文件与实例文件。返回 True 表示清掉了东西。
+    exclude_pid（v30）：本次启动刚拉起的浏览器 PID，不杀、不计入
+    “清掉了东西”（见 stop_launched_browser）。
     """
     resolved = get_data_dir(data_dir)
     try:
@@ -995,9 +1022,13 @@ def cleanup_stale_browser_resources(data_dir: str | Path | None = None, port: in
                     cleaned = True
         except Exception as exc:
             _logger.warning("cleanup_stale_browser_resources: 清安装目录残留失败：%s", exc)
-    had_browser_state = _read_browser_state(resolved) is not None or _launched_browser is not None
+    _state_now = _read_browser_state(resolved)
+    had_browser_state = (
+        (_state_now is not None and _state_now.get("pid") != exclude_pid)
+        or (_launched_browser is not None and _launched_browser.get("pid") != exclude_pid)
+    )
     try:
-        stop_launched_browser()
+        stop_launched_browser(exclude_pid=exclude_pid)
     except Exception as exc:
         _logger.warning("cleanup_stale_browser_resources: 清残留 Chrome 失败：%s", exc)
     else:

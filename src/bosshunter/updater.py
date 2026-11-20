@@ -85,6 +85,7 @@ UPDATE_FAILURE_MESSAGES = {
     "copy": "换文件的时候出问题了，已经换回旧版本。请重新点一次更新。",
     "mismatch": "新版本换上去了，但打开还是旧版本，可能是旧文件没换掉。请重新点一次更新。",
     "nostart": "新版本换好了，但程序没重新打开。请重新点一次更新；如果一直这样，请把 update.log 发给客服。",
+    "nostart_old": "更新没换成，旧版本也没重新打开。请手动打开程序再重新点一次更新；如果一直这样，请把 update.log 发给客服。",
     "unknown": "上次更新没换完，请重新点一次更新。",
 }
 
@@ -526,9 +527,13 @@ def overlay_staging(install_dir: str | Path, staging_dir: str | Path) -> None:
 def build_update_script() -> str:
     """Return the update.bat contents.
 
-    The batch file takes five arguments at launch: staging dir, exe
+    The batch file takes seven arguments at launch: staging dir, exe
     file name, pid of the process to wait for, expected new version,
-    backup directory name. It waits for the given pid to exit (up to
+    backup directory name, current (old) version, and the port the
+    service listens on (seventh argument, defaults to 8686 when the
+    caller passes nothing — the panel may run on a non-default port
+    via `web --port`, and the health polls must ask that port).
+    It waits for the given pid to exit (up to
     60 wait rounds of ~1-2s each, then force-kills the whole process
     tree), makes sure no other copy of the exe is still running (a
     second instance would hold the exe/_internal files locked and
@@ -537,15 +542,19 @@ def build_update_script() -> str:
     directory (never touching config.yaml or data/), purges files the
     new release removed from _internal, verifies the new exe exists,
     and only then relaunches it. Every step is logged to update.log
-    next to the exe. On any failure it restores the backup, writes
-    update-result.json (ASCII reason code; the restarted program
-    turns it into a plain-language message), relaunches the old exe
-    when nothing is running, and deletes itself — it never leaves a
-    half-swapped install behind, and never exits silently.
+    next to the exe. On any failure it restores the backup, relaunches
+    the old exe when nothing is running, polls /api/health until the
+    old version reports in (up to ~180s, same loop as the new-version
+    check below; if the old exe never reports in, the verdict is
+    failed/nostart_old instead of the original reason code), and only
+    then writes update-result.json (ASCII reason code; the restarted
+    program turns it into a plain-language message) and deletes
+    itself — it never leaves a half-swapped install behind, and never
+    exits silently.
 
     Relaunching is not the end of it: after the copy the batch starts
-    the new exe and polls http://127.0.0.1:8686/api/health until it
-    reports the expected version (up to ~90s, hidden PowerShell loop).
+    the new exe and polls http://127.0.0.1:%PORT%/api/health until it
+    reports the expected version (up to ~180s, hidden PowerShell loop).
     Only then is the update recorded as applied and staging deleted.
     If the new exe never reports in, the batch records failed/nostart,
     keeps staging (a retry must not have to re-download), starts the
@@ -554,6 +563,18 @@ def build_update_script() -> str:
     both robocopies exited 3, the log said "换好了", update-result.json
     said applied, but no exe was running and 8686 never reported
     v1.1.14 — the bare `start` swallowed the failed relaunch silently.)
+
+    The rollback relaunch gets the same treatment: :fail_write starts
+    the old exe (when nothing is running) and polls
+    http://127.0.0.1:%PORT%/api/health until it reports the old version
+    %CURRENT% — the sixth launch argument, the version the update
+    started from (up to ~180s, same hidden PowerShell loop). Only then
+    is the failure verdict written, keeping the original reason code
+    (stuck/nopkg/copy) so the Retry expectation "update failed, old
+    version is back" still holds. If the old exe never reports in, the
+    batch records failed/nostart_old, starts the old exe once more as
+    a last chance, and only then deletes itself. Staging is never
+    deleted on any failure path (a retry must not re-download).
 
     The wait checks use a PowerShell Get-Process probe (PID + process
     name, no pipes): an earlier `tasklist | findstr` pipe hung three
@@ -661,10 +682,16 @@ def build_update_script() -> str:
         "rem 换完重开要核实：新 exe 拉起来不等于起来了（run 44758466045：\r\n"
         "rem robocopy 两次退出码都是 3、log 说“换好了”、结果写 applied，\r\n"
         "rem 但 8686 上 180 秒都没报新版、也没有 exe 在跑——裸 start 把\r\n"
-        "rem 拉起失败静默吞掉了）。所以拉起后轮询 8686 /api/health 等\r\n"
-        "rem 期望版本（最多约 90 秒），等到了才写 applied、删 staging；\r\n"
+        "rem 拉起失败静默吞掉了）。所以拉起后轮询 %PORT% /api/health 等\r\n"
+        "rem 期望版本（最多约 180 秒），等到了才写 applied、删 staging；\r\n"
         "rem 等不到写 failed/nostart、staging 保留（重试不用重新下载）、\r\n"
         "rem 再拉一次新 exe，verdict 一定在 bat 自删之前写好。\r\n"
+        "rem 回滚重开也要核实：:fail_write 以前先写结果再裸 start 重拉旧版，\r\n"
+        "rem 旧版拉不起来也照写 copy/stuck，用户看到的还是“旧版本还能用”。\r\n"
+        "rem 现在照成功分支的写法：重拉旧 exe 后轮询 %PORT% /api/health 等\r\n"
+        "rem 旧版本号 %CURRENT%（最多约 180 秒），等到了才按原原因码写 failed、\r\n"
+        "rem 等不到写 failed/nostart_old、再拉一次旧 exe；staging 任何失败\r\n"
+        "rem 路径都不删（重试不用重新下载）。\r\n"
         "setlocal\r\n"
         'set "STAGING=%~1"\r\n'
         'if "%STAGING:~-1%"=="\\" set "STAGING=%STAGING:~0,-1%"\r\n'
@@ -672,6 +699,12 @@ def build_update_script() -> str:
         'set "PID=%~3"\r\n'
         'set "EXPECTED=%~4"\r\n'
         'set "BACKUP=%~5"\r\n'
+        'set "CURRENT=%~6"\r\n'
+        'set "PORT=%~7"\r\n'
+        'rem 第 7 个参数是当前服务端口（M-41）：面板可能跑在非默认端口上\r\n'
+        'rem （web --port），轮询必须问那个端口；没传就默认 8686，\r\n'
+        'rem 手跑旧参数的 bat 也能用。\r\n'
+        'if "%PORT%"=="" set "PORT=8686"\r\n'
         'set "INSTALL_DIR=%~dp0"\r\n'
         'rem dp0 自带末尾反斜杠：INSTALL_DIR 传给 robocopy 时，末尾反斜杠会把收尾引号转义掉，开关全被吞进路径里、robocopy 瞬间报错（v16 到 v17 全流程测试 run 44625451318：等待已修好，换文件 0.22 秒失败回滚）。先去掉末尾反斜杠，之后拼路径都显式加反斜杠。\r\n'
         'if "%INSTALL_DIR:~-1%"=="\\" set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"\r\n'
@@ -727,8 +760,8 @@ def build_update_script() -> str:
         'if not exist "%INSTALL_DIR%\\%EXE_NAME%" goto :rollback\r\n'
         'echo [%date% %time%] 换好了，正在重新打开... >> "%LOG%"\r\n'
         'start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
-        'echo [%date% %time%] 新版本已拉起，正在等它在 8686 上报到期望版本（最多等 90 秒）... >> "%LOG%"\r\n'
-        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$deadline = (Get-Date).AddSeconds(90); $ok = $false; $seen = ''; while ((Get-Date) -lt $deadline) { try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:8686/api/health' -TimeoutSec 5; $seen = $h.version; if ($seen -eq '%EXPECTED%') { $ok = $true; break } } catch { $seen = '' }; Start-Sleep -Seconds 3 }; Write-Output ('health poll: ok=' + $ok + ' last_seen_version=' + $seen); if ($ok) { exit 0 } else { exit 1 }\" >> \"%LOG%\" 2>&1\r\n"
+        'echo [%date% %time%] 新版本已拉起，正在等它在 %PORT% 上报到期望版本（最多等 180 秒）... >> "%LOG%"\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$deadline = (Get-Date).AddSeconds(180); $ok = $false; $seen = ''; while ((Get-Date) -lt $deadline) { try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health' -TimeoutSec 5; $seen = $h.version; if ($seen -eq '%EXPECTED%') { $ok = $true; break } } catch { $seen = '' }; Start-Sleep -Seconds 3 }; Write-Output ('health poll: ok=' + $ok + ' last_seen_version=' + $seen); if ($ok) { exit 0 } else { exit 1 }\" >> \"%LOG%\" 2>&1\r\n"
         'set "HEALTH_RC=%errorlevel%"\r\n'
         'if %HEALTH_RC% neq 0 goto :fail_nostart\r\n'
         'echo [%date% %time%] 新版本已起来，版本对上了。 >> "%LOG%"\r\n'
@@ -736,10 +769,15 @@ def build_update_script() -> str:
         'rmdir /s /q "%STAGING%"\r\n'
         '(goto) 2>nul & del "%~f0"\r\n'
         ":fail_nostart\r\n"
-        'echo [%date% %time%] 90 秒内新版本没在 8686 上起来，更新没换完。 >> "%LOG%"\r\n'
+        'echo [%date% %time%] 180 秒内新版本没在 %PORT% 上起来，更新没换完。 >> "%LOG%"\r\n'
         '> "%RESULT%" echo {"status": "failed", "expected_version": "%EXPECTED%", "reason_code": "nostart"}\r\n'
         'echo [%date% %time%] 再拉一次新版本（最后一次重试机会），安装包留着、不用重新下载。 >> "%LOG%"\r\n'
-        'start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
+        'rem M-44：先确认是不是已有实例在起来：端口已有应答就不再拉，\r\n'
+        'rem 免得两个实例抢绑端口（第一个随后起来、第二个又绑不上还可能误杀健康实例）。\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health' -TimeoutSec 5; exit 0 } catch { exit 1 }\" <nul\r\n"
+        'set "PROBE_RC=%errorlevel%"\r\n'
+        'if %PROBE_RC% equ 0 echo [%date% %time%] 端口 %PORT% 上已有实例在应答，不再重复拉起。 >> "%LOG%"\r\n'
+        'if %PROBE_RC% neq 0 start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
         '(goto) 2>nul & del "%~f0"\r\n'
         ":rollback\r\n"
         'echo [%date% %time%] 复制失败，正在用备份恢复旧版本... >> "%LOG%"\r\n'
@@ -764,11 +802,27 @@ def build_update_script() -> str:
         'set "FAIL_CODE=copy"\r\n'
         "goto :fail_write\r\n"
         ":fail_write\r\n"
-        'echo [%date% %time%] 更新没换成，旧版本还能用。 >> "%LOG%"\r\n'
-        '> "%RESULT%" echo {"status": "failed", "expected_version": "%EXPECTED%", "reason_code": "%FAIL_CODE%"}\r\n'
+        'echo [%date% %time%] 更新没换成，正在重开旧版本并确认它起来了... >> "%LOG%"\r\n'
         'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
-        "if %errorlevel% equ 0 goto :fail_exit\r\n"
+        "if %errorlevel% equ 0 goto :fail_poll\r\n"
         'if exist "%INSTALL_DIR%\\%EXE_NAME%" start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
+        ":fail_poll\r\n"
+        'echo [%date% %time%] 旧版本已拉起，正在等它在 %PORT% 上报到旧版本（最多等 180 秒）... >> "%LOG%"\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$deadline = (Get-Date).AddSeconds(180); $ok = $false; $seen = ''; while ((Get-Date) -lt $deadline) { try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health' -TimeoutSec 5; $seen = $h.version; if (($seen -eq '%CURRENT%') -or ('%CURRENT%' -eq '' -and $seen -ne '' -and $seen -ne '%EXPECTED%')) { $ok = $true; break } } catch { $seen = '' }; Start-Sleep -Seconds 3 }; Write-Output ('health poll: ok=' + $ok + ' last_seen_version=' + $seen); if ($ok) { exit 0 } else { exit 1 }\" >> \"%LOG%\" 2>&1\r\n"
+        'set "OLD_HEALTH_RC=%errorlevel%"\r\n'
+        'if %OLD_HEALTH_RC% neq 0 goto :fail_nostart_old\r\n'
+        'echo [%date% %time%] 旧版本已起来，版本对上了。 >> "%LOG%"\r\n'
+        '> "%RESULT%" echo {"status": "failed", "expected_version": "%EXPECTED%", "reason_code": "%FAIL_CODE%"}\r\n'
+        "goto :fail_exit\r\n"
+        ":fail_nostart_old\r\n"
+        'echo [%date% %time%] 180 秒内旧版本没在 %PORT% 上起来，更新没换成、旧版本也没起来。 >> "%LOG%"\r\n'
+        '> "%RESULT%" echo {"status": "failed", "expected_version": "%EXPECTED%", "reason_code": "nostart_old"}\r\n'
+        'echo [%date% %time%] 再拉一次旧版本（最后一次重试机会）。 >> "%LOG%"\r\n'
+        'rem M-44：同 :fail_nostart，端口已有应答就不再拉，免得两个实例抢绑端口。\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health' -TimeoutSec 5; exit 0 } catch { exit 1 }\" <nul\r\n"
+        'set "PROBE_RC=%errorlevel%"\r\n'
+        'if %PROBE_RC% equ 0 echo [%date% %time%] 端口 %PORT% 上已有实例在应答，不再重复拉起。 >> "%LOG%"\r\n'
+        'if %PROBE_RC% neq 0 if exist "%INSTALL_DIR%\\%EXE_NAME%" start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
         ":fail_exit\r\n"
         '(goto) 2>nul & del "%~f0"\r\n'
     )
@@ -855,12 +909,75 @@ def get_last_update_failure(install_dir: str | Path) -> dict | None:
     }
 
 
-def consume_pending_update(install_dir: str | Path) -> dict | None:
+def _coerce_port(value: Any) -> int:
+    """Normalize a listen port to 1-65535, falling back to 8686."""
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return 8686
+    return port if 1 <= port <= 65535 else 8686
+
+
+def _service_reports_version(port: int, expected: str) -> bool:
+    """True when /api/health on ``port`` answers ok with ``expected``.
+
+    Stdlib urllib on purpose (no httpx import chain here): a 2 s
+    timeout, any failure (refused, timeout, bad JSON, wrong shape)
+    means False — the caller keeps its original verdict.
+    """
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/health", timeout=2
+        ) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("status") == "ok"
+        and payload.get("version") == expected
+    )
+
+
+def _update_health_port(port: Any = None) -> int:
+    """Resolve the port the health re-probe should ask.
+
+    Explicit port wins; otherwise the running instance's own record
+    (data/.instance.json, written at startup with its listen port);
+    otherwise the 8686 default. A stale record is harmless — the
+    probe only ever turns a nostart verdict into ok when the service
+    verifiably reports the expected version on that port.
+    """
+    if port is not None:
+        return _coerce_port(port)
+    try:
+        from bosshunter.browser.runtime import _read_instance_file
+
+        record = _read_instance_file()
+    except Exception:
+        record = None
+    if isinstance(record, dict):
+        return _coerce_port(record.get("port"))
+    return 8686
+
+
+def consume_pending_update(install_dir: str | Path, port: Any = None) -> dict | None:
     """Consume update-pending.json left by apply_update.
 
     Returns the verdict dict (status "ok" or "failed" plus the plain
     reason) or None when no update was pending. The verdict is also
     written to update-result.json so later boots still know.
+
+    ``port`` is the port the local service listens on (M-44): when the
+    bat wrote failed/nostart (or no result at all) the verdict is
+    re-probed once against the live service before judging failure —
+    a service that is already healthy on the expected version means
+    the update succeeded late, not failed. Only nostart/missing-result
+    is rescued: a version match cannot prove a partial copy (copy /
+    stuck / nopkg / mismatch) is complete.
     """
     pending_path = Path(install_dir) / UPDATE_PENDING_FILENAME
     if not pending_path.is_file():
@@ -888,22 +1005,37 @@ def consume_pending_update(install_dir: str | Path) -> dict | None:
         # 换版成功：缓存的包已经用完，清掉，免得下次更新误认旧包。
         clear_cached_update(install_dir)
     elif isinstance(expected, str) and expected:
-        if bat_status == "failed":
-            code = bat_code if isinstance(bat_code, str) else "unknown"
-            reason = UPDATE_FAILURE_MESSAGES.get(code, UPDATE_FAILURE_MESSAGES["unknown"])
-        elif bat_status == "applied":
-            code = "mismatch"
-            reason = UPDATE_FAILURE_MESSAGES["mismatch"]
+        # M-44：bat 说 nostart（或根本没写结果），但本地服务可能
+        # 只是起来得慢——重探一次，迟到成功不判失败。
+        if (
+            (bat_status == "failed" and bat_code in {"nostart", "nostart_old"})
+            or bat_status is None
+        ) and _service_reports_version(_update_health_port(port), expected):
+            verdict = {
+                "status": "ok",
+                "expected_version": expected,
+                "actual_version": __version__,
+                "reason": "",
+                "reason_code": "",
+            }
+            clear_cached_update(install_dir)
         else:
-            code = "unknown"
-            reason = UPDATE_FAILURE_MESSAGES["unknown"]
-        verdict = {
-            "status": "failed",
-            "expected_version": expected,
-            "actual_version": __version__,
-            "reason": reason,
-            "reason_code": code,
-        }
+            if bat_status == "failed":
+                code = bat_code if isinstance(bat_code, str) else "unknown"
+                reason = UPDATE_FAILURE_MESSAGES.get(code, UPDATE_FAILURE_MESSAGES["unknown"])
+            elif bat_status == "applied":
+                code = "mismatch"
+                reason = UPDATE_FAILURE_MESSAGES["mismatch"]
+            else:
+                code = "unknown"
+                reason = UPDATE_FAILURE_MESSAGES["unknown"]
+            verdict = {
+                "status": "failed",
+                "expected_version": expected,
+                "actual_version": __version__,
+                "reason": reason,
+                "reason_code": code,
+            }
     else:
         verdict = {
             "status": "failed",
@@ -916,8 +1048,11 @@ def consume_pending_update(install_dir: str | Path) -> dict | None:
     return verdict
 
 
-def reconcile_pending_update(install_dir: str | Path) -> bool:
+def reconcile_pending_update(install_dir: str | Path, port: Any = None) -> bool:
     """Handle a pending/failed update at startup.
+
+    ``port`` is passed through to consume_pending_update (M-44 late-
+    success re-probe); None resolves via the instance record / 8686.
 
     Consumes any pending marker and, when the previous update failed
     (or an earlier failure is still unfixed), puts the update state
@@ -925,7 +1060,7 @@ def reconcile_pending_update(install_dir: str | Path) -> bool:
     caller should skip the automatic version check — the user should
     see the failure, not another prompt for the same update.
     """
-    pending = consume_pending_update(install_dir)
+    pending = consume_pending_update(install_dir, port=port)
     if pending is not None:
         if pending["status"] == "ok":
             return False
@@ -1652,7 +1787,7 @@ def _kill_install_dir_processes(install_dir: str | Path, exclude_pid: int | None
     return True
 
 
-def apply_update(install_dir: str | Path, exe_name: str) -> Path:
+def apply_update(install_dir: str | Path, exe_name: str, port: int = 8686) -> Path:
     """Prepare the swap: backup, write update.bat, launch it detached.
 
     Only valid when a release is staged (status "ready") and only on
@@ -1660,7 +1795,14 @@ def apply_update(install_dir: str | Path, exe_name: str) -> Path:
     must fail here, not after the program has exited). The caller is
     responsible for exiting this process right after (see
     request_restart). Returns the batch file path.
+
+    ``port`` is the port this service listens on (M-41): the bat polls
+    /api/health on that port while waiting for the new (or rolled-back)
+    version; a non-default port must reach the bat or it polls 8686
+    forever and reports a false nostart. Invalid values fall back to
+    8686.
     """
+    port = _coerce_port(port)
     with _STATE_LOCK:
         status = _STATE.get("status")
         staging_dir = _STATE.get("staging_dir")
@@ -1748,9 +1890,16 @@ def apply_update(install_dir: str | Path, exe_name: str) -> Path:
         pass
     flags = _windows_launch_flags()
     try:
+        # bat 第 6 个参数是当前（旧）版本号：回滚重开后 bat 轮询
+        # /api/health 等这个版本出现，才算旧版真的回来了；等不到
+        # 写 failed/nostart_old。只对从本版起的更新生效（更新跑的
+        # 是旧版的 bat，旧版 bat 没有这段核实）。
+        # bat 第 7 个参数是当前服务端口（M-41）：bat 轮询 /api/health
+        # 必须问这个端口，默认 8686 会把非默认端口的更新误判成
+        # nostart。
         subprocess.Popen(
             ["cmd.exe", "/c", str(bat_path), str(staging_dir), exe_name, str(os.getpid()),
-             expected_version, backup_name],
+             expected_version, backup_name, __version__, str(port)],
             creationflags=flags,
             close_fds=True,
             stdin=subprocess.DEVNULL,

@@ -9,9 +9,13 @@ from pathlib import Path
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
-from pypdf import PdfReader
-
+from bosshunter.lazy_module import lazy_attr
 from bosshunter.web.resume_text import sanitize_resume_text
+
+# v30 启动提速：pypdf 冷导入约 0.6 秒，启动首屏用不上；PdfReader
+# 只在第一次真正解析 PDF 时才导入。代理是真实的模块全局名，
+# 函数里直接用、测试照常 patch（见 bosshunter.lazy_module）。
+PdfReader = lazy_attr("pypdf", "PdfReader")
 
 MAX_DOCX_XML_SIZE = 20 * 1024 * 1024
 SUPPORTED_RESUME_EXTENSIONS = {".md", ".docx", ".pdf", ".txt"}
@@ -96,11 +100,36 @@ def prepare_resume_content(filename: str, content: bytes) -> tuple[str, bytes]:
 	return output_name, sanitize_resume_text(markdown).encode("utf-8")
 
 
+def _is_pdf_parse_error(exc: BaseException) -> bool:
+	"""True when ``exc`` is a real PDF parse failure (M-37).
+
+	Only PdfReadError (covers PdfStreamError / EmptyFileError /
+	FileNotDecryptedError) and OSError count: a truncated, garbage or
+	otherwise unreadable file. Program errors (NameError, ImportError,
+	MemoryError, ...) are NOT parse failures and must propagate — the
+	old bare ``except Exception`` turned them into a misleading
+	"PDF 文件无效或已损坏" (v30 构建中间态 pypdf 懒导入写坏时，
+	NameError 就是这样被吞掉、6 项 PDF 测试误报文件损坏）。
+	PdfReadError is imported lazily inside (a top-level import would
+	defeat the v30 lazy pypdf load); if that import itself fails,
+	return False so the original error propagates.
+	"""
+	if isinstance(exc, OSError):
+		return True
+	try:
+		from pypdf.errors import PdfReadError
+	except Exception:
+		return False
+	return isinstance(exc, PdfReadError)
+
+
 def pdf_to_markdown(content: bytes) -> str:
 	"""Extract text-layer content from a PDF resume as Markdown-like text."""
 	try:
 		reader = PdfReader(BytesIO(content))
 	except Exception as exc:
+		if not _is_pdf_parse_error(exc):
+			raise
 		raise ResumeUploadError("PDF 文件无效或已损坏") from exc
 
 	if reader.is_encrypted:
@@ -115,6 +144,9 @@ def pdf_to_markdown(content: bytes) -> str:
 	try:
 		pages = list(reader.pages)
 	except Exception as exc:
+		# M-37：同上，只收真正的解析失败；程序错误放行。
+		if not _is_pdf_parse_error(exc):
+			raise
 		raise ResumeUploadError("PDF 文件无效或已损坏") from exc
 	if not pages:
 		raise ResumeUploadError("这个 PDF 没有页面内容，请换一份有内容的简历再上传")

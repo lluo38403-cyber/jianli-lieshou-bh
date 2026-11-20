@@ -1552,7 +1552,14 @@ def api_update_apply():
 				raise updater.UpdateError("新版本还没下好，先等它下载完。")
 			payload_root = _restage_from_cached_zip(cached)
 			updater._set_status(staging_dir=str(payload_root), zip_path=cached["zip_path"])
-		updater.apply_update(install_dir, updater.get_exe_name())
+		# M-41：把当前服务端口传给 bat——面板可能跑在非默认端口上
+		# （web --port），bat 轮询 /api/health 必须问这个端口；
+		# SERVER_PORT 是请求实际到达的端口，即本服务监听的端口。
+		updater.apply_update(
+			install_dir,
+			updater.get_exe_name(),
+			port=request.environ.get("SERVER_PORT"),
+		)
 	except updater.UpdateError as exc:
 		return _json_response({"error": exc.user_message}, 400)
 	updater.request_restart(delay=1.5)
@@ -4528,6 +4535,9 @@ def error500(error):
 _logger = logging.getLogger(__name__)
 
 _SHUTDOWN_HOOKS_INSTALLED = False
+# 启动计时起点（v30）：_startup_log 每行带 +毫秒 elapsed，同一秒内
+# 多行也能排序——下次复现启动慢/窗口消失，一行日志就能定罪。
+_STARTUP_T0 = time.monotonic()
 
 
 def _startup_log(message: str) -> None:
@@ -4537,7 +4547,7 @@ def _startup_log(message: str) -> None:
     所以同时直接追加写日志文件——下次启动失败定位就看这个文件。
     写失败不挡启动。
     """
-    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] 启动：{message}"
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())} +{time.monotonic() - _STARTUP_T0:7.3f}s] 启动：{message}"
     try:
         _logger.info("启动：%s", message)
     except Exception:
@@ -4687,10 +4697,16 @@ def _stop_stale_our_service(data_dir, port: int) -> bool:
     if not _is_pid_our_exe(pid):
         _startup_log(f"停残留旧服务：pid={pid} 不是我们的 exe，不动手")
         return False
-    _startup_log(f"残留旧服务 pid={pid}，先优雅停")
-    if not _terminate_process_gracefully(pid, timeout=5.0):
-        _startup_log(f"残留旧服务 pid={pid} 优雅停没停掉，强制结束")
+    if _reused_service_is_windowless(port):
+        # v30：已双重确认它在应答、但没有任何面板标签页——优雅停
+        # 5 秒基本是白等，直接强制结束，省约 5 秒。
+        _startup_log(f"残留旧服务 pid={pid} 已确认无窗口，跳过优雅停直接强制结束")
         _kill_process_tree(pid)
+    else:
+        _startup_log(f"残留旧服务 pid={pid}，先优雅停")
+        if not _terminate_process_gracefully(pid, timeout=5.0):
+            _startup_log(f"残留旧服务 pid={pid} 优雅停没停掉，强制结束")
+            _kill_process_tree(pid)
     if _pid_alive(pid):
         _startup_log(f"残留旧服务 pid={pid} 还是停不掉，放弃")
         return False
@@ -4702,12 +4718,40 @@ def _stop_stale_our_service(data_dir, port: int) -> bool:
     return True
 
 
-def _verify_reused_service_window(panel_url: str, timeout: float = 10.0) -> bool:
+def _reused_service_is_windowless(port: int) -> bool:
+    """双重确认残留旧服务真的没有窗口（v30）。
+
+    /api/health 应答、且调试端口能列出标签页、且里面没有我们的
+    面板标签页，三条全满足才算无窗口。任一条问不到都返回 False——
+    无法确认时宁可走老路优雅停 5 秒，也不错杀一个可能有窗口的服务。
+    只认面板标签页：启动页标签是本轮刚拉的，不算旧服务的窗口。
+    永不抛异常。
+    """
+    from bosshunter import app_window as _app_window
+
+    try:
+        if not _app_window.is_our_service_alive("127.0.0.1", port, timeout=1.0):
+            return False
+        debug_port = _app_window.get_app_window_debug_port()
+        if debug_port is None:
+            return False
+        urls = _app_window._list_debug_page_urls(debug_port, timeout=1.5)
+        if urls is None:
+            return False
+        panel_url = _app_window.get_app_window_url() or f"http://127.0.0.1:{port}"
+        return not any(url.startswith(panel_url) for url in urls)
+    except Exception:
+        return False
+
+
+def _verify_reused_service_window(panel_url: str, timeout: float = 3.0) -> bool:
     """核实复用已有服务时窗口/标签页真的出现了（v29）。
 
     True：看到了面板标签页，或无法核实（没有调试端口，走默认
     浏览器开的窗口看不到标签页）时按旧行为放行。False：调试端口
-    应答、10 秒都没看到面板标签页——无窗口残留旧服务。
+    应答、3 秒都没看到面板标签页——无窗口残留旧服务。
+    v30：timeout 10 秒→3 秒、interval 0.5→0.2 秒——标签页出现
+    通常在 1 秒内，烧满 10 秒等一个不会出现的标签页是白等。
     """
     from bosshunter import app_window as _app_window
 
@@ -4715,9 +4759,53 @@ def _verify_reused_service_window(panel_url: str, timeout: float = 10.0) -> bool
         panel_url,
         _app_window.get_app_window_debug_port(),
         timeout=timeout,
+        interval=0.2,
         splash_url=_app_window.get_app_window_splash_url(),
     )
     return result is not False
+
+
+def _ensure_panel_window_after_ready(
+    host: str,
+    port: int,
+    panel_url: str,
+    ready_timeout: float = 30.0,
+    redirect_grace: float = 2.0,
+    tab_timeout: float = 5.0,
+) -> bool:
+    """兜底重开窗（v30）：服务就绪后若面板标签页一直没出现，再开一次窗。
+
+    覆盖一切“窗死了、服务活着”的情况（启动页被残留清理误杀、Chrome
+    交接丢窗等）。只在启动页标签还在（用户没关窗）时重开：两个标签
+    都没了 = 用户自己关了窗，绝不擅自再开；调试端口问不到 = 无法
+    核实，也不开（免得 duplicate 窗口）。跑在守护线程里，永不抛异常。
+    返回 True 表示确实又开了一次窗。
+    """
+    from bosshunter import app_window as _app_window
+
+    try:
+        if not _app_window.wait_for_service_ready(host, port, timeout=ready_timeout, interval=0.2):
+            return False
+        # 启动页 500 ms 一轮询，ready 后跳转面板：留出跳转时间。
+        time.sleep(redirect_grace)
+        debug_port = _app_window.get_app_window_debug_port()
+        if debug_port is None:
+            return False
+        seen = _app_window.wait_for_panel_tab(panel_url, debug_port, timeout=tab_timeout, interval=0.2)
+        if seen is not False:
+            return False  # 看到了面板标签页，或无法核实：不用重开。
+        splash_url = _app_window.get_app_window_splash_url()
+        urls = _app_window._list_debug_page_urls(debug_port)
+        if urls is None:
+            return False
+        if splash_url and any(url.startswith(splash_url) for url in urls):
+            _startup_log("服务已就绪但面板标签页没出现，再开一次面板窗口")
+            _app_window.set_splash_stage("正在重新打开面板窗口…")
+            _app_window.launch_app_window(panel_url)
+            return True
+        return False
+    except Exception:
+        return False
 
 
 def _is_address_in_use(exc: BaseException) -> bool:
@@ -4847,6 +4935,11 @@ def _run_server_impl(host: str = "127.0.0.1", port: int = 8686, open_browser: bo
 	from bosshunter import app_window as _app_window
 
 	panel_url = f"http://{host}:{port}"
+	# v30：本轮拉起的启动页（进程 + 服务）。复用分支可能先拉起来、
+	# 再落到下面分支 B——分支 B 不再重复拉第二次。
+	_splash_proc = None
+	_splash_server = None
+	_splash_launched = False
 	if _app_window.is_our_service_alive(host, port):
 		if not open_browser:
 			return
@@ -4855,30 +4948,36 @@ def _run_server_impl(host: str = "127.0.0.1", port: int = 8686, open_browser: bo
 		if _verify_reused_service_window(panel_url):
 			_startup_log("面板标签页已出现（或无法核实），复用已有服务")
 			return
-		_startup_log("复用开窗后 10 秒没看到面板标签页，判定为无窗口残留旧服务")
+		_startup_log("复用开窗后 3 秒没看到面板标签页，判定为无窗口残留旧服务")
+		if open_browser:
+			# v30：先把启动页拉起来给用户看，再去停旧服务——停要
+			# 几秒，期间屏幕上不能什么都没有。注意：这里拉起的启动页
+			# Chrome 随后会被分支 B 的残留清理看到，清理时由
+			# exclude_pid 护着（见下），不会把它当残留杀掉。
+			from bosshunter.app_window import launch_splash_window, set_splash_failure_marker_path
+
+			set_splash_failure_marker_path(_startup_failure_marker_path())
+			_app_window.set_splash_stage("正在停掉残留的旧服务…")
+			_splash_proc, _splash_server = launch_splash_window(panel_url)
+			if _splash_server is not None:
+				_splash_launched = True
+				_splash_pid = _splash_proc.pid if _splash_proc is not None else None
+				_startup_log(f"启动页已拉起：{_splash_server.splash_url}（chrome pid={_splash_pid}）")
+			elif not _app_window.last_splash_launch_failed():
+				# 启动页服务没起来，但 launch_splash_window 已回落到
+				# 直接开面板窗口：窗口已经有了，分支 B 不用再拉一次。
+				_splash_launched = True
 		if _stop_stale_our_service(DATA_DIR, port):
 			_startup_log("残留旧服务已停掉，自己起新服务")
 			# 落到下面分支 B，自己起服务。
 		else:
 			_startup_log("残留旧服务认不出/停不掉，保持复用、不自己起新服务")
 			return
-	# v28：先拉启动页（立即出窗口、轮询服务就绪后自己跳转面板），
-	# 重型前置检查已在守护线程里跑，不挡首屏。
-	if open_browser:
-		from bosshunter.app_window import launch_splash_window, set_splash_failure_marker_path
-
-		set_splash_failure_marker_path(_startup_failure_marker_path())
-		_splash_proc, _splash_server = launch_splash_window(panel_url)
-		if _splash_server is not None:
-			_startup_log(f"启动页已拉起：{_splash_server.splash_url}")
-		# v29：启动页回落后仍无窗口（浏览器拉起失败），不要继续
-		# 静默往下走——走可见报错。
-		if _app_window.last_splash_launch_failed():
-			_fail_startup_visible(
-				"面板窗口没有打开（浏览器拉起失败），服务没有启动。"
-				"请检查默认浏览器后重新双击「简历猎手」再试。",
-				reason_code="window_launch_failed",
-			)
+	# v30（H1 头号修）：残留清理移到启动页之前。v28 把启动页提前后，
+	# 清理跑在启动页之后，按“我们拉起的浏览器”记录把刚拉起的启动页
+	# Chrome 当残留杀掉——窗口只活 2.75 秒、服务好了也没窗口（录屏
+	# 19 秒消失）。清理的本意就是“拉起任何新 runtime 之前跑”，挪到
+	# 前面才是它该在的位置；复用分支先拉的启动页由 exclude_pid 护着。
 	# v25：起新服务前先做残留清理（上次被任务管理器强杀后留下的
 	# node.exe / 自动化 Chrome），再记下本实例、装好退出钩子。复用
 	# 路径（上面已 return）不做这些：那个进程只是开窗就退出，退出
@@ -4892,13 +4991,45 @@ def _run_server_impl(host: str = "127.0.0.1", port: int = 8686, open_browser: bo
 
 		set_data_dir(DATA_DIR)
 		_startup_log("开始残留清理")
-		_cleaned = cleanup_stale_browser_resources(data_dir=DATA_DIR, port=port)
+		_app_window.set_splash_stage("正在清理残留文件…")
+		_exclude_pid = None
+		try:
+			_current_proc = _app_window.get_app_window_process()
+			# 只排除还活着的本次启动窗口：句柄已退出（Chrome 交接给
+			# 已在跑实例）时没必要排除——交接本就不记 launched-browser，
+			# 清理也杀不到它；poll() 顺带挡住测试里残留的 Mock 句柄。
+			if _current_proc is not None and _current_proc.poll() is None:
+				_exclude_pid = _current_proc.pid
+		except Exception:
+			_exclude_pid = None
+		_cleaned = cleanup_stale_browser_resources(data_dir=DATA_DIR, port=port, exclude_pid=_exclude_pid)
 		_startup_log(f"残留清理完成：{'清掉了东西' if _cleaned else '无残留'}")
 		write_instance_file(DATA_DIR, os.getpid(), port)
 		_startup_log(f"实例文件已写：pid={os.getpid()}")
 		_install_shutdown_hooks(DATA_DIR, port)
 	except Exception:
 		pass
+	# v28：先拉启动页（立即出窗口、轮询服务就绪后自己跳转面板），
+	# 重型前置检查已在守护线程里跑，不挡首屏。复用分支已经拉过
+	# 启动页的，不再重复拉第二次。
+	if open_browser and not _splash_launched:
+		from bosshunter.app_window import launch_splash_window, set_splash_failure_marker_path
+
+		set_splash_failure_marker_path(_startup_failure_marker_path())
+		_app_window.set_splash_stage("正在启动本地服务…")
+		_splash_proc, _splash_server = launch_splash_window(panel_url)
+		if _splash_server is not None:
+			_splash_launched = True
+			_splash_pid = _splash_proc.pid if _splash_proc is not None else None
+			_startup_log(f"启动页已拉起：{_splash_server.splash_url}（chrome pid={_splash_pid}）")
+		# v29：启动页回落后仍无窗口（浏览器拉起失败），不要继续
+		# 静默往下走——走可见报错。
+		if _app_window.last_splash_launch_failed():
+			_fail_startup_visible(
+				"面板窗口没有打开（浏览器拉起失败），服务没有启动。"
+				"请检查默认浏览器后重新双击「简历猎手」再试。",
+				reason_code="window_launch_failed",
+			)
 	from bosshunter.collection_session_store import list_sessions
 	for session in list_sessions(DATA_DIR / "bosshunter.db", active_only=True):
 		if task_runner.status()["active"]:
@@ -4934,6 +5065,14 @@ def _run_server_impl(host: str = "127.0.0.1", port: int = 8686, open_browser: bo
 
 		threading.Thread(target=_watch_app_close, daemon=True).start()
 
+		# v30 兜底：服务就绪后面板标签页还没出现（启动页被误杀、
+		# Chrome 交接丢窗等），再开一次窗；用户关了窗就不再开。
+		threading.Thread(
+			target=_ensure_panel_window_after_ready,
+			args=(host, port, panel_url),
+			daemon=True,
+		).start()
+
 	# 启动时悄悄查一次有没有新版：后台线程、10 秒超时，查不到就当没有，
 	# 绝不拖慢启动、绝不影响找工作。结果进更新状态，首页横幅直接用。
 	def _startup_update_check():
@@ -4944,7 +5083,7 @@ def _run_server_impl(host: str = "127.0.0.1", port: int = 8686, open_browser: bo
 			# 同一个更新（否则用户会看到重复循环提示）；换成了或没
 			# 换过，才照常查新版。
 			install_dir = updater.get_install_dir()
-			if install_dir is not None and updater.reconcile_pending_update(install_dir):
+			if install_dir is not None and updater.reconcile_pending_update(install_dir, port=port):
 				return
 			from bosshunter.updater import run_check
 			run_check(load_config(CONFIG_PATH), timeout=10.0)
@@ -4970,6 +5109,7 @@ def _run_server_impl(host: str = "127.0.0.1", port: int = 8686, open_browser: bo
 	# 残留服务（instance 文件 + exe 核对）：是我们自己的就停掉它、
 	# 重试绑定一次；再失败、或是占端口的不是我们、或是别的绑定
 	# 错误，一律弹可见错误框 + 写失败标记 + 记日志再退出。
+	_app_window.set_splash_stage("正在启动本地服务…")
 	_startup_log(f"开始在 {host}:{port} 上监听")
 	try:
 		app.run(

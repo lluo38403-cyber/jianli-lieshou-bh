@@ -11,7 +11,12 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable
 from urllib.parse import quote, urlencode
 
-import httpx
+from bosshunter.lazy_module import lazy_module
+
+# v30 启动提速：httpx 只在第一次真正发 HTTP 请求时才导入
+# （启动首屏用不上）。代理是真实的模块全局名，函数里直接用、
+# 测试照常 patch（见 bosshunter.lazy_module）。
+httpx = lazy_module("httpx")
 
 from bosshunter.ai.prefilter import quick_score
 from bosshunter.employment import internship_config_error, internship_only, internship_rejection

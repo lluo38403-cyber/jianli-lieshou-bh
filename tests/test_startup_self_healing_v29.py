@@ -119,7 +119,7 @@ class RunServerReuseVerifyTests(unittest.TestCase):
         ):
             server.run_server(host="127.0.0.1", port=8686, open_browser=True)
 
-        # 调试端口应答、10 秒没看到面板标签页：无窗口残留旧服务。
+        # 调试端口应答、3 秒没看到面板标签页：无窗口残留旧服务。
         launch.assert_called_once_with("http://127.0.0.1:8686")
         stop.assert_called_once_with(self._data_dir, 8686)
         app_mock.run.assert_called_once()

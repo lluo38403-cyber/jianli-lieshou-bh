@@ -112,7 +112,7 @@ class VersionCompareTests(unittest.TestCase):
 class UpdateStubHandler(BaseHTTPRequestHandler):
     """Stub for the relay update contract: /api/version + /download/latest."""
 
-    version_payload = {"version": "1.1.16", "size": 0, "sha256": "0" * 64, "notes": ""}
+    version_payload = {"version": "1.1.17", "size": 0, "sha256": "0" * 64, "notes": ""}
     zip_bytes = b""
     status = 200
     requests: list = []
@@ -167,7 +167,7 @@ class UpdateCheckTests(unittest.TestCase):
     def setUp(self):
         _reset_update_state()
         UpdateStubHandler.version_payload = {
-            "version": "1.1.16",
+            "version": "1.1.17",
             "size": 123,
             "sha256": hashlib.sha256(_make_zip()).hexdigest(),
             "notes": "更快更稳",
@@ -200,7 +200,7 @@ class UpdateCheckTests(unittest.TestCase):
         info = check_for_update(self._config())
         self.assertIsNotNone(info)
         assert info is not None
-        self.assertEqual(info["version"], "1.1.16")
+        self.assertEqual(info["version"], "1.1.17")
         self.assertEqual(info["current_version"], __version__)
         self.assertEqual(info["size"], 123)
         self.assertEqual(info["notes"], "更快更稳")
@@ -229,9 +229,9 @@ class UpdateCheckTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         for bad in (
             {"size": 1, "sha256": "a" * 64},
-            {"version": "1.1.16", "size": 1},
-            {"version": "1.1.16", "size": 1, "sha256": "not-a-hash"},
-            {"version": "1.1.16", "size": 1, "sha256": "a" * 64, "notes": 5},
+            {"version": "1.1.17", "size": 1},
+            {"version": "1.1.17", "size": 1, "sha256": "not-a-hash"},
+            {"version": "1.1.17", "size": 1, "sha256": "a" * 64, "notes": 5},
         ):
             with self.subTest(bad=bad):
                 UpdateStubHandler.version_payload = bad
@@ -355,7 +355,7 @@ class CheckFailureClassificationTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_bad_sha_is_classified(self):
-        payload = {"version": "1.1.16", "size": 1, "sha256": "not-a-hash", "notes": ""}
+        payload = {"version": "1.1.17", "size": 1, "sha256": "not-a-hash", "notes": ""}
         with mock.patch.object(
             updater.httpx, "get",
             return_value=self._fake_response(200, payload),
@@ -384,7 +384,7 @@ class CheckFailureClassificationTests(unittest.TestCase):
 
     def test_run_check_failure_keeps_known_info_and_reports_check_failed(self):
         info = {
-            "version": "1.1.16",
+            "version": "1.1.17",
             "current_version": __version__,
             "size": 123,
             "sha256": "a" * 64,
@@ -421,7 +421,7 @@ class CheckFailureClassificationTests(unittest.TestCase):
         run_check(dead, force=True)
         self.assertEqual(get_status()["reason_code"], "check_failed")
         payload = {
-            "version": "1.1.16", "size": 123,
+            "version": "1.1.17", "size": 123,
             "sha256": "a" * 64, "notes": "更快更稳",
         }
         with mock.patch.object(
@@ -437,7 +437,7 @@ class CheckFailureClassificationTests(unittest.TestCase):
 
     def test_run_check_without_token_stays_idle_and_keeps_info(self):
         info = {
-            "version": "1.1.16",
+            "version": "1.1.17",
             "current_version": __version__,
             "size": 123,
             "sha256": "a" * 64,
@@ -478,7 +478,7 @@ class UpdateDownloadTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.16",
+            "version": "1.1.17",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -506,7 +506,7 @@ class UpdateDownloadTests(unittest.TestCase):
 
     def _info(self):
         return {
-            "version": "1.1.16",
+            "version": "1.1.17",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -607,7 +607,7 @@ class UpdateDownloadTests(unittest.TestCase):
         bad = buf.getvalue()
         UpdateStubHandler.zip_bytes = bad
         UpdateStubHandler.version_payload = {
-            "version": "1.1.16",
+            "version": "1.1.17",
             "size": len(bad),
             "sha256": hashlib.sha256(bad).hexdigest(),
             "notes": "",
@@ -799,8 +799,8 @@ class UpdatePendingTests(unittest.TestCase):
             self.assertEqual(last["reason_code"], "copy")
 
     def test_consume_bat_failure_nostart_maps_message(self):
-        # run 44758466045 的新码：bat 换完文件、新版 90 秒没在 8686
-        # 上起来，写 failed/nostart。重开的程序要认出这个码、报出
+        # run 44758466045 的新码：bat 换完文件、新版 180 秒没在
+        # %PORT% 上起来，写 failed/nostart。重开的程序要认出这个码、报出
         # 对应的人话，并把码留在状态里给 /api/update/status 透出。
         with tempfile.TemporaryDirectory() as tmp:
             install = Path(tmp)
@@ -825,6 +825,33 @@ class UpdatePendingTests(unittest.TestCase):
             state = get_status()
             self.assertEqual(state["status"], "error")
             self.assertEqual(state.get("reason_code"), "nostart")
+            self.assertIn("没重新打开", state["error"])
+
+    def test_consume_bat_failure_nostart_old_maps_message(self):
+        # v30 回滚重开核实的新码：bat 回滚重拉旧版、180 秒没在
+        # %PORT% 上起来，写 failed/nostart_old。重开的程序要认出这个码、报出
+        # 对应的人话，并把码留在状态里给 /api/update/status 透出。
+        # 文案里的“没重新打开”让前端 classifyUpdateError 分到 apply
+        # 步（和 nostart 一样），横幅才显示“这次没换上”+“再试一次”。
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp)
+            write_pending_update(install, "9.9.9")
+            write_update_result(install, {"status": "failed", "expected_version": "9.9.9", "reason_code": "nostart_old"})
+            verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "failed")
+            self.assertEqual(verdict["reason"], UPDATE_FAILURE_MESSAGES["nostart_old"])
+            self.assertEqual(verdict["reason_code"], "nostart_old")
+            self.assertIn("没重新打开", verdict["reason"])
+            self.assertIn("旧版本", verdict["reason"])
+            last = get_last_update_failure(install)
+            assert last is not None
+            self.assertEqual(last["reason_code"], "nostart_old")
+            self.assertEqual(last["reason"], UPDATE_FAILURE_MESSAGES["nostart_old"])
+            self.assertTrue(reconcile_pending_update(install))
+            state = get_status()
+            self.assertEqual(state["status"], "error")
+            self.assertEqual(state.get("reason_code"), "nostart_old")
             self.assertIn("没重新打开", state["error"])
 
     def test_stale_reason_code_cleared_by_fresh_check(self):
@@ -880,6 +907,119 @@ class UpdatePendingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(consume_pending_update(Path(tmp)))
             self.assertFalse(reconcile_pending_update(Path(tmp)))
+
+    def test_consume_nostart_rescued_when_service_reports_expected_version(self):
+        # M-44（v30）：bat 写了 failed/nostart，但本地服务只是起来得
+        # 慢——重探一次报到期望版本，迟到成功不判失败，不进 error 态。
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp)
+            write_pending_update(install, "9.9.9")
+            write_update_result(install, {"status": "failed", "expected_version": "9.9.9", "reason_code": "nostart"})
+            with patch("bosshunter.updater._service_reports_version", return_value=True):
+                verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "ok")
+            self.assertEqual(verdict["expected_version"], "9.9.9")
+            self.assertIsNone(get_last_update_failure(install))
+            self.assertFalse(reconcile_pending_update(install))
+
+    def test_consume_nostart_old_rescued_when_service_reports_expected_version(self):
+        # 回滚的 nostart_old 同理：旧版迟到了、但确实起来了，也算成功。
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp)
+            write_pending_update(install, "9.9.9")
+            write_update_result(install, {"status": "failed", "expected_version": "9.9.9", "reason_code": "nostart_old"})
+            with patch("bosshunter.updater._service_reports_version", return_value=True):
+                verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "ok")
+
+    def test_consume_nostart_stays_failed_when_service_not_reporting(self):
+        # 重探没报到期望版本：原判失败不变，reason_code 仍是 nostart。
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp)
+            write_pending_update(install, "9.9.9")
+            write_update_result(install, {"status": "failed", "expected_version": "9.9.9", "reason_code": "nostart"})
+            with patch("bosshunter.updater._service_reports_version", return_value=False):
+                verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "failed")
+            self.assertEqual(verdict["reason_code"], "nostart")
+            self.assertEqual(verdict["reason"], UPDATE_FAILURE_MESSAGES["nostart"])
+
+    def test_consume_copy_not_rescued_even_when_service_reports_version(self):
+        # M-44 只救 nostart / 无结果：copy/stuck 这类失败，版本号对
+        # 上也不能证明半截拷贝是完整的，绝不能翻成成功。
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp)
+            write_pending_update(install, "9.9.9")
+            write_update_result(install, {"status": "failed", "expected_version": "9.9.9", "reason_code": "copy"})
+            with patch("bosshunter.updater._service_reports_version", return_value=True):
+                verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "failed")
+            self.assertEqual(verdict["reason_code"], "copy")
+
+    def test_consume_missing_result_rescued_when_service_reports_version(self):
+        # bat 根本没写结果文件（被杀掉/没跑完），服务却在期望版本上：
+        # 同样算迟到成功，不判 unknown 失败。
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp)
+            write_pending_update(install, "9.9.9")
+            with patch("bosshunter.updater._service_reports_version", return_value=True):
+                verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "ok")
+
+    def test_service_reports_version_probes_real_health_endpoint(self):
+        # _service_reports_version 的真机行为：对着一个真的
+        # /api/health 探——版本对上才算、版本不对/状态不对/没服务都不算。
+        import json as _json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        from bosshunter.updater import _service_reports_version
+
+        state = {"payload": {"status": "ok", "version": "9.9.9"}}
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = _json.dumps(state["payload"]).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        port = server.server_address[1]
+        import threading
+
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.assertTrue(_service_reports_version(port, "9.9.9"))
+            state["payload"] = {"status": "ok", "version": "1.1.16"}
+            self.assertFalse(_service_reports_version(port, "9.9.9"))
+            state["payload"] = {"status": "error", "version": "9.9.9"}
+            self.assertFalse(_service_reports_version(port, "9.9.9"))
+        finally:
+            server.shutdown()
+            server.server_close()
+        # 没服务在听：连接被拒，False，不抛异常。
+        self.assertFalse(_service_reports_version(port, "9.9.9"))
 
 
 class UpdatePreservePruneTests(unittest.TestCase):
@@ -1123,16 +1263,22 @@ class UpdateScriptTests(unittest.TestCase):
         # 回归 run 44758466045：旧 bat 换完文件就先写 applied 再裸
         # start——新版 180 秒没在 8686 上起来、也没有 exe 在跑，
         # 结果文件却说 applied，失败被静默吞掉。现在必须先拉起、
-        # 再轮询 8686 /api/health 等期望版本，等到了才写 applied、
+        # 再轮询 %PORT% /api/health 等期望版本，等到了才写 applied、
         # 删 staging；等不到走 :fail_nostart。
+        # M-41/M-44（v30）：轮询问的是 bat 第 7 个参数 %PORT%（默认
+        # 8686），不再写死 8686；上限从 90 秒放宽到 180 秒。
         script = build_update_script()
-        self.assertIn("http://127.0.0.1:8686/api/health", script)
-        self.assertIn("(Get-Date).AddSeconds(90)", script)
+        self.assertIn('set "PORT=%~7"', script)
+        self.assertIn('if "%PORT%"=="" set "PORT=8686"', script)
+        self.assertIn("http://127.0.0.1:%PORT%/api/health", script)
+        self.assertNotIn("http://127.0.0.1:8686/api/health", script)
+        self.assertIn("(Get-Date).AddSeconds(180)", script)
+        self.assertNotIn("(Get-Date).AddSeconds(90)", script)
         self.assertIn("$h.version", script)
         self.assertIn("if ($seen -eq '%EXPECTED%')", script)
         self.assertIn(":fail_nostart", script)
         self.assertIn('reason_code": "nostart"', script)
-        health_at = script.index("http://127.0.0.1:8686/api/health")
+        health_at = script.index("http://127.0.0.1:%PORT%/api/health")
         applied_at = script.index('echo {"status": "applied"')
         staging_at = script.index('rmdir /s /q "%STAGING%"')
         # 顺序不能反：轮询 → 写 applied → 删 staging。
@@ -1147,6 +1293,8 @@ class UpdateScriptTests(unittest.TestCase):
     def test_batch_nostart_keeps_staging_and_retries_start(self):
         # nostart 时 staging 必须留着（重试不用重新下载），verdict
         # 必须在 bat 自删之前写好，还要再拉一次新 exe 给一次机会。
+        # M-44（v30）：再拉之前先探端口——已有实例在应答就不再拉，
+        # 免得两个实例抢绑端口；端口没应答才拉。
         script = build_update_script()
         # 全 bat 只有成功分支删 staging：失败路径绝不能删。
         self.assertEqual(script.count('rmdir /s /q "%STAGING%"'), 1)
@@ -1157,6 +1305,9 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertIn('echo {"status": "failed"', section)
         self.assertIn('reason_code": "nostart"', section)
         self.assertIn('start "" "%INSTALL_DIR%\\%EXE_NAME%"', section)
+        self.assertIn("Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health'", section)
+        self.assertIn('set "PROBE_RC=%errorlevel%"', section)
+        self.assertIn('if %PROBE_RC% neq 0 start "" "%INSTALL_DIR%\\%EXE_NAME%"', section)
         self.assertNotIn('rmdir /s /q "%STAGING%"', section)
         verdict_at = section.index('echo {"status": "failed"')
         self.assertLess(verdict_at, section.index('del "%~f0"'))
@@ -1165,13 +1316,98 @@ class UpdateScriptTests(unittest.TestCase):
             section.index('start "" "%INSTALL_DIR%\\%EXE_NAME%"'),
         )
 
+    def test_batch_fail_write_verifies_old_version_before_reporting_failure(self):
+        # v30 回滚重开核实：:fail_write 以前先写 failed 再裸 start 重拉
+        # 旧版——旧版拉不起来也照写 copy/stuck，用户看到的还是“旧版本
+        # 还能用”。现在照成功分支的写法：重拉旧 exe 后轮询 %PORT%
+        # /api/health 等旧版本号（bat 第 6 个参数 %CURRENT%，即更新
+        # 前的版本），等到了才按原原因码写 failed；顺序必须是
+        # start → 轮询 → 写 verdict，verdict 一定在 bat 自删之前。
+        # M-41/M-44（v30）：轮询问 %PORT%（第 7 个参数，默认 8686），
+        # 上限从 90 秒放宽到 180 秒。
+        script = build_update_script()
+        self.assertIn('set "CURRENT=%~6"', script)
+        start = script.index("\r\n:fail_write\r\n")
+        end = script.index("\r\n:fail_nostart_old\r\n", start)
+        section = script[start:end]
+        self.assertIn(":fail_poll", section)
+        self.assertIn("http://127.0.0.1:%PORT%/api/health", section)
+        self.assertIn("(Get-Date).AddSeconds(180)", section)
+        self.assertIn("$seen -eq '%CURRENT%'", section)
+        self.assertIn('if %OLD_HEALTH_RC% neq 0 goto :fail_nostart_old', section)
+        self.assertIn('reason_code": "%FAIL_CODE%"', section)
+        self.assertNotIn('rmdir /s /q "%STAGING%"', section)
+        self.assertLess(
+            section.index('start "" "%INSTALL_DIR%\\%EXE_NAME%"'),
+            section.index("http://127.0.0.1:%PORT%/api/health"),
+        )
+        self.assertLess(
+            section.index("http://127.0.0.1:%PORT%/api/health"),
+            section.index('reason_code": "%FAIL_CODE%"'),
+        )
+        # 原原因码必须保留：Retry 第一遍期望 failed/copy（旧版回来
+        # 了、更新没换成），轮询成功绝不能把码改成别的。
+        self.assertIn('set "FAIL_CODE=copy"', script)
+        self.assertIn("goto :fail_write", script)
+
+    def test_batch_fail_write_old_version_never_answers_reports_nostart_old(self):
+        # 回滚重拉后旧版 180 秒一直不在 %PORT% 上应答：不能静默、不能
+        # 照写 copy/stuck，必须写明确的新原因码 nostart_old，并再拉
+        # 一次旧 exe 给最后一次机会；staging 照旧保留（重试不用重下）。
+        # M-44（v30）：再拉之前先探端口，已有实例在应答就不再拉。
+        script = build_update_script()
+        self.assertEqual(script.count('rmdir /s /q "%STAGING%"'), 1)
+        start = script.index("\r\n:fail_nostart_old\r\n")
+        section = script[start:]
+        self.assertIn('reason_code": "nostart_old"', section)
+        self.assertIn('start "" "%INSTALL_DIR%\\%EXE_NAME%"', section)
+        self.assertIn("Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health'", section)
+        self.assertIn('if %PROBE_RC% neq 0 if exist "%INSTALL_DIR%\\%EXE_NAME%" start "" "%INSTALL_DIR%\\%EXE_NAME%"', section)
+        self.assertNotIn('rmdir /s /q "%STAGING%"', section)
+        verdict_at = section.index('reason_code": "nostart_old"')
+        self.assertLess(verdict_at, section.index('del "%~f0"'))
+        self.assertLess(
+            verdict_at,
+            section.index('start "" "%INSTALL_DIR%\\%EXE_NAME%"'),
+        )
+        # 分流必须在写原原因码之前：OLD_HEALTH_RC 非 0 就走新分支，
+        # 不能先写 %FAIL_CODE% 再改——结果文件只写一次。
+        self.assertLess(
+            script.index("if %OLD_HEALTH_RC% neq 0 goto :fail_nostart_old"),
+            start,
+        )
+
+    def test_batch_old_version_poll_semantics(self):
+        # 回滚轮询的判定语义（模型）：等的是旧版本号，不是“随便哪个
+        # 版本起来了”。新版应答不算回滚成功——回滚没把旧版换回来时
+        # 不能报成功。机制本身（轮询行、180 秒上限、失败分支）由
+        # test_batch_fail_write_verifies_old_version_before_reporting_failure
+        # 和 test_batch_fail_write_old_version_never_answers_reports_nostart_old
+        # 钉在生成的 bat 上。
+        def poll(seen_versions, expected, deadline=180, interval=3):
+            waited = 0
+            for seen in seen_versions:
+                if seen == expected:
+                    return True, waited
+                waited += interval
+                if waited >= deadline:
+                    return False, waited
+            return False, waited
+
+        # 第三次轮询报到旧版本：不等满，直接成功。
+        self.assertEqual(poll(["", "1.1.17", "1.1.15"], "1.1.15"), (True, 6))
+        # 一直没应答：等满 180 秒再判失败。
+        self.assertEqual(poll([""] * 60, "1.1.15"), (False, 180))
+        # 一直应答新版本：回滚没换回旧版，同样等满 180 秒判失败。
+        self.assertEqual(poll(["1.1.17"] * 60, "1.1.15"), (False, 180))
+
     def test_batch_health_poll_semantics(self):
         # bat 本体跑不了（Windows 批处理），这里把轮询的判定语义
-        # 钉成模型：期望版本出现就停、一直不出现就等满 90 秒再判
-        # 失败。机制本身（轮询行、90 秒上限、失败分支）由
+        # 钉成模型：期望版本出现就停、一直不出现就等满 180 秒再判
+        # 失败。机制本身（轮询行、180 秒上限、失败分支）由
         # test_batch_verifies_new_version_before_reporting_applied
         # 钉在生成的 bat 上。
-        def poll(seen_versions, expected, deadline=90, interval=3):
+        def poll(seen_versions, expected, deadline=180, interval=3):
             waited = 0
             for seen in seen_versions:
                 if seen == expected:
@@ -1182,11 +1418,11 @@ class UpdateScriptTests(unittest.TestCase):
             return False, waited
 
         # 第三次轮询报到期望版本：不等满，直接成功。
-        self.assertEqual(poll(["", "1.1.15", "1.1.16"], "1.1.16"), (True, 6))
-        # 一直没应答：等满 90 秒再判失败。
-        self.assertEqual(poll([""] * 30, "1.1.16"), (False, 90))
-        # 一直应答旧版本：同样等满 90 秒（旧版不算数）。
-        self.assertEqual(poll(["1.1.15"] * 30, "1.1.16"), (False, 90))
+        self.assertEqual(poll(["", "1.1.15", "1.1.17"], "1.1.17"), (True, 6))
+        # 一直没应答：等满 180 秒再判失败。
+        self.assertEqual(poll([""] * 60, "1.1.17"), (False, 180))
+        # 一直应答旧版本：同样等满 180 秒（旧版不算数）。
+        self.assertEqual(poll(["1.1.15"] * 60, "1.1.17"), (False, 180))
 
     def test_batch_validates_staging_and_purges_stale_internal(self):
         # 回归：旧 bat 不校验 staging、有错照换；且 robocopy /E /IS
@@ -1230,7 +1466,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.16"},
+                "info": {"version": "1.1.17"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1261,7 +1497,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.16"},
+                "info": {"version": "1.1.17"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1286,6 +1522,89 @@ class UpdateApplyTests(unittest.TestCase):
             flags = popen.call_args.kwargs.get("creationflags", 0)
             self.assertTrue(flags & 0x08000000, "拉起 update.bat 必须带 CREATE_NO_WINDOW")
 
+    def test_apply_passes_current_version_to_update_bat(self):
+        # v30 回滚重开核实：bat 第 6 个参数必须是当前（旧）版本号，
+        # 回滚轮询等它出现才算旧版回来了。丢了这个参数，bat 的
+        # %CURRENT% 为空、轮询永远等不到旧版，每次回滚都会误报
+        # nostart_old。
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp) / "staging"
+            (staging / "_internal").mkdir(parents=True)
+            (staging / "简历猎手.exe").write_bytes(b"new-exe")
+            (staging / "_internal" / "app.bin").write_bytes(b"new-app")
+            updater._STATE.update({
+                "status": "ready",
+                "staging_dir": str(staging),
+                "info": {"version": "1.1.17"},
+            })
+            install = Path(tmp) / "install"
+            install.mkdir()
+            (install / "简历猎手.exe").write_bytes(b"old-exe")
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.app_window.close_app_window", return_value=True),
+                patch("bosshunter.browser.runtime.stop_runtime", return_value=True),
+                patch("bosshunter.browser.runtime.stop_launched_browser", return_value=True),
+                patch("bosshunter.updater._kill_install_dir_processes", return_value=True),
+                patch("bosshunter.updater.subprocess.Popen") as popen,
+            ):
+                apply_update(install, "简历猎手.exe")
+            popen.assert_called_once()
+            argv = popen.call_args.args[0]
+            self.assertEqual(argv[0:2], ["cmd.exe", "/c"])
+            self.assertEqual(argv[3], str(staging))
+            self.assertEqual(argv[4], "简历猎手.exe")
+            self.assertEqual(argv[6], "1.1.17")
+            self.assertEqual(argv[7], f"update-backup-{__version__}")
+            self.assertEqual(argv[8], __version__)
+
+    def test_apply_passes_port_to_update_bat(self):
+        # M-41（v30）：bat 第 7 个参数必须是当前服务端口，bat 轮询
+        # /api/health 才问得对端口；非默认端口（web --port 8687）不
+        # 传端口，bat 会在 8686 上等 180 秒再误报 nostart。默认不传
+        # 时是 8686，旧行为不变。
+        from unittest.mock import patch
+
+        def _run_apply(port_arg):
+            with tempfile.TemporaryDirectory() as tmp:
+                staging = Path(tmp) / "staging"
+                (staging / "_internal").mkdir(parents=True)
+                (staging / "简历猎手.exe").write_bytes(b"new-exe")
+                (staging / "_internal" / "app.bin").write_bytes(b"new-app")
+                updater._STATE.update({
+                    "status": "ready",
+                    "staging_dir": str(staging),
+                    "info": {"version": "1.1.17"},
+                })
+                install = Path(tmp) / "install"
+                install.mkdir()
+                (install / "简历猎手.exe").write_bytes(b"old-exe")
+                with (
+                    patch("bosshunter.updater._is_windows", return_value=True),
+                    patch("bosshunter.app_window.close_app_window", return_value=True),
+                    patch("bosshunter.browser.runtime.stop_runtime", return_value=True),
+                    patch("bosshunter.browser.runtime.stop_launched_browser", return_value=True),
+                    patch("bosshunter.updater._kill_install_dir_processes", return_value=True),
+                    patch("bosshunter.updater.subprocess.Popen") as popen,
+                ):
+                    if port_arg is None:
+                        apply_update(install, "简历猎手.exe")
+                    else:
+                        apply_update(install, "简历猎手.exe", port=port_arg)
+                popen.assert_called_once()
+                return popen.call_args.args[0]
+
+        argv = _run_apply(8687)
+        self.assertEqual(argv[9], "8687")
+        # 第 6 个参数仍是当前版本号，不能被端口顶掉。
+        self.assertEqual(argv[8], __version__)
+        argv = _run_apply(None)
+        self.assertEqual(argv[9], "8686")
+        argv = _run_apply("not-a-port")
+        self.assertEqual(argv[9], "8686")
+
     def test_apply_excludes_own_pid_when_killing_install_dir_processes(self):
         # 回归（v27，run 44707216190）：v24 的 apply_update 调
         # _kill_install_dir_processes 时没传 exclude_pid，PowerShell 按
@@ -1303,7 +1622,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.16"},
+                "info": {"version": "1.1.17"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1337,7 +1656,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.16"},
+                "info": {"version": "1.1.17"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1364,7 +1683,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.16"},
+                "info": {"version": "1.1.17"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1388,7 +1707,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(Path(tmp) / "empty-staging"),
-                "info": {"version": "1.1.16"},
+                "info": {"version": "1.1.17"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1495,7 +1814,7 @@ class UpdateRouteTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.16",
+            "version": "1.1.17",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "更快更稳",
@@ -1587,7 +1906,7 @@ class UpdateRouteTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             data = json.loads(body)
             self.assertTrue(data["update_available"])
-            self.assertEqual(data["version"], "1.1.16")
+            self.assertEqual(data["version"], "1.1.17")
             self.assertEqual(data["current_version"], __version__)
             self.assertEqual(data["notes"], "更快更稳")
 
@@ -1597,9 +1916,9 @@ class UpdateRouteTests(unittest.TestCase):
         # 后才能重新查到新版。
         with tempfile.TemporaryDirectory() as tmp:
             base = self._base_dir(tmp)
-            updater.write_pending_update(base, "1.1.16")
+            updater.write_pending_update(base, "1.1.17")
             updater.write_update_result(
-                base, {"status": "failed", "expected_version": "1.1.16", "reason_code": "copy"}
+                base, {"status": "failed", "expected_version": "1.1.17", "reason_code": "copy"}
             )
             original_get_install_dir = updater.get_install_dir
             updater.get_install_dir = lambda: base
@@ -1618,7 +1937,7 @@ class UpdateRouteTests(unittest.TestCase):
                 self.assertTrue(status.startswith("200"), body)
                 data = json.loads(body)
                 self.assertTrue(data["update_available"])
-                self.assertEqual(data["version"], "1.1.16")
+                self.assertEqual(data["version"], "1.1.17")
             finally:
                 updater.get_install_dir = original_get_install_dir
 
@@ -1902,7 +2221,7 @@ class UpdateCacheTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.16",
+            "version": "1.1.17",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -2080,7 +2399,7 @@ class UpdateCacheTests(unittest.TestCase):
             self.assertEqual(get_status()["status"], "ready", get_status())
             loaded = load_cached_update(install)
             assert loaded is not None
-            self.assertEqual(loaded["version"], "1.1.16")
+            self.assertEqual(loaded["version"], "1.1.17")
             self.assertTrue(Path(loaded["zip_path"]).is_file())
 
     def test_start_download_restores_from_cache_without_network(self):

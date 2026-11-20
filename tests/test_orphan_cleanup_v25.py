@@ -552,7 +552,10 @@ class RunServerFreshStartTests(unittest.TestCase):
         ):
             server.run_server(host="127.0.0.1", port=8686, open_browser=True)
         set_data.assert_called_once_with(server.DATA_DIR)
-        stale.assert_called_once_with(data_dir=server.DATA_DIR, port=8686)
+        # v30：残留清理移到启动页之前，并把本次启动刚拉起的浏览器
+        # PID 排除在外（exclude_pid，防启动页自杀）；全新启动还没拉
+        # 窗口，exclude_pid 是 None。
+        stale.assert_called_once_with(data_dir=server.DATA_DIR, port=8686, exclude_pid=None)
         write_inst.assert_called_once()
         hooks.assert_called_once_with(server.DATA_DIR, 8686)
         app.run.assert_called_once()

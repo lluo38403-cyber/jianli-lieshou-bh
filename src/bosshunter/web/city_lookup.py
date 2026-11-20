@@ -3,7 +3,12 @@
 from collections.abc import Iterable
 from typing import Any
 
-import httpx
+from bosshunter.lazy_module import lazy_module
+
+# v30 启动提速：httpx 只在第一次真正发 HTTP 请求时才导入
+# （启动首屏用不上）。代理是真实的模块全局名，函数里直接用、
+# 测试照常 patch（见 bosshunter.lazy_module）。
+httpx = lazy_module("httpx")
 
 
 CITY_CATALOG_URL = "https://www.zhipin.com/wapi/zpCommon/data/city.json"

@@ -81,6 +81,25 @@ _SPLASH_FAILURE_MARKER_PATH = None
 # 只有 launch_app_window 抛异常才置 True；走 webbrowser 回落
 # 也算拉起来了（窗口已经开了，只是没有句柄）。
 _LAST_SPLASH_LAUNCH_FAILED = False
+# 启动页当前阶段文案（v30）：run_server 在清理/绑定等关键点上调
+# set_splash_stage 更新，启动页 /splash-health 把它带回页面显示，
+# 用户能看到现在卡在哪一步，而不是一直只有一句“正在等本地服务起来…”。
+_SPLASH_STAGE = "正在等本地服务起来…"
+
+
+def set_splash_stage(text: str) -> None:
+    """Set the stage line the splash page shows (v30). Never raises."""
+    global _SPLASH_STAGE
+    try:
+        if text:
+            _SPLASH_STAGE = str(text)
+    except Exception:
+        pass
+
+
+def get_splash_stage() -> str:
+    """Return the current splash stage line (v30)."""
+    return _SPLASH_STAGE
 
 
 def set_splash_failure_marker_path(path) -> None:
@@ -202,7 +221,11 @@ def _splash_page_html(panel_url: str) -> bytes:
         # 联系不上启动页服务本身（进程已死）连续失败 10 次也一样，
         # 显示明确错误而不是一直转圈。
         "if(d.failed){showError(d.error||'本地服务启动失败，请重新双击「简历猎手」再试一次。');return}"
-        "if(tried>60){showError('启动有点慢，还在等本地服务起来，请稍等…');}"
+        # v30：超过 10 秒（tried>20，每 500 ms 一轮）未就绪就显示
+        # 已等秒数；没到 10 秒时显示服务端推来的当前阶段（清残留 /
+        # 启动服务…），用户能看到卡在哪一步。
+        "if(tried>20){showError('启动有点慢，还在努力…（已等 '+Math.round(tried/2)+' 秒）');}"
+        "else if(d.stage){document.getElementById('status').textContent=d.stage;}"
         "setTimeout(tick,500)}).catch(function(){fails++;"
         "if(fails>=10){showError('本地服务没有响应，程序可能没有启动成功。请重新双击「简历猎手」再试一次；如果一直这样，请把 data/logs/jianli-lieshou.log 发给客服。');return}"
         "setTimeout(tick,500)})}"
@@ -282,7 +305,7 @@ class _SplashRequestHandler(http.server.BaseHTTPRequestHandler):
                             "application/json",
                         )
                     else:
-                        self._send(200, json.dumps({"ready": False}).encode("utf-8"), "application/json")
+                        self._send(200, json.dumps({"ready": False, "stage": get_splash_stage()}, ensure_ascii=False).encode("utf-8"), "application/json")
             else:
                 self._send(404, b"not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):
