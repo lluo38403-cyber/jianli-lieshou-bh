@@ -63,7 +63,10 @@ $ErrorActionPreference = 'Stop'
 
 # 重开后的新进程跑在默认端口 8686（update.bat 不传 --port）。
 $RestartPort = 8686
-$ReadyTimeoutSeconds = 300
+$ReadyTimeoutSeconds = 900
+# 900 秒：三个 job 并行、每 job 各从中转下 64MB 包，中转带宽有限
+# （v24 重跑实测：单 job 下完 240 秒，另两 job 300 秒时只到 26-27%）；
+# 300 秒只够单 job，不够三 job 并行。超时是测试参数，不是产品要求。
 $RestartTimeoutSeconds = 180
 
 $tempDir = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
@@ -268,8 +271,12 @@ function Test-FileExclusiveOpen {
   param([string]$Path)
   # 文件能不能独占打开（FileShare::None）：能打开=没人占着；
   # 打不开（IOException）=还被占着。返回 $true=能独占打开。
+  # 注意必须用 ReadWrite：跑起来的 exe 镜像允许别人读（loader
+  # 以 FILE_SHARE_READ 映射），只读打开跑着的 exe 也能成功；
+  # 只有读写打开才会被 loader 的共享模式挡住——这正是产品
+  # updater.py 里 :procsweep 探针用的打开方式（ReadWrite）。
   try {
-    $fs = [IO.File]::Open($Path, 'Open', 'Read', 'None')
+    $fs = [IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
     $fs.Dispose()
     return $true
   } catch [System.IO.IOException] {
