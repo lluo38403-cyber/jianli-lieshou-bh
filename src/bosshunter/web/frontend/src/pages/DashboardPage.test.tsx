@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import DashboardPage from './DashboardPage'
+import { UpdateProvider } from '@/hooks/useUpdate'
 import type { WorkbenchTask } from '@/hooks/useDashboard'
 
 let workbenchPayload: Record<string, unknown> = {}
@@ -58,7 +59,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
 describe('DashboardPage workbench task panel', () => {
   it('shows scoring progress for standalone scoring even before the first job completes', async () => {
     workbenchPayload = baseWorkbench({ task: buildTask({ mode: 'score', metrics: { ai_completed: 0, ai_total: 12 } }) })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     expect((await screen.findByRole('progressbar', { name: '打分进度' })).getAttribute('aria-valuenow')).toBe('0')
     expect(screen.getByText('已打 0 / 12 个 · 0%')).toBeTruthy()
   })
@@ -74,7 +75,7 @@ describe('DashboardPage workbench task panel', () => {
         ],
       } } },
     }) })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     fireEvent.click(await screen.findByText('找岗位的详情'))
     expect(within(screen.getByLabelText('任务状态摘要')).queryByText(/本轮扫描|本轮新增|保存失败/)).toBeNull()
     expect(screen.getByText('看了 8 · 新增 2 · 重复 2 · 筛掉的 2 · 没看懂 1 · 没保存上 1')).toBeTruthy()
@@ -96,7 +97,7 @@ describe('DashboardPage workbench task panel', () => {
         filter_records: [{ title: '岗位', company: '公司', source_job_id: '1', reason: '薪资低于要求' }],
       } } },
     }) })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     fireEvent.click(await screen.findByText('看看详情'))
     const metrics = screen.getByLabelText('任务详细统计')
     expect(within(metrics).getByText('已打分')).toBeTruthy()
@@ -115,7 +116,7 @@ describe('DashboardPage workbench task panel', () => {
         filter_records: [{ title: '测试岗位', company: '测试公司', source_job_id: 'filtered-1', reason: '薪资低于硬性要求: 10K < 12K' }],
       } } },
     }) })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     fireEvent.click(await screen.findByText('找岗位的详情'))
     const records = screen.getByRole('list', { name: 'BOSS 直聘筛掉的记录' })
     expect(records.classList.contains('max-h-60')).toBe(true)
@@ -137,7 +138,7 @@ describe('DashboardPage workbench task panel', () => {
       metrics: { collect_seen: 42, collect_new: 32, collect_filtered: 9 },
       progress: { outcome: 'running', platforms: multiple ? { boss: state, zhilian: state } : { boss: state } },
     }) })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     await screen.findByLabelText('任务状态摘要')
     expect(screen.queryByText('看看详情')).toBeNull()
     expect(screen.queryByText('浏览器无反应时，请检查 BOSS 登录状态和 Chrome 连接。')).toBeNull()
@@ -165,7 +166,7 @@ describe('DashboardPage workbench task panel', () => {
   })
 
   it('starts an interactive guide from an empty workbench and reuses preflight', async () => {
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
 
     const guide = await screen.findByRole('region', { name: '开始使用' })
     expect(within(guide).getByText(/先在浏览器里登录好招聘网站/)).toBeTruthy()
@@ -181,7 +182,7 @@ describe('DashboardPage workbench task panel', () => {
 
   it('does not keep the getting started card above the workbench after jobs have been collected', async () => {
     workbenchPayload = baseWorkbench({ funnel: { collected: 2 } })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
 
     expect(await screen.findByRole('heading', { name: '今天要做的事' })).toBeTruthy()
     expect(screen.queryByRole('region', { name: '开始使用' })).toBeNull()
@@ -195,7 +196,7 @@ describe('DashboardPage workbench task panel', () => {
         detail: '打开“配置 → 个人信息”，上传简历。', action: 'config',
       }],
     })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
 
     const guide = await screen.findByRole('region', { name: '开始使用' })
     fireEvent.click(within(guide).getByRole('button', { name: '检查一下能不能跑' }))
@@ -210,7 +211,7 @@ describe('DashboardPage workbench task panel', () => {
         logs: ['开始为 3 个岗位生成招呼语', '生成招呼语 (2/3)：字节跳动｜后端工程师'],
       }),
     })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     expect(within(await screen.findByLabelText('任务状态摘要')).getByText('生成招呼语 (2/3)：字节跳动｜后端工程师')).toBeTruthy()
   })
 
@@ -221,7 +222,7 @@ describe('DashboardPage workbench task panel', () => {
       greeting_selection: 'pending', greeting_style_issues: ['表达可以更简洁'],
       outsourcing_level: 'confirmed', outsourcing_matches: ['合成供应商'],
     }] })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     const toggle = await screen.findByRole('button', { name: '展开打招呼的话：合成供应商｜测试岗位' })
     expect(within(toggle).getByLabelText('外包；命中：合成供应商')).toBeTruthy()
     fireEvent.click(toggle)
@@ -240,7 +241,7 @@ describe('DashboardPage workbench task panel', () => {
         logs: ['招呼语进度：1/3', latestProgress, '正在等待下一次发送窗口'],
       }),
     })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     const summary = await screen.findByLabelText('任务状态摘要')
     expect(within(summary).getByText('招呼语进度：2/3')).toBeTruthy()
     fireEvent.click(screen.getByText('看看详情'))
@@ -265,7 +266,7 @@ describe('DashboardPage workbench task panel', () => {
         },
       }),
     })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     expect(await screen.findByText('提前停下的原因：额度或余额不够了。写好的都留着，剩下的岗位下次继续。')).toBeTruthy()
     expect(screen.getByText('提前停下的')).toBeTruthy()
   })
@@ -277,7 +278,7 @@ describe('DashboardPage workbench task panel', () => {
         error: '招呼语生成已安全暂停：AI 服务触发请求或 Token 频率限制 (rate_limit, status=429)',
       }),
     })
-    const { container } = render(<DashboardPage view="workbench" />)
+    const { container } = render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     expect(await screen.findByText('任务运行失败')).toBeTruthy()
     expect(container.textContent).toContain('招呼语生成已安全暂停：AI 服务触发请求或 Token 频率限制 (rate_limit, status=429)')
   })
@@ -289,7 +290,7 @@ describe('DashboardPage workbench task panel', () => {
     stopResponse = () => jsonResponse({ error: '任务已结束，无法停止' }, false)
     const confirmSpy = vi.fn(() => true)
     vi.stubGlobal('confirm', confirmSpy)
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     const stopButton = await screen.findByRole('button', { name: '停下' })
     fireEvent.click(stopButton)
     expect(confirmSpy).toHaveBeenCalled()
@@ -304,7 +305,7 @@ describe('DashboardPage workbench task panel', () => {
     })
     stopResponse = () => jsonResponse(buildTask({ mode: 'collect', label: '单独采集', status: 'stopping', stop_requested: true }))
     vi.stubGlobal('confirm', () => true)
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     const stopButton = await screen.findByRole('button', { name: '停下' })
     fireEvent.click(stopButton)
     await waitFor(() => {
@@ -318,7 +319,7 @@ describe('DashboardPage workbench task panel', () => {
       greeting_optimized: 'AI 优化候选', greeting_selection: 'edited',
       greeting_reviewed_at: '2026-09-09 12:00:00',
     }] })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     fireEvent.click(await screen.findByRole('button', { name: '展开打招呼的话：测试公司｜测试岗位' }))
     const finalVersion = await screen.findByLabelText('最后发出去的版本')
     expect(within(finalVersion).getByText('手动修改后最终发送的文字')).toBeTruthy()
@@ -333,7 +334,7 @@ describe('DashboardPage workbench task panel', () => {
       greeting_selection: 'original', greeting_reviewed_at: '2026-09-09 12:00:00',
     }
     workbenchPayload = baseWorkbench({ pending_greetings: [job] })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     fireEvent.click(await screen.findByRole('button', { name: '展开打招呼的话：测试公司｜测试岗位' }))
     fireEvent.click(await screen.findByRole('button', { name: '手动改一改' }))
     const send = screen.getByRole('button', { name: '发这条打招呼' }) as HTMLButtonElement
@@ -360,7 +361,7 @@ describe('DashboardPage workbench task panel', () => {
       greeting: '待确认原文', greeting_original: '待确认原文',
       greeting_optimized: '优化候选', greeting_selection: 'pending',
     }] })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     const toggle = await screen.findByRole('button', { name: '展开打招呼的话：测试公司｜测试岗位' })
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByText('优化候选')).toBeNull()
@@ -382,7 +383,7 @@ describe('DashboardPage workbench task panel', () => {
       greeting_optimized: '优化候选', greeting_selection: 'pending',
     }
     workbenchPayload = baseWorkbench({ task: buildTask({ mode }), pending_greetings: [job] })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     fireEvent.click(await screen.findByRole('button', { name: '展开打招呼的话：测试公司｜测试岗位' }))
     expect((screen.getByRole('button', { name: '就用原来的' }) as HTMLButtonElement).disabled).toBe(false)
     expect((screen.getByRole('button', { name: '手动改一改' }) as HTMLButtonElement).disabled).toBe(false)
@@ -403,7 +404,7 @@ describe('DashboardPage workbench task panel', () => {
     workbenchPayload = baseWorkbench({ task: buildTask({ mode: 'full' }), pending_greetings: [
       { ...job, greeting_activity: activity }, { ...job, id: 'free-preview', company: '其他公司' },
     ] })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     fireEvent.click(await screen.findByRole('button', { name: '展开打招呼的话：当前公司｜测试岗位' }))
     expect((screen.getByRole('button', { name: '就用原来的' }) as HTMLButtonElement).disabled).toBe(true)
     expect(screen.getByText(activity === 'sending' ? '这条正在发，现在改不了。' : '这条正在写，写好就能挑。')).toBeTruthy()
@@ -421,7 +422,7 @@ describe('DashboardPage workbench task panel', () => {
         reason_code: 'safety_limit', message: 'BOSS 采集已达安全上限：daily_detail_page_limit；读取 327 条',
       } } },
     }) })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     const reason = await screen.findByText('今天能打开的岗位详情用完了')
     expect(reason.closest('details')?.open).toBe(false)
     expect(screen.getByText('找完了，但新岗位不多')).toBeTruthy()
@@ -476,7 +477,7 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
   })
 
   async function openScoringDialog() {
-    render(<DashboardPage view="jobs" />)
+    render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
     fireEvent.click(await screen.findByText('打分设置'))
     expect(await screen.findByText('符合条件的')).toBeTruthy()
   }
@@ -522,7 +523,7 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
         }))
         return normalFetch(input, init)
       }))
-      await act(async () => { render(<DashboardPage view="jobs" />) })
+      await act(async () => { render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>) })
       fireEvent.click(screen.getByRole('checkbox', { name: '选这个 测试公司 测试岗位' }))
       expect(screen.getByText('找到 2 个 / 一共 2 个')).toBeTruthy()
       completed = 1
@@ -578,7 +579,7 @@ describe('DashboardPage persisted preflight and platform login status', () => {
         }],
       },
     })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     const guide = await screen.findByRole('region', { name: '开始使用' })
     const results = await within(guide).findByRole('region', { name: '启动检查结果' })
     expect(within(results).getByRole('status').textContent).toContain('尚未配置有效简历')
@@ -595,7 +596,7 @@ describe('DashboardPage persisted preflight and platform login status', () => {
         liepin: { status: 'logged_in', checked_at: '2026-11-19T08:00:00', detail: '' },
       },
     })
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     const statusCard = await screen.findByRole('region', { name: '各平台登录状态' })
     expect(within(statusCard).getByText('已掉线')).toBeTruthy()
     expect(within(statusCard).getByText('还没查过')).toBeTruthy()
@@ -607,7 +608,7 @@ describe('DashboardPage persisted preflight and platform login status', () => {
 
   it('offers one-tap login jumps for all four platforms in the getting-started card', async () => {
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     const guide = await screen.findByRole('region', { name: '开始使用' })
     fireEvent.click(within(guide).getByRole('button', { name: '去BOSS 直聘登录' }))
     await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://www.zhipin.com/web/user/login', '_blank', 'noopener,noreferrer'))
@@ -623,11 +624,37 @@ describe('DashboardPage persisted preflight and platform login status', () => {
       }
       return fetchMock(input, init)
     }))
-    render(<DashboardPage view="workbench" />)
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     const panel = await screen.findByRole('region', { name: '浏览器诊断' })
     expect(within(panel).getByText('没找到能用的浏览器')).toBeTruthy()
     expect(within(panel).getByText('先装一个 Chrome 再回来。')).toBeTruthy()
     expect(within(panel).getByRole('button', { name: '重新检测' })).toBeTruthy()
     expect(within(panel).getByRole('button', { name: '一键复制诊断信息' })).toBeTruthy()
+  })
+})
+
+describe('DashboardPage survives a hanging browser diagnostics request', () => {
+  type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+  let originalImpl: FetchImpl | undefined
+  beforeEach(() => {
+    workbenchPayload = baseWorkbench()
+    originalImpl = fetchMock.getMockImplementation() as FetchImpl | undefined
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/browser/diagnostics') return new Promise<Response>(() => {})
+      if (url === '/api/workbench' && (!init?.method || init.method === 'GET')) return jsonResponse(workbenchPayload)
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => {
+    if (originalImpl) fetchMock.mockImplementation(originalImpl)
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+  it('renders the workbench even when diagnostics never answers', async () => {
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
+    await waitFor(() => expect(screen.queryByLabelText('正在打开')).toBeNull(), { timeout: 10000 })
+    expect(screen.getByRole('region', { name: '开始使用' })).toBeTruthy()
   })
 })

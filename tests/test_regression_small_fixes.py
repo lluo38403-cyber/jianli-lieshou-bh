@@ -57,8 +57,8 @@ class VersionMetadataTests(unittest.TestCase):
             / "Sidebar.tsx"
         ).read_text(encoding="utf-8")
 
-        # 简历猎手自有版本号（v2 改版定为 1.0.0，自动更新版升到 1.0.1，卡密鉴权版升到 1.0.2，万能卡显示版升到 1.0.3，面板加项目 logo 版升到 1.0.4，反检测版升到 1.0.5，界面大改版升到 1.0.6，四项紧急修复版升到 1.0.7，update.bat 卡死修复版升到 1.0.8，浏览器自动拉起+去代码日志版升到 1.0.9，update.bat 等待改 PID+进程名双重匹配版升到 1.1.0，验证 v14 bat 版升到 1.1.1，update.bat 拿掉 findstr 管道改 PowerShell 直查版升到 1.1.2，验证 v16 bat 版升到 1.1.3，去 INSTALL_DIR 末尾反斜杠修 robocopy 版升到 1.1.4，验证 v18 bat 版升到 1.1.5，黑框隐藏+更新弹窗+SmartScreen 指引+独立应用窗口版升到 1.1.6，验证 v20 的 updater 改动版升到 1.1.7，不再沿用上游 BossHunter 的 2.4.0）。
-        version = "1.1.7"
+        # 简历猎手自有版本号（v2 改版定为 1.0.0，自动更新版升到 1.0.1，卡密鉴权版升到 1.0.2，万能卡显示版升到 1.0.3，面板加项目 logo 版升到 1.0.4，反检测版升到 1.0.5，界面大改版升到 1.0.6，四项紧急修复版升到 1.0.7，update.bat 卡死修复版升到 1.0.8，浏览器自动拉起+去代码日志版升到 1.0.9，update.bat 等待改 PID+进程名双重匹配版升到 1.1.0，验证 v14 bat 版升到 1.1.1，update.bat 拿掉 findstr 管道改 PowerShell 直查版升到 1.1.2，验证 v16 bat 版升到 1.1.3，去 INSTALL_DIR 末尾反斜杠修 robocopy 版升到 1.1.4，验证 v18 bat 版升到 1.1.5，黑框隐藏+更新弹窗+SmartScreen 指引+独立应用窗口版升到 1.1.6，验证 v20 的 updater 改动版升到 1.1.7，桌面快捷方式版升到 1.1.8，不再沿用上游 BossHunter 的 2.4.0）。
+        version = "1.1.8"
         frontend = ROOT / "src" / "bosshunter" / "web" / "frontend"
         package = json.loads((frontend / "package.json").read_text(encoding="utf-8"))
         lock = json.loads((frontend / "package-lock.json").read_text(encoding="utf-8"))
@@ -880,8 +880,6 @@ class ConfigPageTests(unittest.TestCase):
             "我想要的工资（千元）",
             "出问题先歇几分钟",
             "找完先歇几分钟再投",
-            "每投一个隔几秒",
-            "假装看几秒",
         ):
             self.assertIn(f'label="{label}"', self.source)
 
@@ -894,6 +892,9 @@ class ConfigPageTests(unittest.TestCase):
             "最长间隔 (秒)",
             "浏览最短时长 (秒)",
             "浏览最长时长 (秒)",
+            # 风控档位接管节奏后，这两个原始数值输入退役（档位表定间隔/浏览时长）。
+            "每投一个隔几秒",
+            "假装看几秒",
         ):
             self.assertNotIn(f'label="{retired_label}"', self.source)
 

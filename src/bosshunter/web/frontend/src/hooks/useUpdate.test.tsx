@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
-import { classifyUpdateError, formatUpdateNotes, getUpdateErrorCopy, useUpdate } from './useUpdate'
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
+import { classifyUpdateError, formatUpdateNotes, getUpdateErrorCopy, UpdateProvider, useUpdate, useUpdateContext } from './useUpdate'
 
 function jsonResponse(body: unknown, ok = true) {
   return new Response(JSON.stringify(body), {
@@ -30,7 +30,7 @@ describe('useUpdate', () => {
       if (url.startsWith('/api/update/check')) return jsonResponse(NEW_VERSION)
       if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
       if (url === '/api/auth/config') return jsonResponse({})
-      if (url === '/api/update/status') return jsonResponse({ status: 'ready', progress: 100 })
+      if (url === '/api/update/status') return jsonResponse({ status: 'idle', progress: 0 })
       return jsonResponse({})
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -393,5 +393,105 @@ describe('formatUpdateNotes', () => {
     const formatted = formatUpdateNotes(long)
     expect(formatted.length).toBeLessThanOrEqual(120)
     expect(formatted.endsWith('…')).toBe(true)
+  })
+})
+
+describe('UpdateProvider keeps one download state across pages', () => {
+  function Probe({ label }: { label: string }) {
+    const update = useUpdateContext()
+    return (
+      <div>
+        <span data-testid={`${label}-phase`}>{update.phase}</span>
+        <span data-testid={`${label}-progress`}>{update.progress}</span>
+        <button data-testid={`${label}-start`} onClick={() => void update.start()}>开始下载</button>
+      </div>
+    )
+  }
+
+  let fetchMock: ReturnType<typeof vi.fn>
+  let downloading = false
+
+  beforeEach(() => {
+    downloading = false
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) return jsonResponse(NEW_VERSION)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      if (url === '/api/auth/config') return jsonResponse({})
+      if (url === '/api/update/start' && init?.method === 'POST') {
+        downloading = true
+        return jsonResponse({})
+      }
+      if (url === '/api/update/status') {
+        return jsonResponse(
+          downloading
+            ? { status: 'downloading', progress: 25, version: '1.0.2', size: 66_549_810, sha256: 'a'.repeat(64), notes: '更快更稳', current_version: '1.0.1' }
+            : { status: 'idle', progress: 0 },
+        )
+      }
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    cleanup()
+  })
+
+  const statusCallCount = () => fetchMock.mock.calls.filter(([input]) => String(input) === '/api/update/status').length
+
+  it('shares one download between pages and keeps polling after navigation', async () => {
+    const { rerender } = render(
+      <UpdateProvider>
+        <Probe label="a" />
+        <Probe label="b" />
+      </UpdateProvider>,
+    )
+    await waitFor(() => expect(screen.getByTestId('a-phase').textContent).toBe('idle'), { timeout: 5000 })
+    // 首页点开始下载：另一个页面实例立刻看到同一份下载中状态。
+    fireEvent.click(screen.getByTestId('a-start'))
+    await waitFor(() => expect(screen.getByTestId('b-phase').textContent).toBe('downloading'), { timeout: 5000 })
+    await waitFor(() => expect(screen.getByTestId('b-progress').textContent).toBe('25'), { timeout: 5000 })
+    // 切到“我的设置”：页面组件卸载、Provider 还在，轮询不断。
+    const callsWhileOnHome = statusCallCount()
+    rerender(
+      <UpdateProvider>
+        <div>设置页</div>
+      </UpdateProvider>,
+    )
+    await waitFor(() => expect(statusCallCount()).toBeGreaterThan(callsWhileOnHome), { timeout: 5000 })
+    // 切回首页：还是下载中 25%，不是全新的“马上更新”。
+    rerender(
+      <UpdateProvider>
+        <Probe label="a" />
+      </UpdateProvider>,
+    )
+    expect(screen.getByTestId('a-phase').textContent).toBe('downloading')
+    expect(screen.getByTestId('a-progress').textContent).toBe('25')
+  })
+
+  it('resumes a download already running on the server after a fresh mount', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) return jsonResponse(NEW_VERSION)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      if (url === '/api/auth/config') return jsonResponse({})
+      if (url === '/api/update/status') {
+        return jsonResponse({ status: 'downloading', progress: 40, version: '1.0.2', size: 66_549_810, sha256: 'a'.repeat(64), notes: '更快更稳', current_version: '1.0.1' })
+      }
+      return jsonResponse({})
+    })
+    render(
+      <UpdateProvider>
+        <Probe label="a" />
+      </UpdateProvider>,
+    )
+    await waitFor(() => expect(screen.getByTestId('a-phase').textContent).toBe('downloading'), { timeout: 5000 })
+    expect(screen.getByTestId('a-progress').textContent).toBe('40')
+    const calls = statusCallCount()
+    await waitFor(() => expect(statusCallCount()).toBeGreaterThan(calls), { timeout: 5000 })
   })
 })

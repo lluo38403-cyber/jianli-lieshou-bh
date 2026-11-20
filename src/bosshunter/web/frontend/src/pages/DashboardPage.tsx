@@ -1,7 +1,7 @@
 import { OutsourcingBadge } from '@/components/jobs/OutsourcingBadge'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
-import { useUpdate } from '@/hooks/useUpdate'
+import { useUpdateContext } from '@/hooks/useUpdate'
 import { UpdateBanner } from '@/components/dashboard/UpdateBanner'
 import { UpdateModal } from '@/components/dashboard/UpdateModal'
 import { CHECK_UPDATE_EVENT } from '@/lib/updateEvents'
@@ -459,7 +459,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   } = useDashboard(view)
   const [selected, setSelected] = useState<string[]>([])
   const [notice, setNotice] = useState('')
-  const update = useUpdate()
+  const update = useUpdateContext()
   const auth = useAuth()
   const [updateNote, setUpdateNote] = useState('')
   const [manualUpdateSignal, setManualUpdateSignal] = useState(0)
@@ -516,16 +516,22 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const [browserDiag, setBrowserDiag] = useState<BrowserDiagnostics | null>(null)
   const [preflightSeeded, setPreflightSeeded] = useState(false)
 
-  // 浏览器诊断：后端没提供该接口时静默，不挡首页。
+  // 浏览器诊断：后端没提供该接口时静默，不挡首页。诊断本身可能很慢
+  // （runtime 没起来时服务端要等几秒），10 秒没回来就当没有，不占着
+  // 连接一直等——首页内容不依赖它。
   const fetchBrowserDiagnostics = useCallback(async () => {
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort(), 10000)
     try {
-      const res = await fetch('/api/browser/diagnostics', { cache: 'no-store' })
+      const res = await fetch('/api/browser/diagnostics', { cache: 'no-store', signal: controller.signal })
       if (!res.ok) return
       const data = await res.json()
       // 只认契约里的形状；后端没提供该接口、返回空对象时不误报。
       if (typeof data.ok === 'boolean' || data.error_kind) setBrowserDiag(data)
     } catch {
       // 忽略：诊断只是辅助信息。
+    } finally {
+      window.clearTimeout(timer)
     }
   }, [])
   useEffect(() => { void fetchBrowserDiagnostics() }, [fetchBrowserDiagnostics])

@@ -76,3 +76,31 @@ it('shows only the active platform tab and keeps the start buttons in a fixed bo
     platforms: { boss: { keywords: ['AI'], cities: ['北京'] }, zhilian: { keywords: ['运营'], cities: ['深圳'] } },
   })
 })
+
+it('shows risk protection in full mode and syncs it to /api/config immediately', async () => {
+  let savedConfig: Record<string, any> | null = null
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url === '/api/config') {
+      if (init?.method === 'POST') {
+        savedConfig = JSON.parse(String(init.body))
+        return new Response(JSON.stringify({ success: true }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ search: { keywords: ['AI'], cities: ['北京'] }, throttle: { risk_tier: 'steady', random_interval: true } }), { status: 200 })
+    }
+    if (url.startsWith('/api/collection/runs')) return new Response(JSON.stringify([]), { status: 200 })
+    return new Response(JSON.stringify({ ok: true, cities: [] }), { status: 200 })
+  }))
+  const start = vi.fn(async (_options: Record<string, unknown>) => ({ ok: true }))
+  render(<CollectJobsDialog open mode="full" activeTask={null} onClose={vi.fn()} onStart={start} />)
+  await screen.findByDisplayValue('AI')
+  expect(screen.getByText('风控保护')).toBeTruthy()
+  expect((screen.getByDisplayValue('稳妥模式') as HTMLSelectElement).value).toBe('steady')
+  // 改档位马上保存：同一组配置键、同一条保存链路，和“我的设置”是一份。
+  fireEvent.change(screen.getByDisplayValue('稳妥模式'), { target: { value: 'fast' } })
+  await waitFor(() => expect(savedConfig?.throttle?.risk_tier).toBe('fast'))
+  expect(screen.getByText(/节奏较快时更容易触发平台频率限制/)).toBeTruthy()
+  fireEvent.click(screen.getByRole('switch', { name: '随机操作间隔' }))
+  await waitFor(() => expect(savedConfig?.throttle?.random_interval).toBe(false))
+  await waitFor(() => expect(screen.getByText(/已保存，和“我的设置”里是一样的。/)).toBeTruthy())
+})

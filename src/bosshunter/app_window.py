@@ -24,6 +24,7 @@ exe just opens another app window onto the same service.
 import json
 import os
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -56,6 +57,24 @@ def is_our_service_alive(host: str = "127.0.0.1", port: int = 8686, timeout: flo
         and isinstance(data.get("version"), str)
         and bool(data.get("version"))
     )
+
+
+def wait_for_service_ready(host: str = "127.0.0.1", port: int = 8686, timeout: float = 15.0, interval: float = 0.5) -> bool:
+    """Poll until our own panel answers /api/health, or the deadline passes.
+
+    冷启动慢的机器上服务可能 1 秒还起不来：以前开窗线程只睡 1 秒就开
+    --app 窗口，服务还没监听就打开一张连不上的空白页，而且开出来就
+    一直空白、不会自动重试。先等就绪再开；15 秒还没好也返回 False，
+    调用方照常开窗（和以前一样，用户刷新就能进），绝不因为等不到就
+    让用户连窗口都没有。
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if is_our_service_alive(host, port):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
 
 
 def find_app_browser(config: dict[str, Any] | None = None) -> str | None:

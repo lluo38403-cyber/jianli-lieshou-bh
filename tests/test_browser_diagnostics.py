@@ -87,6 +87,29 @@ class BrowserDiagnosticsTests(unittest.TestCase):
     @patch("bosshunter.browser.diagnostics.runtime_targets")
     @patch("bosshunter.browser.diagnostics.ensure_runtime")
     @patch("bosshunter.browser.diagnostics.check_node_available")
+    def test_passive_diagnostics_waits_shorter_than_launch(self, check_node, ensure_runtime, runtime_targets):
+        """被动检查（首页/设置页每次打开都调）只等 5 秒：runtime 没起来
+        时 15 秒白等还会重试一次，单次调用能占服务端线程 30 多秒；
+        主动拉起才保持 15 秒。"""
+        from bosshunter.browser.diagnostics import run_browser_diagnostics
+
+        check_node.return_value = {"available": True, "version": "v22.1.0"}
+        ensure_runtime.return_value = False
+        runtime_targets.return_value = None
+
+        run_browser_diagnostics({"browser": {"proxy_port": 3456}}, allow_launch=False)
+        _, passive_kwargs = ensure_runtime.call_args
+        self.assertEqual(passive_kwargs.get("wait_seconds"), 5.0)
+        self.assertEqual(passive_kwargs.get("allow_launch"), False)
+
+        run_browser_diagnostics({"browser": {"proxy_port": 3456}}, allow_launch=True)
+        _, launch_kwargs = ensure_runtime.call_args
+        self.assertEqual(launch_kwargs.get("wait_seconds"), 15.0)
+        self.assertEqual(launch_kwargs.get("allow_launch"), True)
+
+    @patch("bosshunter.browser.diagnostics.runtime_targets")
+    @patch("bosshunter.browser.diagnostics.ensure_runtime")
+    @patch("bosshunter.browser.diagnostics.check_node_available")
     def test_running_runtime_does_not_require_node_on_path(
         self,
         check_node,

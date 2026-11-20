@@ -190,10 +190,10 @@ class DiagnosticsLaunchFlagTests(unittest.TestCase):
         ):
             diagnostics_module.run_browser_diagnostics(_config(), allow_launch=False)
             ensure.assert_called_once()
-            self.assertEqual(ensure.call_args.kwargs, {"allow_launch": False})
+            self.assertEqual(ensure.call_args.kwargs, {"allow_launch": False, "wait_seconds": 5.0})
             ensure.reset_mock()
             diagnostics_module.run_browser_diagnostics(_config())
-            self.assertEqual(ensure.call_args.kwargs, {"allow_launch": True})
+            self.assertEqual(ensure.call_args.kwargs, {"allow_launch": True, "wait_seconds": 15.0})
 
 
 class CdpProxyEdgePortTests(unittest.TestCase):

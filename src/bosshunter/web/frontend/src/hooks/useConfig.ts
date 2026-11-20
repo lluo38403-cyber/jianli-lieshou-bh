@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { fetchWithRetry, isServiceNotReadyError } from '@/lib/api'
+import { fetchWithRetry, isServiceNotReadyError, readJsonWithTimeout } from '@/lib/api'
 
 /** 本地服务没起来时，隔多久自动再拉一次配置。 */
 const CONFIG_RETRY_MS = 10_000
@@ -41,6 +41,7 @@ export function useConfig() {
   const configRef = useRef<Record<string, any> | null>(null)
   const retryTimerRef = useRef<number | null>(null)
   const mountedRef = useRef(true)
+  const firstLoadRef = useRef(true)
 
   const clearRetryTimer = useCallback(() => {
     if (retryTimerRef.current !== null) {
@@ -60,8 +61,9 @@ export function useConfig() {
       ])
       if (!configRes.ok) throw new Error('配置接口请求失败')
       if (!schemaRes.ok) throw new Error('配置结构接口请求失败')
-      const configData = await configRes.json()
-      const schemaData = await schemaRes.json()
+      // 读体也加超时：fetch 只管到响应头，body 卡住时 json() 会一直等。
+      const configData = await readJsonWithTimeout(configRes)
+      const schemaData = await readJsonWithTimeout(schemaRes)
       configRef.current = configData
       setConfig(configData)
       setSchema(schemaData)
@@ -89,14 +91,24 @@ export function useConfig() {
       }
     } finally {
       setLoading(false)
+      firstLoadRef.current = false
     }
   }, [clearRetryTimer])
 
   useEffect(() => {
     mountedRef.current = true
     void fetchConfig()
+    // 骨架屏兜底：首屏配置 20 秒还没回来，不再一直晾着骨架，
+    // 改成可重试的提示；配置到了会自动补上。
+    const watchdog = window.setTimeout(() => {
+      if (firstLoadRef.current && mountedRef.current) {
+        setLoading(false)
+        setError('配置一直没回来，点“重试”再试。')
+      }
+    }, 20000)
     return () => {
       mountedRef.current = false
+      window.clearTimeout(watchdog)
       clearRetryTimer()
     }
   }, [fetchConfig, clearRetryTimer])

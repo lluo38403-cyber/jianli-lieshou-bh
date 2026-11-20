@@ -1,5 +1,5 @@
 import { useConfig } from '@/hooks/useConfig'
-import { useUpdate, formatUpdateNotes, formatUpdateSize } from '@/hooks/useUpdate'
+import { useUpdateContext, formatUpdateNotes, formatUpdateSize } from '@/hooks/useUpdate'
 import { UpdateModal } from '@/components/dashboard/UpdateModal'
 import { CHECK_UPDATE_EVENT } from '@/lib/updateEvents'
 import { Button } from '@/components/ui/button'
@@ -27,7 +27,7 @@ const BOSS_FILTER_OPTIONS = {
 
 export default function ConfigPage() {
   const { config, loading, saving, dirty, error, message, updateConfig, saveConfig, resetConfig } = useConfig()
-  const update = useUpdate()
+  const update = useUpdateContext()
   const [updateNote, setUpdateNote] = useState('')
   const [manualUpdateSignal, setManualUpdateSignal] = useState(0)
   const handleManualUpdateCheck = async () => {
@@ -576,36 +576,12 @@ export default function ConfigPage() {
               <Input type="number" value={config.safety?.daily_platform_page_limit ?? 1100} onChange={e => updateConfig('safety.daily_platform_page_limit', Number(e.target.value))} min={1} max={2000} />
               <p className="mt-1 text-xs text-muted">BOSS 的搜索页、岗位详情、自动投递、看回复打开的页面都算在一起；默认 1100 次，够 60 次搜索加 900 个详情，还剩 140 次给别的操作。其他平台不占这个数。</p>
             </Field>
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="每天最多投多少个">
-                <Input type="number" value={config.throttle?.daily_limit || 120} onChange={e => updateConfig('throttle.daily_limit', Number(e.target.value))} />
-                <p className="mt-1 text-xs text-muted">每天最多自动投 120 个，投满了就停，明天继续。</p>
-              </Field>
-              <NumberRangeField
-                label="每投一个隔几秒"
-                minValue={config.throttle?.interval_min ?? 60}
-                maxValue={config.throttle?.interval_max ?? 180}
-                onMinChange={value => updateConfig('throttle.interval_min', value)}
-                onMaxChange={value => updateConfig('throttle.interval_max', value)}
-                min={10}
-                max={600}
-              />
-            </div>
-            <div className="grid items-end gap-4 md:grid-cols-2">
-              <div className="flex h-9 items-center justify-between rounded-md border border-card-border bg-surface px-3">
+            <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
+              <div>
                 <label className="text-xs text-foreground">投之前先假装看一看</label>
-                <Switch checked={config.throttle?.browse_before_greet ?? true} onChange={v => updateConfig('throttle.browse_before_greet', v)} aria-label="发送前模拟浏览" />
+                <p className="mt-1 text-xs text-muted">打开后先像真人一样滚动看一会儿再投；关了就直接投。</p>
               </div>
-              <NumberRangeField
-                label="假装看几秒"
-                minValue={config.throttle?.browse_duration_min ?? 15}
-                maxValue={config.throttle?.browse_duration_max ?? 30}
-                onMinChange={value => updateConfig('throttle.browse_duration_min', value)}
-                onMaxChange={value => updateConfig('throttle.browse_duration_max', value)}
-                min={5}
-                max={120}
-                disabled={!(config.throttle?.browse_before_greet ?? true)}
-              />
+              <Switch checked={config.throttle?.browse_before_greet ?? true} onChange={v => updateConfig('throttle.browse_before_greet', v)} aria-label="发送前模拟浏览" />
             </div>
             <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
               <div>
@@ -615,6 +591,63 @@ export default function ConfigPage() {
               <Switch checked={config.throttle?.silent_mode ?? false} onChange={v => updateConfig('throttle.silent_mode', v)} aria-label="静默模式" />
             </div>
             <p className="text-xs text-muted">什么时候都能投，不用挑时间；每天的数量和分数门槛会帮你控制节奏。</p>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="风控保护">
+          <div className="space-y-4">
+            <Field label="风控档位">
+              <Select value={config.throttle?.risk_tier || 'steady'} onChange={e => updateConfig('throttle.risk_tier', e.target.value)}>
+                <option value="steady">稳妥模式</option>
+                <option value="standard">标准模式</option>
+                <option value="fast">极速模式</option>
+              </Select>
+              <p className="mt-1 text-xs text-muted">稳妥模式：操作间隔更舒缓、随机停顿更自然、阶段休息更频繁、投递节奏更克制，适合长期稳妥使用。标准模式兼顾效率与节奏控制。极速模式节奏更快、间隔更短，适合快速浏览或时间紧的场景。</p>
+              {(config.throttle?.risk_tier || 'steady') === 'fast' && (
+                <p className="mt-1 text-xs text-warning">节奏较快时更容易触发平台频率限制，遇到验证提示请及时处理。</p>
+              )}
+            </Field>
+            <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
+              <div>
+                <label className="text-xs text-foreground">随机操作间隔</label>
+                <p className="mt-1 text-xs text-muted">每次点击之间随机歇几秒，更像真人在操作；关了就不随机停顿。</p>
+              </div>
+              <Switch checked={config.throttle?.random_interval ?? true} onChange={v => updateConfig('throttle.random_interval', v)} aria-label="随机操作间隔" />
+            </div>
+            <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
+              <div>
+                <label className="text-xs text-foreground">阶段性自动休息</label>
+                <p className="mt-1 text-xs text-muted">连投满一档的数量就歇一次再继续；关了就不休息。</p>
+              </div>
+              <Switch checked={config.throttle?.stage_rest ?? true} onChange={v => updateConfig('throttle.stage_rest', v)} aria-label="阶段性自动休息" />
+            </div>
+            <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
+              <div>
+                <label className="text-xs text-foreground">遇到验证或限制提示时自动暂停</label>
+                <p className="mt-1 text-xs text-muted">平台弹出验证或说操作太频繁时，先停下来等你在浏览器里手动验证完；关了就只提示一声，不再自动停。</p>
+              </div>
+              <Switch checked={config.throttle?.auto_pause_on_verify ?? true} onChange={v => updateConfig('throttle.auto_pause_on_verify', v)} aria-label="遇到验证或限制提示时自动暂停" />
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-card-border bg-surface px-3 py-2">
+              <div className="min-w-0">
+                <label className="text-xs text-foreground">每日投递上限</label>
+                <p className="mt-1 text-xs text-muted">达到上限就自动停下今天的投递，明天继续；关了就是不限量。</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Input
+                  type="number"
+                  className="w-20"
+                  value={config.throttle?.daily_cap ?? 120}
+                  onChange={e => updateConfig('throttle.daily_cap', Number(e.target.value))}
+                  min={1}
+                  max={500}
+                  disabled={!(config.throttle?.daily_cap_enabled ?? true)}
+                  aria-label="每日投递上限"
+                />
+                <Switch checked={config.throttle?.daily_cap_enabled ?? true} onChange={v => updateConfig('throttle.daily_cap_enabled', v)} aria-label="每日投递上限开关" />
+              </div>
+            </div>
+            <p className="text-xs text-muted">换档位、开关马上生效，不用重启；下次投递就按新的来。“找新岗位的设置”里也能改档位和随机间隔，两边是同一组设置。</p>
           </div>
         </SectionCard>
 
@@ -766,16 +799,19 @@ function BrowserSettingsSection({ config, updateConfig }: {
   const [detecting, setDetecting] = useState(false)
   const choice = (config.browser?.browser_choice as BrowserChoice) || 'auto'
   const manualPath = (config.browser?.executable_path as string) || ''
-  // 本机检测到的浏览器列表：只做检测，不拉起浏览器。
+  // 本机检测到的浏览器列表：只做检测，不拉起浏览器。10 秒没回来就当
+  // 没检测到，只显示选项，不挡设置。
   useEffect(() => {
     let cancelled = false
     setDetecting(true)
-    fetch('/api/browser/diagnostics', { cache: 'no-store' })
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort(), 10000)
+    fetch('/api/browser/diagnostics', { cache: 'no-store', signal: controller.signal })
       .then(res => res.json())
       .then(data => { if (!cancelled && data?.discovered) setDiscovered(data.discovered) })
       .catch(() => { /* 检测不到就只显示选项，不挡设置 */ })
-      .finally(() => { if (!cancelled) setDetecting(false) })
-    return () => { cancelled = true }
+      .finally(() => { window.clearTimeout(timer); if (!cancelled) setDetecting(false) })
+    return () => { cancelled = true; controller.abort() }
   }, [])
   const detectedList = [
     { kind: 'chrome' as const, label: 'Chrome', path: discovered.chrome || null },

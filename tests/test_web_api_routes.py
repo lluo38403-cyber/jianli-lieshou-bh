@@ -1345,6 +1345,8 @@ class WebApiRouteTests(unittest.TestCase):
             "sent": 1,
             "remaining": 119,
             "exhausted": False,
+            # 风控保护：每日上限开关状态随 workbench 一起下发（关了就是不限）。
+            "cap_enabled": True,
             # 反检测版：分平台上限 + 熔断挂起平台随 workbench 一起下发。
             "per_platform": {
                 "boss": {"limit": 80, "sent": 1, "remaining": 79},

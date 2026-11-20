@@ -186,3 +186,24 @@ describe('dashboard progress polling', () => {
     expect(result.current.history).toEqual([])
   })
 })
+
+describe('dashboard does not stall on a stalled response body', () => {
+  it('clears the skeleton when res.json() never resolves', async () => {
+    vi.useFakeTimers()
+    const workbench = { pending_confirmation: [], pending_greetings: [], send_errors: [], needs_resume: [] }
+    const hangingResponse = () => {
+      const res = new Response(JSON.stringify(workbench))
+      vi.spyOn(res, 'json').mockImplementation(() => new Promise(() => {}))
+      return res
+    }
+    const fetchMock = vi.fn(async () => hangingResponse())
+    vi.stubGlobal('fetch', fetchMock)
+    const { result, unmount } = renderHook(() => useDashboard('workbench'))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(12000)
+    })
+    expect(result.current.loading).toBe(false)
+    expect(result.current.error).toBeTruthy()
+    unmount()
+  })
+})

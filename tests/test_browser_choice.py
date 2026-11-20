@@ -288,7 +288,7 @@ class DiagnosticsDoesNotLaunchTests(unittest.TestCase):
 
         result = run_browser_diagnostics(_browser_config(), allow_launch=False)
         ensure_runtime.assert_called_once()
-        self.assertEqual(ensure_runtime.call_args.kwargs, {"allow_launch": False})
+        self.assertEqual(ensure_runtime.call_args.kwargs, {"allow_launch": False, "wait_seconds": 5.0})
         self.assertTrue(result["chrome"])
         self.assertEqual(result["browser_choice"], "auto")
         self.assertEqual(result["selected_browser_name"], "浏览器")

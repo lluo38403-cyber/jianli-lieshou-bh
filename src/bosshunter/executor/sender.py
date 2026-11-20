@@ -18,7 +18,10 @@ from bosshunter.antibot import (
     micro_pause,
     platform_daily_limits,
     platform_display_name,
+    resolve_risk_profile,
+    sample_rest_delay,
     sample_stagger_delay,
+    should_stage_rest,
 )
 from bosshunter.browser import (
     new_tab,
@@ -1151,6 +1154,11 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
     module-level default (CWD-relative) is used for CLI compatibility.
     """
     throttle_config = dict(config.get("throttle", {}))
+    # 风控保护（v22 可视化）：档位 + 开关解析成实际用的节奏参数，直接
+    # 覆盖 throttle_config 里的同名键——微停顿、浏览时长、详情浏览、
+    # 错峰、投递间隔都按档位表走；开关关了对应保护就不生效。
+    risk_profile = resolve_risk_profile(throttle_config)
+    throttle_config.update(risk_profile)
     db = get_db(db_path)
     stop_event = config.get("_workbench_stop_event")
     workbench_job_ids = {str(job_id) for job_id in config.get("_workbench_job_ids", [])}
@@ -1218,18 +1226,20 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
         return 0
 
     # Check daily limit: global cap + per-platform caps (local calendar day).
-    daily_limit = throttle_config.get("daily_limit", 30)
+    # 上限开关关了就是不限（remaining_quota 为 None），开着才按 daily_cap 走。
+    daily_cap_enabled = bool(risk_profile["daily_cap_enabled"])
+    daily_limit = int(risk_profile["daily_cap"])
     interval_min = throttle_config.get("interval_min", 60)
     interval_max = throttle_config.get("interval_max", 180)
 
     # Count today's sent (local day, not UTC).
     already_sent = count_sent_today(db)
 
-    remaining_quota = daily_limit - already_sent
+    remaining_quota = daily_limit - already_sent if daily_cap_enabled else None
     send_report["already_sent"] = already_sent
-    send_report["daily_limit"] = daily_limit
-    send_report["remaining_quota"] = max(remaining_quota, 0)
-    if remaining_quota <= 0:
+    send_report["daily_limit"] = daily_limit if daily_cap_enabled else 0
+    send_report["remaining_quota"] = max(remaining_quota, 0) if remaining_quota is not None else 0
+    if remaining_quota is not None and remaining_quota <= 0:
         console.print(f"[yellow]今日已达发送上限 ({daily_limit})[/yellow]")
         send_report["quota_deferred_count"] = len(jobs)
         send_report["stop_reason"] = "daily_limit"
@@ -1246,7 +1256,7 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
     jobs_to_send: list[dict] = []
     quota_deferred = 0
     for job in jobs:
-        if len(jobs_to_send) >= remaining_quota:
+        if remaining_quota is not None and len(jobs_to_send) >= remaining_quota:
             quota_deferred += 1
             continue
         platform = str(job.get("source_platform") or "boss").strip() or "boss"
@@ -1283,7 +1293,8 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
         offset += len(group)
     stagger_low, stagger_high = _stagger_range(throttle_config)
 
-    console.print(f"[bold]准备发送 {len(ordered_jobs)} 条招呼语[/bold] (今日已发 {already_sent}/{daily_limit})")
+    quota_label = f"{already_sent}/{daily_limit}" if daily_cap_enabled else f"{already_sent}（今日上限已关）"
+    console.print(f"[bold]准备发送 {len(ordered_jobs)} 条招呼语[/bold] (今日已发 {quota_label})")
 
     with Progress(
         SpinnerColumn(),
@@ -1451,6 +1462,24 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                         if _sleep_or_stop(pause_duration, stop_event):
                             send_report["stop_reason"] = "stopped"
                             break
+
+                # 阶段性自动休息（v22 风控保护）：连投满一档的数量、后面还有
+                # 岗位时歇一次；开关关了就不歇。停下请求优先，随时能停。
+                if (
+                    result_data.get("success")
+                    and risk_profile["stage_rest"]
+                    and should_stage_rest(
+                        sent_count, risk_profile["rest_every"], index + 1 < len(ordered_jobs)
+                    )
+                ):
+                    rest_s = sample_rest_delay(risk_profile["rest_min"], risk_profile["rest_max"])
+                    if callable(workbench_log):
+                        workbench_log(f"连投了 {sent_count} 个，先歇 {int(rest_s)} 秒再继续")
+                    progress.update(task, description="歇一会再继续...")
+                    if _sleep_or_stop(rest_s, stop_event):
+                        console.print("[yellow]已请求停止，结束发送[/yellow]")
+                        send_report["stop_reason"] = "stopped"
+                        break
 
                 progress.update(task, advance=1)
 

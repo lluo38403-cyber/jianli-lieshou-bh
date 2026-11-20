@@ -242,6 +242,16 @@ DEFAULTS: dict[str, Any] = {
         "daily_limit": 120,
         # 分平台日上限：单平台一天最多投这么多（Boss 建议 80），全局 daily_limit 仍是总天花板。
         "daily_limit_per_platform": {"boss": 80, "zhilian": 80, "51job": 80, "liepin": 80},
+        # 风控保护（v22 可视化）：档位决定节奏参数表（见 antibot.RISK_TIERS），
+        # 开关逐项控制底层保护是否生效；默认稳妥模式。daily_cap 是新的每日
+        # 上限（默认 120），daily_limit 只留作老配置文件的兜底（见 load_config
+        # 里的迁移：老文件只有 daily_limit 时抄一份给 daily_cap）。
+        "risk_tier": "steady",
+        "random_interval": True,
+        "stage_rest": True,
+        "auto_pause_on_verify": True,
+        "daily_cap_enabled": True,
+        "daily_cap": 120,
         "interval_min": 60,
         "interval_max": 180,
         # 两次点击之间的人性化停顿：高斯随机，默认 3-8 秒。
@@ -339,6 +349,27 @@ DEFAULTS: dict[str, Any] = {
 # browser.browser_choice 的合法取值（见 DEFAULTS 注释）。
 BROWSER_CHOICES = ("auto", "chrome", "edge", "manual")
 
+# throttle.risk_tier 的合法取值（参数表见 antibot.RISK_TIERS）。
+RISK_TIER_CHOICES = ("steady", "standard", "fast")
+
+
+def _migrate_daily_cap(user_cfg: dict[str, Any]) -> None:
+    """老配置文件只有 daily_limit 时，抄一份给新字段 daily_cap。
+
+    只在读用户文件时做一次：DEFAULTS 里 daily_cap 已是 120，直接合
+    并会把用户以前改过的 daily_limit（比如 50）盖掉。抄完下次保存
+    就落盘了，之后 daily_cap 说了算，daily_limit 只留作兜底。
+    """
+    throttle = user_cfg.get("throttle")
+    if not isinstance(throttle, dict):
+        return
+    if "daily_cap" in throttle or "daily_limit" not in throttle:
+        return
+    try:
+        throttle["daily_cap"] = max(1, int(throttle["daily_limit"]))
+    except (TypeError, ValueError):
+        pass
+
 
 def credentials_path_for(config_path: Path | None = None) -> Path:
     """Return the local credentials file paired with a config file."""
@@ -360,6 +391,7 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
 
     user_cfg = _load_yaml_mapping(config_path)
     if user_cfg:
+        _migrate_daily_cap(user_cfg)
         _deep_merge(cfg, user_cfg)
     _normalize_config_sections(cfg)
     _validate_ai_provider(cfg)
@@ -377,6 +409,10 @@ def save_config(config: dict[str, Any], config_path: Path | None = None) -> None
     browser_cfg = public_config.get("browser")
     if isinstance(browser_cfg, dict) and browser_cfg.get("browser_choice") not in BROWSER_CHOICES:
         browser_cfg["browser_choice"] = "auto"
+    # 落盘前同样归一化 risk_tier：写错了回稳妥模式。
+    throttle_cfg = public_config.get("throttle")
+    if isinstance(throttle_cfg, dict) and throttle_cfg.get("risk_tier", "steady") not in RISK_TIER_CHOICES:
+        throttle_cfg["risk_tier"] = "steady"
     ai_cfg = public_config.get("ai")
     credentials: dict[str, Any] = {}
     if isinstance(ai_cfg, dict):
@@ -596,6 +632,12 @@ def _normalize_config_sections(config: dict[str, Any]) -> dict[str, Any]:
         choice = browser_cfg.get("browser_choice", "auto")
         if choice not in BROWSER_CHOICES:
             browser_cfg["browser_choice"] = "auto"
+
+    # risk_tier 只认 steady / standard / fast，写错了回稳妥模式。
+    throttle_cfg = config.get("throttle")
+    if isinstance(throttle_cfg, dict):
+        if throttle_cfg.get("risk_tier", "steady") not in RISK_TIER_CHOICES:
+            throttle_cfg["risk_tier"] = "steady"
 
     _normalize_internship_salary_filter(config)
     return remove_retired_collection_settings(config)

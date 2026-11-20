@@ -46,6 +46,23 @@ export function isAbortError(error: unknown): boolean {
 }
 
 /**
+ * 读响应体也加超时：fetch 只管到响应头，body 卡住时 res.json() 会一直
+ * 等——请求层的超时管不到它，骨架屏就一直晾着。超时按失败处理，
+ * 调用方才能撤掉骨架屏、给重试入口。
+ */
+export async function readJsonWithTimeout<T = any>(res: Response, timeoutMs = 10000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('读取数据超时了')), timeoutMs)
+    })
+    return await Promise.race([res.json() as Promise<T>, timeout])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/**
  * 这次失败是不是“本地服务没起来”：联不上、超时、5xx。
  * 后端下线、端口被占、更新重启中，都是这个样子。
  */

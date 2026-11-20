@@ -227,5 +227,23 @@ class AppWindowLoginSeparationTests(unittest.TestCase):
         login_proc.terminate.assert_not_called()
 
 
+class WaitForServiceReadyTests(unittest.TestCase):
+    @patch("bosshunter.app_window.is_our_service_alive", return_value=True)
+    def test_ready_at_once_returns_true_without_waiting(self, _alive):
+        self.assertTrue(app_window.wait_for_service_ready(timeout=15.0, interval=0.5))
+
+    @patch("bosshunter.app_window.is_our_service_alive", side_effect=[False, False, True])
+    def test_waits_until_ready(self, _alive):
+        # 服务第 3 次轮询才好：不等到就绪不开窗，免得 --app 打开一张
+        # 连不上的空白页；好了马上返回，不用等满超时。
+        self.assertTrue(app_window.wait_for_service_ready(timeout=15.0, interval=0.01))
+
+    @patch("bosshunter.app_window.is_our_service_alive", return_value=False)
+    def test_never_ready_returns_false_at_deadline(self, _alive):
+        # 15 秒还没好也返回（调用方照常开窗，用户刷新就能进），
+        # 不能因为等不到就让用户连窗口都没有。
+        self.assertFalse(app_window.wait_for_service_ready(timeout=0.05, interval=0.01))
+
+
 if __name__ == "__main__":
     unittest.main()

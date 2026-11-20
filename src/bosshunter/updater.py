@@ -975,6 +975,82 @@ def cleanup_stale_update_processes(install_dir: str | Path | None = None) -> boo
     return True
 
 
+# 桌面快捷方式的 marker：建过一次就留着，用户手动删了快捷方式也不再
+# 补建；面板更新不碰 data/，所以更新后 marker 还在，不会重复建。
+DESKTOP_SHORTCUT_MARKER_FILENAME = "desktop_shortcut_created"
+_DESKTOP_SHORTCUT_NAME = "简历猎手.lnk"
+
+
+def _is_frozen() -> bool:
+    """是不是打包后的 exe。单独成函数是为了测试能扮 frozen：
+    直接改 sys.frozen 会影响别的模块，_is_windows() 也是这个道理。"""
+    return bool(getattr(sys, "frozen", False))
+
+
+def _ps_quote(value: str) -> str:
+    """包进 PowerShell 单引号字符串：单引号本身翻倍，路径里的反斜杠
+    原样留着（单引号里反斜杠不是转义符，不用转义）。"""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def ensure_desktop_shortcut(
+    install_dir: str | Path | None = None,
+    exe_path: str | Path | None = None,
+) -> bool:
+    """桌面上确保有一个「简历猎手.lnk」，指向正在跑的 exe。
+
+    覆盖两种场景：面板更新后 bat 重拉 exe，启动时建；新下载解压后
+    用户第一次双击 exe，启动时建。bat 里不另建，exe 启动这一处就够。
+
+    幂等 + 尊重用户删除：data/ 下留 marker，建过一次就不再建——
+    用户手动删了快捷方式就不再补建；新解压的包没有 marker，第一次
+    启动就建；面板更新不删 marker 也不删快捷方式。
+
+    只在 Windows + frozen 的 exe 里做；任何一步出错都悄悄返回
+    False，绝不挡启动。建成了才返回 True。
+    """
+    if not _is_windows() or not _is_frozen():
+        return False
+    target = Path(install_dir) if install_dir is not None else get_install_dir()
+    if target is None:
+        return False
+    exe = Path(exe_path) if exe_path is not None else Path(sys.executable).resolve()
+    marker = target / "data" / DESKTOP_SHORTCUT_MARKER_FILENAME
+    if marker.is_file():
+        return False
+    script = (
+        "$desktop = [Environment]::GetFolderPath('Desktop'); "
+        "$shell = New-Object -ComObject WScript.Shell; "
+        "$lnkPath = Join-Path $desktop " + _ps_quote(_DESKTOP_SHORTCUT_NAME) + "; "
+        "$lnk = $shell.CreateShortcut($lnkPath); "
+        f"$lnk.TargetPath = {_ps_quote(str(exe))}; "
+        f"$lnk.WorkingDirectory = {_ps_quote(str(exe.parent))}; "
+        f"$lnk.IconLocation = {_ps_quote(str(exe))}; "
+        "$lnk.Save()"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            # 到这里一定是 Windows（上面已判过），CREATE_NO_WINDOW 不会炸。
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+        )
+    except Exception:
+        return False
+    if result.returncode != 0:
+        return False
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{__version__}\n", encoding="utf-8")
+    except Exception:
+        # 快捷方式已经建好了，marker 没写上只是下次启动会再建一次
+        #（CreateShortcut 会覆盖同名文件），不算失败。
+        pass
+    return True
+
+
 def apply_update(install_dir: str | Path, exe_name: str) -> Path:
     """Prepare the swap: backup, write update.bat, launch it detached.
 

@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import ConfigPage from './ConfigPage'
+import { UpdateProvider } from '@/hooks/useUpdate'
 
 afterEach(() => {
   cleanup()
@@ -19,7 +20,7 @@ it('has no send-window controls and saves without windows', async () => {
     return new Response(JSON.stringify(body), { status: 200 })
   })
   vi.stubGlobal('fetch', fetchMock)
-  render(<ConfigPage />)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
   expect(await screen.findByText('每天投多少、怎么投')).toBeTruthy()
   expect(screen.queryByRole('button', { name: '添加时间段' })).toBeNull()
   expect(screen.queryByLabelText('时间段 1 开始时间')).toBeNull()
@@ -45,7 +46,7 @@ it('defaults optimization off and disabling unknown salary filtering follows int
     if (url.startsWith('/api/cities')) body = { cities: [] }
     return new Response(JSON.stringify(body), { status: 200 })
   }))
-  render(<ConfigPage />)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
   const internship = await screen.findByRole('switch', { name: '接受实习/管培岗位' })
   const filter = screen.getByRole('switch', { name: '过滤面议/无法解析薪资' })
   expect(filter.getAttribute('aria-checked')).toBe('true')
@@ -70,7 +71,7 @@ it('points the guide at the enabled search platform when BOSS is off', async () 
       : url.startsWith('/api/cities') ? { cities: [] } : {}
     return new Response(JSON.stringify(body), { status: 200 })
   }))
-  render(<ConfigPage />)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
 
   const keyword = await screen.findByPlaceholderText('比如：人力、产品运营')
   const city = screen.getByPlaceholderText('如：深圳')
@@ -86,7 +87,7 @@ it('points the guide at the platform switch when no search platform is enabled',
       : url.startsWith('/api/cities') ? { cities: [] } : {}
     return new Response(JSON.stringify(body), { status: 200 })
   }))
-  render(<ConfigPage />)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
 
   const bossSwitch = await screen.findByRole('checkbox', { name: 'BOSS 直聘' })
   expect(document.querySelector('[data-tour="search-keywords"]')?.contains(bossSwitch)).toBe(true)
@@ -101,7 +102,7 @@ it('has no AI settings section on the user page', async () => {
       : url.startsWith('/api/cities') ? { cities: [] } : {}
     return new Response(JSON.stringify(body), { status: 200 })
   }))
-  render(<ConfigPage />)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
   await screen.findByText('每天投多少、怎么投')
   expect(screen.queryByText('AI 设置')).toBeNull()
   expect(screen.queryByText('提供商')).toBeNull()
@@ -120,7 +121,7 @@ it('shows city names without internal codes and offers hot-city quick picks', as
       : url.startsWith('/api/cities') ? { ok: true, cities: [{ name: '北京', code: '010000' }, { name: '上海', code: '020000' }, { name: '深圳', code: '030000' }] } : {}
     return new Response(JSON.stringify(body), { status: 200 })
   }))
-  render(<ConfigPage />)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
   // 页面有两个城市选择器（BOSS 平台、全局过滤），都只显示城市名。
   expect((await screen.findAllByPlaceholderText('搜索城市名')).length).toBeGreaterThan(0)
   expect(document.body.textContent).not.toContain('010000')
@@ -149,7 +150,7 @@ it('warns explicitly instead of silently dropping a city without a code', async 
     if (url.startsWith('/api/cities')) body = { ok: true, cities: [{ name: '北京', code: '010000' }, { name: '上海', code: '020000' }] }
     return new Response(JSON.stringify(body), { status: 200 })
   }))
-  render(<ConfigPage />)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
   await screen.findByText('人力')
   fireEvent.click(screen.getByRole('tab', { name: '智联' }))
   const cityInput = await screen.findByPlaceholderText('如：深圳')
@@ -171,7 +172,7 @@ it('adds a keyword with the Add button and no longer shows the stale warning', a
       : url.startsWith('/api/cities') ? { ok: true, cities: [{ name: '北京', code: '010000' }] } : {}
     return new Response(JSON.stringify(body), { status: 200 })
   }))
-  render(<ConfigPage />)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
   const keywordInput = await screen.findByPlaceholderText('比如：人力、产品运营')
   expect(screen.queryByText(/不然保存不了/)).toBeNull()
   const tagsBox = keywordInput.closest('div')!.parentElement as HTMLElement
@@ -191,7 +192,7 @@ it('switches platform tabs and only shows the selected platform config', async (
       : url.startsWith('/api/cities') ? { ok: true, cities: [{ name: '北京', code: '010000' }, { name: '深圳', code: '030000' }] } : {}
     return new Response(JSON.stringify(body), { status: 200 })
   }))
-  render(<ConfigPage />)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
   await screen.findByText('人力')
   expect(screen.getByText('人力')).toBeTruthy()
   expect(screen.queryByText('运营')).toBeNull()
@@ -216,7 +217,7 @@ it('lets the user pick a browser and fill the manual path from the detected list
     } else if (url.startsWith('/api/cities')) body = { cities: [] }
     return new Response(JSON.stringify(body), { status: 200 })
   }))
-  render(<ConfigPage />)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
   expect(await screen.findByText('用哪个浏览器')).toBeTruthy()
   expect(screen.getByRole('radio', { name: /自动选择/ })).toBeTruthy()
   fireEvent.click(screen.getByRole('radio', { name: /只用 Edge/ }))
@@ -228,4 +229,38 @@ it('lets the user pick a browser and fill the manual path from the detected list
   const fill = await screen.findByRole('button', { name: /Edge：C:\/Edge\/msedge\.exe/ })
   fireEvent.click(fill)
   expect((screen.getByPlaceholderText(/例如 C:/) as HTMLInputElement).value).toBe('C:/Edge/msedge.exe')
+})
+
+it('shows the risk protection section, defaults to steady, and saves tier and switches', async () => {
+  let saved: Record<string, any> = { throttle: {} }
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    let body: unknown = {}
+    if (String(input) === '/api/config') {
+      if (init?.method === 'POST') { saved = JSON.parse(String(init.body)); body = { success: true } }
+      else body = saved
+    }
+    if (String(input).startsWith('/api/cities')) body = { cities: [] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
+  expect(await screen.findByText('风控保护')).toBeTruthy()
+  // 旧的硬编码 120 提示已经删了（守卫逻辑还在后端，不在这里展示）。
+  expect(screen.queryByText(/每天最多自动投 120 个/)).toBeNull()
+  expect((screen.getByDisplayValue('稳妥模式') as HTMLSelectElement).value).toBe('steady')
+  expect(screen.getByRole('switch', { name: '随机操作间隔' }).getAttribute('aria-checked')).toBe('true')
+  expect(screen.getByRole('switch', { name: '阶段性自动休息' }).getAttribute('aria-checked')).toBe('true')
+  expect(screen.getByRole('switch', { name: '遇到验证或限制提示时自动暂停' }).getAttribute('aria-checked')).toBe('true')
+  expect((screen.getByLabelText('每日投递上限') as HTMLInputElement).value).toBe('120')
+  // 换成极速档位：温和提示出现。
+  fireEvent.change(screen.getByDisplayValue('稳妥模式'), { target: { value: 'fast' } })
+  expect(screen.getByText(/节奏较快时更容易触发平台频率限制/)).toBeTruthy()
+  // 关掉随机间隔、每日上限改成 50，保存后同一组键写进配置。
+  fireEvent.click(screen.getByRole('switch', { name: '随机操作间隔' }))
+  fireEvent.change(screen.getByLabelText('每日投递上限'), { target: { value: '50' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  await screen.findByText('设置已经保存了')
+  expect(saved.throttle.risk_tier).toBe('fast')
+  expect(saved.throttle.random_interval).toBe(false)
+  expect(saved.throttle.daily_cap).toBe(50)
 })

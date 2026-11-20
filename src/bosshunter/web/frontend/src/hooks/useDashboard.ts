@@ -1,5 +1,5 @@
 import { useCallback, useState, useEffect, useRef } from 'react'
-import { fetchWithRetry, isServiceNotReadyError } from '@/lib/api'
+import { fetchWithRetry, isServiceNotReadyError, readJsonWithTimeout } from '@/lib/api'
 
 interface FunnelData {
   [key: string]: number
@@ -273,8 +273,8 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
         throw new Error('没读到数据')
       }
       const [workbenchData, historyData] = await Promise.all([
-        workbenchRes ? workbenchRes.json() : Promise.resolve(undefined),
-        historyRes ? historyRes.json() : Promise.resolve(undefined),
+        workbenchRes ? readJsonWithTimeout(workbenchRes) : Promise.resolve(undefined),
+        historyRes ? readJsonWithTimeout(historyRes) : Promise.resolve(undefined),
       ])
 
       if (controller.signal.aborted || refreshingRef.current !== controller) return
@@ -363,6 +363,14 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
 
   useEffect(() => {
     void fetchAll()
+    // 骨架屏兜底：首屏数据 20 秒还没回来（请求挂起、定时器被节流等），
+    // 不再一直晾着骨架，改成可重试的提示；数据到了会自动补上。
+    const watchdog = window.setTimeout(() => {
+      if (firstLoadRef.current) {
+        setLoading(false)
+        setError('数据一直没回来，点“刷新一下”再试。')
+      }
+    }, 20000)
     const pollIntervalMs = scope === 'monitor' ? 2000 : 5000
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible') void fetchAll()
@@ -373,6 +381,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     window.addEventListener('focus', refreshWhenVisible)
     document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
+      window.clearTimeout(watchdog)
       window.clearInterval(interval)
       refreshingRef.current?.abort()
       refreshingRef.current = null

@@ -49,9 +49,10 @@ export function UpdateModal({ update, manualCheckSignal = 0, onOpenChange }: Upd
   }, [open, onOpenChange])
 
   // 启动自动检查出新版：没跳过、横幅没被“先不换”掉、这次没关过，就弹一次。
+  // 下载好了（ready）才切回首页也弹一次：不然用户只看到横幅，不知道已经能换了。
   useEffect(() => {
     if (!info || !version) return
-    if (phase !== 'idle' && phase !== 'checking') return
+    if (phase !== 'idle' && phase !== 'checking' && phase !== 'ready') return
     if (dismissed) return
     if (closedForVersion === version) return
     if (autoOpenedForRef.current === version) return

@@ -339,7 +339,13 @@ def run_browser_diagnostics(config: dict[str, Any] | None = None, allow_launch: 
     ensure_runtime 默认拉起浏览器，检测就变拉起了。
     """
     node = check_node_available()
-    runtime_ready = ensure_runtime(config, allow_launch=allow_launch)
+    # 被动检查（首页/设置页每次打开都调）只等已经在跑的 runtime：5 秒
+    # 没出现就不会再出现，等满 15 秒只是白白占着一个服务端线程——云电脑
+    # 上每次打开页面都可能摊上这 30 多秒（ensure_runtime 还会重试一次）。
+    # 用户主动点的“一键启动”才保持 15 秒（要拉浏览器，值得等）。
+    runtime_ready = ensure_runtime(
+        config, allow_launch=allow_launch, wait_seconds=5.0 if not allow_launch else 15.0
+    )
     runtime_url = get_runtime_url(config)
     health = runtime_health(config)
     targets = runtime_targets(config) if runtime_ready else None

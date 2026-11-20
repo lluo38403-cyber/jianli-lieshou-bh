@@ -77,6 +77,120 @@ def platform_display_name(platform: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 风控档位参数表（v22 可视化）：档位决定投递节奏
+# ---------------------------------------------------------------------------
+# 标准模式 = v9 上线以来的现状（3–8 秒微停顿、15–30 秒浏览、
+# 30–120 秒错峰、60–180 秒投递间隔）；稳妥拉长间隔与休息，极速缩短间隔。
+# 开关（random_interval / stage_rest / auto_pause_on_verify / daily_cap）
+# 逐项控制这些参数是否生效，见 resolve_risk_profile()。
+RISK_TIERS: dict[str, dict[str, Any]] = {
+    "steady": {
+        "micro_delay": (5.0, 12.0),
+        "browse": (20.0, 40.0),
+        "detail_browse": (8.0, 16.0),
+        "stagger": (60.0, 180.0),
+        "interval": (120.0, 300.0),
+        "rest_every": 5,
+        "rest": (60.0, 120.0),
+    },
+    "standard": {
+        "micro_delay": (3.0, 8.0),
+        "browse": (15.0, 30.0),
+        "detail_browse": (6.0, 12.0),
+        "stagger": (30.0, 120.0),
+        "interval": (60.0, 180.0),
+        "rest_every": 10,
+        "rest": (30.0, 60.0),
+    },
+    "fast": {
+        "micro_delay": (1.0, 3.0),
+        "browse": (8.0, 15.0),
+        "detail_browse": (3.0, 6.0),
+        "stagger": (10.0, 45.0),
+        "interval": (30.0, 90.0),
+        "rest_every": 15,
+        "rest": (15.0, 30.0),
+    },
+}
+
+RISK_TIER_DEFAULT = "steady"
+
+
+def resolve_risk_profile(throttle_config: dict) -> dict[str, Any]:
+    """把档位 + 开关解析成投递循环实际用的节奏参数。
+
+    返回的键直接覆盖 throttle_config 里的同名键：微停顿、浏览时长、
+    详情浏览、错峰、投递间隔都按档位表走；random_interval 关了，微停顿
+    就是 0（真的不随机停顿）；stage_rest / auto_pause_on_verify /
+    daily_cap_enabled 只返回布尔开关，调用方按开关决定做不做。
+    daily_cap 优先读新字段，没有才读老字段 daily_limit，再没有默认 120。
+    """
+    cfg = throttle_config if isinstance(throttle_config, dict) else {}
+    tier = str(cfg.get("risk_tier") or RISK_TIER_DEFAULT).strip() or RISK_TIER_DEFAULT
+    table = RISK_TIERS.get(tier, RISK_TIERS[RISK_TIER_DEFAULT])
+    tier = tier if tier in RISK_TIERS else RISK_TIER_DEFAULT
+    random_interval = cfg.get("random_interval", True) is not False
+    micro_low, micro_high = table["micro_delay"]
+    if not random_interval:
+        micro_low, micro_high = 0.0, 0.0
+    browse_low, browse_high = table["browse"]
+    detail_low, detail_high = table["detail_browse"]
+    stagger_low, stagger_high = table["stagger"]
+    interval_low, interval_high = table["interval"]
+    rest_every, (rest_low, rest_high) = table["rest_every"], table["rest"]
+    if "daily_cap" in cfg:
+        raw_cap = cfg.get("daily_cap")
+    elif "daily_limit" in cfg:
+        raw_cap = cfg.get("daily_limit")
+    else:
+        raw_cap = 120
+    try:
+        daily_cap = max(1, int(raw_cap))
+    except (TypeError, ValueError):
+        daily_cap = 120
+    return {
+        "risk_tier": tier,
+        "micro_delay_min": float(micro_low),
+        "micro_delay_max": float(micro_high),
+        "browse_duration_min": float(browse_low),
+        "browse_duration_max": float(browse_high),
+        "detail_browse_min": float(detail_low),
+        "detail_browse_max": float(detail_high),
+        "platform_stagger_min": float(stagger_low),
+        "platform_stagger_max": float(stagger_high),
+        "interval_min": float(interval_low),
+        "interval_max": float(interval_high),
+        "rest_every": int(rest_every),
+        "rest_min": float(rest_low),
+        "rest_max": float(rest_high),
+        "random_interval": bool(random_interval),
+        "stage_rest": cfg.get("stage_rest", True) is not False,
+        "auto_pause_on_verify": cfg.get("auto_pause_on_verify", True) is not False,
+        "daily_cap_enabled": cfg.get("daily_cap_enabled", True) is not False,
+        "daily_cap": daily_cap,
+    }
+
+
+def sample_rest_delay(
+    low: float = 30.0,
+    high: float = 60.0,
+    rng: random.Random | None = None,
+) -> float:
+    """Uniform rest between stage breaks, clipped to [low, high]."""
+    source = rng or random
+    return max(low, min(high, source.uniform(low, high)))
+
+
+def should_stage_rest(sent_count: int, rest_every: int, has_more: bool) -> bool:
+    """连投满 rest_every 个、后面还有岗位时，才歇一次。"""
+    try:
+        every = int(rest_every)
+    except (TypeError, ValueError):
+        return False
+    return bool(has_more) and every > 0 and sent_count > 0 and sent_count % every == 0
+
+
+# ---------------------------------------------------------------------------
 # 1. 人性化行为：高斯微延迟 + 模拟滚动浏览
 # ---------------------------------------------------------------------------
 
@@ -357,6 +471,14 @@ def handle_page_risk(
         if risk in {"rate_limit", "blocked", "login_required"}:
             return str(risk)
         # risk == 'captcha'
+        # 风控保护开关：关了就不自动建 hold 等用户验证，只提示一声就返回，
+        # 这次投递按失败记（熔断照常计数），不再替用户停在那等。
+        if not throttle_config.get("auto_pause_on_verify", True):
+            _log(
+                f"触发平台安全验证（{name}），自动暂停已关："
+                "请在浏览器中手动完成验证，验证完再继续投递"
+            )
+            return "captcha"
         if db is None:
             return "captcha"
         holds_used += 1

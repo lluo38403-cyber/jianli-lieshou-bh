@@ -1726,7 +1726,12 @@ def api_workbench():
 	try:
 		config = load_config(CONFIG_PATH)
 		threshold = config.get("scoring", {}).get("threshold", 60)
-		daily_limit = int(config.get("throttle", {}).get("daily_limit", 30) or 30)
+		# 每日上限走风控保护的解析：开关关了就是不限（daily_limit 记 0），
+		# 开着才按 daily_cap 走，和投递循环用同一份参数。
+		from bosshunter.antibot import resolve_risk_profile
+
+		risk_profile = resolve_risk_profile(config.get("throttle", {}))
+		daily_limit = int(risk_profile["daily_cap"]) if risk_profile["daily_cap_enabled"] else 0
 		today_sent = count_sent_today(db)
 		per_platform_limits = config.get("throttle", {}).get("daily_limit_per_platform") or {}
 		per_platform_quota = {}
@@ -1765,8 +1770,9 @@ def api_workbench():
 			"send_quota": {
 				"daily_limit": daily_limit,
 				"sent": today_sent,
-				"remaining": max(daily_limit - today_sent, 0),
-				"exhausted": today_sent >= daily_limit,
+				"remaining": max(daily_limit - today_sent, 0) if daily_limit else 0,
+				"exhausted": bool(daily_limit) and today_sent >= daily_limit,
+				"cap_enabled": bool(risk_profile["daily_cap_enabled"]),
 				"per_platform": per_platform_quota,
 				"suspended_platforms": breaker_suspended_platforms(db),
 			},
@@ -4093,10 +4099,14 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 		)
 	# 启动时清掉旧版挂起的更新进程：v1.0.8 及更早的 bat 里 findstr 会
 	# 卡住，黑框一直挂在面板前面。清不掉也不挡启动（函数里全吞掉）。
+	# 顺手确保桌面上有「简历猎手.lnk」：面板更新后重拉 exe 和新下载
+	# 第一次双击都会走到这里；建过一次就留 marker 不再建（用户手动
+	# 删了也不再补），失败同样不挡启动。
 	try:
-		from bosshunter.updater import cleanup_stale_update_processes
+		from bosshunter.updater import cleanup_stale_update_processes, ensure_desktop_shortcut
 
 		cleanup_stale_update_processes()
+		ensure_desktop_shortcut()
 	except Exception:
 		pass
 	# 端口已被上一次的服务占着：不再起新服务，只开窗口复用现有服务，
@@ -4119,7 +4129,12 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 	if open_browser:
 		import threading
 		def _open():
-			time.sleep(1)
+			# 先等服务就绪再开窗：冷启动慢的机器上 1 秒不一定够，
+			# 服务还没监听就打开的 --app 窗口会一直空白、不会自动重试。
+			# 15 秒还没好也照常开（和以前一样，用户刷新就能进）。
+			from bosshunter.app_window import wait_for_service_ready
+
+			wait_for_service_ready(host, port, timeout=15.0)
 			# 独立应用窗口打开界面（Edge/Chrome --app 模式）；拉不起来
 			# 就降级回默认浏览器，任何环境都能进界面。
 			launch_app_window(panel_url)

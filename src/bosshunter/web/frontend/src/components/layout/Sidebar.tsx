@@ -104,10 +104,6 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
       </nav>
 
       <div className="space-y-3 border-t border-white/10 px-2 py-4 md:px-4">
-        <div className="hidden rounded-2xl bg-white/10 px-3 py-3 text-[11px] leading-5 text-white/85 md:block">
-          <span className="font-black text-white">每天最多自动投 120 个</span>
-          <br />够分的岗位才会投，投满了明天继续。
-        </div>
         {pendingReplies > 0 && (
           <p className="hidden text-center text-[11px] leading-5 text-amber-300 md:block">有 {pendingReplies} 条 HR 消息等你处理</p>
         )}

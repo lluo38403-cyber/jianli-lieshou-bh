@@ -111,6 +111,13 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   const [durationHours, setDurationHours] = useState(8)
   const [error, setError] = useState('')
   const [starting, setStarting] = useState(false)
+  /** 风控保护（和“我的设置”同一组配置键、同一条保存链路）：打开弹窗时
+   * 从 /api/config 读，改了就整个配置 POST 回 /api/config 立即保存。 */
+  const [fullConfig, setFullConfig] = useState<Record<string, any> | null>(null)
+  const [riskTier, setRiskTier] = useState('steady')
+  const [randomInterval, setRandomInterval] = useState(true)
+  const [riskSaving, setRiskSaving] = useState(false)
+  const [riskNote, setRiskNote] = useState('')
   const [resumableRuns, setResumableRuns] = useState<ResumableRun[]>([])
   const [resumeRunId, setResumeRunId] = useState('')
   const [zhilianCities, setZhilianCities] = useState<PlatformCityOption[]>([])
@@ -160,6 +167,9 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         setDrafts({ boss: nextBoss, zhilian: nextZhilian, '51job': nextJob51, liepin: nextLiepin })
         setOrder(mode === 'full' ? ['boss'] : (nextOrder.length ? nextOrder : ['boss']))
         setAutoScore(mode === 'full' || config?.collection?.auto_score_default === true)
+        setFullConfig(config)
+        setRiskTier(config?.throttle?.risk_tier || 'steady')
+        setRandomInterval(config?.throttle?.random_interval ?? true)
         setCityPolicy({ enabled: true, warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5, ...(config?.platforms?.boss?.search?.city_yield_policy || config?.search?.city_yield_policy || {}) })
       })
       .catch(() => {
@@ -208,6 +218,32 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   const updateDraft = (platform: PlatformId, key: keyof PlatformDraft, value: string | boolean) => {
     setDrafts(previous => ({ ...previous, [platform]: { ...previous[platform], [key]: value } }))
     setError('')
+  }
+
+  /** 风控设置改了立即保存：同一组配置键、同一条保存链路（POST /api/config），
+   * “我的设置”里看到的是同一份，不用再点保存。 */
+  const saveRiskSetting = (path: string, value: unknown) => {
+    if (!fullConfig) return
+    const keys = path.split('.')
+    const next = JSON.parse(JSON.stringify(fullConfig))
+    let obj = next
+    for (let i = 0; i < keys.length - 1; i++) {
+      if (!obj[keys[i]]) obj[keys[i]] = {}
+      obj = obj[keys[i]]
+    }
+    obj[keys[keys.length - 1]] = value
+    setFullConfig(next)
+    setRiskSaving(true)
+    setRiskNote('')
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(next),
+    })
+      .then(response => response.json())
+      .then(data => setRiskNote(data?.success ? '已保存，和“我的设置”里是一样的。' : (data?.error || '没保存上。')))
+      .catch(() => setRiskNote('没保存上，检查一下网络。'))
+      .finally(() => setRiskSaving(false))
   }
 
   const togglePlatform = (platform: PlatformId, enabled: boolean) => {
@@ -292,7 +328,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-label="找新岗位">
       <div className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-card-border bg-card shadow-2xl">
         <div className="flex items-start justify-between gap-4 px-6 pt-6">
-          <div>
+          <div className="min-w-0">
             <div className="text-xs font-black tracking-[0.18em] text-primary">COLLECT JOBS</div>
             <h2 className="mt-1 text-2xl font-black">{mode === 'full' ? '找新岗位的设置' : '岗位采集'}</h2>
             <p className="mt-1 text-sm leading-6 text-muted">平台一个一个来，不会同时找；每个平台只要设翻几页、按什么排。</p>
@@ -376,7 +412,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
                     </div>}
                   </div>
                 </> : <p className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs text-muted">BOSS 城市编号系统自己会配，不用你填。</p>}
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <label className="text-xs font-bold text-muted">最多翻几页<Input type="number" min={1} max={10} value={draft.maxPages} onChange={event => updateDraft(platform, 'maxPages', event.target.value)} /></label>
                   <label className="text-xs font-bold text-muted">按什么排<Select value={draft.sort} onChange={event => updateDraft(platform, 'sort', event.target.value)}><option value="default">默认</option>{platform !== '51job' && <option value="newest">最新</option>}</Select></label>
                 </div>
@@ -388,7 +424,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         })}
 
         <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
-          <div className="flex items-center justify-between gap-3"><div><div className="text-sm font-black">先找哪个</div><p className="mt-1 text-xs text-muted">平台一个一个找；智联、前程无忧、猎聘这次不投、也不盯着。</p></div><div className="flex gap-2">{enabledOrder.map((platform, index) => <div key={platform} className="flex items-center gap-1 rounded-full bg-card px-3 py-1 text-xs font-black text-primary"><span>{index + 1}. {PLATFORM_SHORT_LABELS[platform]}</span><button type="button" onClick={() => move(platform, -1)} disabled={index === 0} aria-label="往上"><ArrowUp className="h-3 w-3" /></button><button type="button" onClick={() => move(platform, 1)} disabled={index === enabledOrder.length - 1} aria-label="往下"><ArrowDown className="h-3 w-3" /></button></div>)}</div></div>
+          <div className="flex flex-wrap items-center justify-between gap-3"><div className="min-w-0"><div className="text-sm font-black">先找哪个</div><p className="mt-1 text-xs text-muted">平台一个一个找；智联、前程无忧、猎聘这次不投、也不盯着。</p></div><div className="flex flex-wrap gap-2">{enabledOrder.map((platform, index) => <div key={platform} className="flex items-center gap-1 rounded-full bg-card px-3 py-1 text-xs font-black text-primary"><span>{index + 1}. {PLATFORM_SHORT_LABELS[platform]}</span><button type="button" onClick={() => move(platform, -1)} disabled={index === 0} aria-label="往上"><ArrowUp className="h-3 w-3" /></button><button type="button" onClick={() => move(platform, 1)} disabled={index === enabledOrder.length - 1} aria-label="往下"><ArrowDown className="h-3 w-3" /></button></div>)}</div></div>
         </div>
 
         {drafts.boss.enabled && <section className="mt-4 border-t border-card-border pt-4">
@@ -404,9 +440,25 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
           {continuous && <label className="mt-3 block text-xs text-muted">一次最多找几小时<Input type="number" min={1} max={24} value={durationHours} onChange={e => setDurationHours(Number(e.target.value))} /></label>}
         </section>}
         <label className="mt-4 flex items-center justify-between border-t border-card-border py-4"><span className="text-sm font-black">{mode === 'full' ? '找完自动打分' : continuous ? '找完再打分' : '找到就打分'}</span><Switch checked={mode === 'full' || autoScore} onChange={mode === 'full' ? () => undefined : setAutoScore} disabled={mode === 'full'} /></label>
+        {mode === 'full' && <section className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
+          <div className="text-sm font-black">风控保护</div>
+          <p className="mt-1 text-xs leading-5 text-muted">和“我的设置”里的风控保护是同一组开关，这边改了那边跟着变，改完马上保存。</p>
+          <div className="mt-3 space-y-3">
+            <label className="block text-xs font-bold text-muted">风控档位
+              <Select value={riskTier} onChange={e => { const value = e.target.value; setRiskTier(value); saveRiskSetting('throttle.risk_tier', value) }}>
+                <option value="steady">稳妥模式</option>
+                <option value="standard">标准模式</option>
+                <option value="fast">极速模式</option>
+              </Select>
+            </label>
+            {riskTier === 'fast' && <p className="text-xs text-warning">节奏较快时更容易触发平台频率限制，遇到验证提示请及时处理。</p>}
+            <label className="flex items-center justify-between gap-3 text-sm font-bold">随机操作间隔<Switch aria-label="随机操作间隔" checked={randomInterval} onChange={value => { setRandomInterval(value); saveRiskSetting('throttle.random_interval', value) }} /></label>
+            {riskSaving ? <p className="text-xs text-muted">正在保存…</p> : riskNote ? <p className="text-xs text-muted">{riskNote}</p> : null}
+          </div>
+        </section>}
         {error && <div className="mt-3 rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
         </div>
-        <div className="sticky bottom-0 flex shrink-0 justify-end gap-2 border-t border-card-border bg-card px-6 py-3"><Button variant="secondary" onClick={onClose} disabled={starting}>取消</Button><Button onClick={() => void start()} disabled={Boolean(activeTask) || starting}>{starting ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" />正在开始…</span> : mode === 'full' ? '开始自动找工作' : '重新采集'}</Button></div>
+        <div className="sticky bottom-0 flex shrink-0 flex-wrap justify-end gap-2 border-t border-card-border bg-card px-6 py-3"><Button variant="secondary" onClick={onClose} disabled={starting}>取消</Button><Button onClick={() => void start()} disabled={Boolean(activeTask) || starting}>{starting ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" />正在开始…</span> : mode === 'full' ? '开始自动找工作' : '重新采集'}</Button></div>
       </div>
     </div>
   )

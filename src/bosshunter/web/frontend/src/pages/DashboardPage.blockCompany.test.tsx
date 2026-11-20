@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import DashboardPage from './DashboardPage'
+import { UpdateProvider } from '@/hooks/useUpdate'
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -62,7 +63,7 @@ describe('岗位列表屏蔽公司', () => {
   })
 
   async function clickBlock() {
-    render(<DashboardPage view="jobs" />)
+    render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
     const button = await screen.findByRole('button', { name: `屏蔽这家公司 ${company || '没写公司名'}` }, { timeout: 5000 })
     fireEvent.click(button)
     return button as HTMLButtonElement
@@ -102,11 +103,11 @@ describe('岗位列表屏蔽公司', () => {
   it('hides jobs matching saved rules on every page mount and restores them when unblocked', async () => {
     rules = ['TEST']
     company = 'test 科技'
-    const firstVisit = render(<DashboardPage view="jobs" />)
+    const firstVisit = render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
     expect(await screen.findByText('按现在的条件没找到合适的')).toBeTruthy()
     expect(screen.queryByText(company)).toBeNull()
     firstVisit.unmount()
-    render(<DashboardPage view="jobs" />)
+    render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
     expect(await screen.findByText('按现在的条件没找到合适的')).toBeTruthy()
     expect(screen.queryByText(company)).toBeNull()
     rules = []
@@ -117,7 +118,7 @@ describe('岗位列表屏蔽公司', () => {
   })
 
   it('clears selected jobs when a saved blacklist hides them', async () => {
-    render(<DashboardPage view="jobs" />)
+    render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
     await screen.findByRole('button', { name: '屏蔽这家公司 测试科技' })
     fireEvent.click(screen.getByRole('checkbox', { name: '选这个 测试科技 前端工程师' }))
     expect(screen.getByText('已选 1 个')).toBeTruthy()

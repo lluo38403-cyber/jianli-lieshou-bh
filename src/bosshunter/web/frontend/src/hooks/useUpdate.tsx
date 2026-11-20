@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { fetchWithRetry } from '@/lib/api'
 
 export interface UpdateInfo {
@@ -238,27 +238,9 @@ export function useUpdate() {
     }
   }, [])
 
-  useEffect(() => {
-    void check()
-    void fetchHealth()
-    void fetchManualDownloadUrl()
-  }, [check, fetchHealth, fetchManualDownloadUrl])
-
-  const start = useCallback(async () => {
-    if (!info) return
-    setError('')
-    setErrorKind(null)
-    setPhaseBoth('downloading')
-    setProgress(0)
-    try {
-      const res = await fetch('/api/update/start', { method: 'POST' })
-      const data = (await res.json().catch(() => ({}))) as { error?: string }
-      if (!res.ok) throw new Error(String(data?.error || '没开始下载，稍后再试。'))
-    } catch (err) {
-      setPhaseBoth('error')
-      setErrorBoth(err instanceof Error ? err.message : '没开始下载，稍后再试。', 'downloading')
-      return
-    }
+  /** 状态轮询：1 秒问一次服务端下载到哪了。下载中切页面也不停——
+   * 轮询挂在全局的 UpdateProvider 里，页面卸载清不掉它。 */
+  const startPolling = useCallback(() => {
     stopPolling()
     // 轮询本身不重试：后端下载中途挂掉，状态接口会连续失败；
     // 连失败 10 次就定稿为下载失败，不让页面一直卡在“下载中”。
@@ -291,7 +273,69 @@ export function useUpdate() {
         // 没到次数就下次轮询再试。
       }
     }, 1000)
-  }, [info, setPhaseBoth, setErrorBoth, stopPolling])
+  }, [setPhaseBoth, setErrorBoth, stopPolling])
+
+  /** 启动时从服务端把下载状态接回来：刷新页面、或上次打开时下载已在
+   * 进行中，进度不从 0 重来——服务端一直在下，问它现在到哪了就行。 */
+  const resume = useCallback(async () => {
+    try {
+      const res = await fetch('/api/update/status')
+      const data = (await res.json().catch(() => ({}))) as CheckPayload
+      if (!mountedRef.current) return
+      const status = String(data?.status || '')
+      if (typeof data?.version === 'string' && data.version) {
+        setInfo({
+          version: data.version,
+          size: Number(data.size) || 0,
+          sha256: String(data.sha256 || ''),
+          notes: String(data.notes || ''),
+          current_version: String(data.current_version || ''),
+        })
+        setError('')
+        setErrorKind(null)
+      }
+      if (status === 'downloading' || status === 'verifying') {
+        setPhaseBoth(status)
+        setProgress(Number(data?.progress) || 0)
+        startPolling()
+      } else if (status === 'ready') {
+        setPhaseBoth('ready')
+        setProgress(100)
+      } else if (status === 'error') {
+        setPhaseBoth('error')
+        setErrorBoth(String(data?.error || '下载失败了，稍后再试。'), 'downloading')
+      }
+    } catch {
+      // 状态读不到就不管：check() 那边会照常查有没有新版。
+    }
+  }, [setPhaseBoth, setErrorBoth, startPolling])
+
+  const start = useCallback(async () => {
+    if (!info) return
+    setError('')
+    setErrorKind(null)
+    setPhaseBoth('downloading')
+    setProgress(0)
+    try {
+      const res = await fetch('/api/update/start', { method: 'POST' })
+      const data = (await res.json().catch(() => ({}))) as { error?: string }
+      if (!res.ok) throw new Error(String(data?.error || '没开始下载，稍后再试。'))
+    } catch (err) {
+      setPhaseBoth('error')
+      setErrorBoth(err instanceof Error ? err.message : '没开始下载，稍后再试。', 'downloading')
+      return
+    }
+    startPolling()
+  }, [info, setPhaseBoth, setErrorBoth, startPolling])
+
+  // 挂载时启动检查 + 从服务端接回下载状态：必须放在 resume 定义之后，
+  // 依赖数组在渲染时就求值，写在前面会撞上 const 的暂时性死区。
+  useEffect(() => {
+    void check()
+    void fetchHealth()
+    void fetchManualDownloadUrl()
+    void resume()
+  }, [check, fetchHealth, fetchManualDownloadUrl, resume])
 
   const apply = useCallback(async () => {
     setError('')
@@ -364,3 +408,23 @@ export function useUpdate() {
 }
 
 export type UpdateState = ReturnType<typeof useUpdate>
+
+const UpdateContext = createContext<UpdateState | null>(null)
+
+/**
+ * 更新状态全局化（v22 修复）：下载任务与进度只活一份，挂在 App 顶层。
+ * 以前每个页面各自 useUpdate()，路由一切换组件卸载、轮询被 cleanup
+ * 停掉，回来就是全新的 idle——按钮变回“马上更新”，进度也没了。
+ * 现在 Provider 常驻，切页面只换页面组件，轮询与进度不断。
+ */
+export function UpdateProvider({ children }: { children: ReactNode }) {
+  const update = useUpdate()
+  return <UpdateContext.Provider value={update}>{children}</UpdateContext.Provider>
+}
+
+/** 读全局更新状态：必须在 <UpdateProvider> 里面用。 */
+export function useUpdateContext(): UpdateState {
+  const update = useContext(UpdateContext)
+  if (!update) throw new Error('useUpdateContext 必须在 <UpdateProvider> 里面用')
+  return update
+}
