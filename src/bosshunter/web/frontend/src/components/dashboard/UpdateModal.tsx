@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { formatUpdateSize, getUpdateErrorCopy, type UpdateState } from '@/hooks/useUpdate'
+import { formatUpdateNotes, formatUpdateSize, getUpdateErrorCopy, type UpdateState } from '@/hooks/useUpdate'
 import { Button } from '@/components/ui/button'
 
 /** “跳过此版本”记在这里：只存版本号字符串，下次启动见到同一版就不再弹。 */
@@ -26,13 +26,16 @@ interface UpdateModalProps {
   /** 手动点了“检查更新”的信号（时间戳）：变一次就代表手动查了一次，
    * 有新版时忽略跳过记录也要弹；没新版时不弹，轻提示由页面自己显示。 */
   manualCheckSignal?: number
+  /** 弹窗开关变化时通知父级：首页用它在弹窗开着时收起横幅，
+   * 免得同一件事同时出现两块（卡片 + 悬浮窗）。 */
+  onOpenChange?: (open: boolean) => void
 }
 
 /**
  * 新版弹窗：右下角浮动卡片，不用全屏遮罩，页面其余部分随时能点、能继续用。
  * 与首页横幅共用同一份 useUpdate 状态，不另起检查/下载流程。
  */
-export function UpdateModal({ update, manualCheckSignal = 0 }: UpdateModalProps) {
+export function UpdateModal({ update, manualCheckSignal = 0, onOpenChange }: UpdateModalProps) {
   const { info, currentVersion, phase, progress, error, errorKind, manualDownloadUrl, dismissed, checking } = update
   const [open, setOpen] = useState(false)
   const [closedForVersion, setClosedForVersion] = useState('')
@@ -40,6 +43,10 @@ export function UpdateModal({ update, manualCheckSignal = 0 }: UpdateModalProps)
   const manualHandledRef = useRef('')
 
   const version = info?.version || ''
+
+  useEffect(() => {
+    onOpenChange?.(open)
+  }, [open, onOpenChange])
 
   // 启动自动检查出新版：没跳过、横幅没被“先不换”掉、这次没关过，就弹一次。
   useEffect(() => {
@@ -97,7 +104,7 @@ export function UpdateModal({ update, manualCheckSignal = 0 }: UpdateModalProps)
       data-testid="update-modal"
       role="dialog"
       aria-label="有新版本了"
-      className="fixed bottom-4 right-4 z-50 w-[calc(100vw-2rem)] max-w-sm rounded-2xl border border-primary/30 bg-card p-4 shadow-xl"
+      className="fixed inset-x-4 bottom-4 z-50 max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl border border-primary/30 bg-card p-4 shadow-xl sm:inset-x-auto sm:bottom-4 sm:right-4 sm:w-[26rem] sm:max-w-[calc(100vw-2rem)]"
     >
       <div className="flex items-start justify-between gap-2">
         <p className="text-base font-semibold text-foreground">有新版本了</p>
@@ -114,8 +121,8 @@ export function UpdateModal({ update, manualCheckSignal = 0 }: UpdateModalProps)
       <p className="mt-1 text-sm text-foreground">
         现在是 v{currentVersion || '…'}，最新是 v{info.version}
       </p>
-      <p className="mt-1 text-sm text-muted">
-        {info.notes ? info.notes : '修了一些小问题，用起来更稳。'}
+      <p className="mt-1 line-clamp-3 text-sm text-muted">
+        {formatUpdateNotes(info.notes)}
         {sizeText ? `大概 ${sizeText}，` : ''}不用重新下载，点一下就能换上。
       </p>
       {phaseText ? (

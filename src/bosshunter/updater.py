@@ -879,6 +879,102 @@ def _download_worker(config: dict, info: dict) -> None:
         _set_status(status="error", progress=0, message="", error="下载出问题了，稍后再试。", zip_path=None, staging_dir=None)
 
 
+# Windows 创建标志的真实值（CREATE_NO_WINDOW 0x08000000、
+# DETACHED_PROCESS 0x00000008、CREATE_NEW_PROCESS_GROUP 0x00000200）。
+# getattr 的 fallback 写死真实值：这样 helper 在 Windows 上是对的，
+# 在 Linux/macOS 上也能跑测试（那里的 subprocess 没有这些属性）。
+_NO_WINDOW_FLAG = 0x08000000
+_DETACHED_PROCESS_FLAG = 0x00000008
+_NEW_PROCESS_GROUP_FLAG = 0x00000200
+
+
+def _windows_launch_flags() -> int:
+    """update.bat 的启动标志：不带控制台窗口。
+
+    只用 DETACHED_PROCESS 不够：detached 的 cmd 自己没有控制台，它再
+    拉起的 ping / PowerShell / robocopy / taskkill 各自会新开一个黑框
+    （v1.0.8 用户实拍：findstr /C:"2108" 黑框弹在面板前面——旧 bat
+    的 tasklist | findstr 里 findstr 卡在等管道输入，自己的黑框一直
+    挂在前面）。CREATE_NO_WINDOW 让 cmd 和它拉起的控制台程序都不开
+    窗口；bat 的输出本来就写 update.log，不靠控制台看。
+    """
+    return (
+        getattr(subprocess, "CREATE_NO_WINDOW", _NO_WINDOW_FLAG)
+        | getattr(subprocess, "DETACHED_PROCESS", _DETACHED_PROCESS_FLAG)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", _NEW_PROCESS_GROUP_FLAG)
+    )
+
+
+def _is_windows() -> bool:
+    """是不是 Windows。单独成函数是为了测试能扮成 Windows 走一遍
+    apply：直接 patch os.name 会连 pathlib.Path 一起改成
+    WindowsPath，在 Linux 上根本建不出来。"""
+    return os.name == "nt"
+
+
+# 旧 bat 残留的进程超过这个时间才算“挂起的”：刚拉起的更新 bat 只有几秒，
+# 绝不能碰。
+_STALE_UPDATE_MAX_AGE_MINUTES = 10
+
+
+def cleanup_stale_update_processes(install_dir: str | Path | None = None) -> bool:
+    """杀掉旧版挂起的更新进程，顺手清掉它留下的 pending 标记。
+
+    v1.0.8 及更早的 bat 用 tasklist | findstr 等主进程退出，findstr 会
+    卡在等管道输入上不返回，自己的黑框一直挂在面板前面（用户实拍：
+    findstr /C:"简历猎手.exe"）。光杀 findstr 不行：管子一断，旧 bat
+    的等待循环就以为程序退了，直接去 robocopy，文件被占住就回滚——
+    回滚会把备份里的旧版盖回刚手动重下的新版上。所以先杀跑 update.bat
+    的 cmd（让它永远没机会往下走），再杀 findstr；两个都只认命令行里
+    带简历猎手.exe 的、且已活超过 10 分钟的——刚拉起的新 bat 只有几秒，
+    绝不能碰。杀掉残留后，那次挂起更新的 update-pending.json 也一并
+    清掉，不然新版本启动时 reconcile 会把它当成一次失败的更新报错。
+
+    只在 Windows 上做；任何一步出错都悄悄返回 False，绝不挡启动。
+    只有真的杀掉进程才返回 True。
+    """
+    if not _is_windows():
+        return False
+    script = (
+        "$doomed = @(Get-CimInstance Win32_Process -Filter \"Name='cmd.exe'\" | "
+        "Where-Object { $_.CommandLine -like '*update.bat*' -and "
+        f"$_.CommandLine -like '*{EXE_NAME}*' -and "
+        "((Get-Date) - $_.CreationDate).TotalMinutes -gt "
+        f"{_STALE_UPDATE_MAX_AGE_MINUTES} }}); "
+        "$doomed += @(Get-CimInstance Win32_Process -Filter \"Name='findstr.exe'\" | "
+        "Where-Object { "
+        f"$_.CommandLine -like '*{EXE_NAME}*' -and "
+        "((Get-Date) - $_.CreationDate).TotalMinutes -gt "
+        f"{_STALE_UPDATE_MAX_AGE_MINUTES} }}); "
+        "$doomed | ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
+        "-ErrorAction SilentlyContinue }; "
+        "Write-Output $doomed.Count"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            # 到这里一定是 Windows（上面已判过），CREATE_NO_WINDOW 不会炸。
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+        )
+    except Exception:
+        return False
+    try:
+        killed = int((result.stdout or "").strip())
+    except ValueError:
+        return False
+    if killed <= 0:
+        return False
+    # 那次挂起的更新已经死了：它的 pending 标记不能再留着，否则新版本
+    # 启动时 reconcile 会把它当成一次失败的更新报错。
+    target = Path(install_dir) if install_dir is not None else get_install_dir()
+    if target is not None:
+        _remove_quietly(target / UPDATE_PENDING_FILENAME)
+    return True
+
+
 def apply_update(install_dir: str | Path, exe_name: str) -> Path:
     """Prepare the swap: backup, write update.bat, launch it detached.
 
@@ -897,7 +993,7 @@ def apply_update(install_dir: str | Path, exe_name: str) -> Path:
     # Validate the staged payload before touching the install: a zip
     # whose layout is wrong must never get as far as update.bat.
     validate_staged_payload(staging_dir)
-    if os.name != "nt":
+    if not _is_windows():
         raise UpdateError("一键更新只在正式安装的版本里能用。")
     install = Path(install_dir)
     if not (install / exe_name).is_file():
@@ -914,7 +1010,18 @@ def apply_update(install_dir: str | Path, exe_name: str) -> Path:
     # 上轮的 "applied" 不能被误读成这轮换成了。
     _remove_quietly(install / UPDATE_RESULT_FILENAME)
     write_pending_update(install, expected_version)
-    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    # 先关主界面 --app 窗口：只关 exe 启动时持有的那个句柄对应的进程，
+    # 绝不碰登录浏览器（登录浏览器是另一个独立进程、另一个 profile）。
+    # 窗口不关，换文件时可能被占住、端口也交接不干净；关窗口不删
+    # profile，登录会话下次还能恢复。关不掉也不挡更新，bat 的等待
+    # 循环是后备。
+    try:
+        from bosshunter.app_window import close_app_window
+
+        close_app_window()
+    except Exception:
+        pass
+    flags = _windows_launch_flags()
     try:
         subprocess.Popen(
             ["cmd.exe", "/c", str(bat_path), str(staging_dir), exe_name, str(os.getpid()),

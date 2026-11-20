@@ -85,6 +85,43 @@ export function getUpdateErrorCopy(kind: UpdateErrorKind): UpdateErrorCopy {
 /** 下载状态轮询连续多少次都连不上本地服务，就当这次下载断了，不一直转圈。 */
 const STATUS_POLL_GIVE_UP = 10
 
+// 中继发过来的更新说明有时是内部测试口径（比如“只升版号，验证
+// update.bat 修复”），直接显示给用户会看不懂。统一洗成一句面向
+// 用户的中文：去掉版本号前缀，命中内部口径就换成默认文案，太长截断。
+export const DEFAULT_UPDATE_NOTES = '修了一些小问题，用起来更稳。';
+
+const INTERNAL_UPDATE_NOTE_MARKERS = [
+	'只升版号',
+	'只升版本号',
+	'update.bat',
+	'update-flow',
+	'验证 v',
+	'验证 update',
+	'验证更新',
+	'CI',
+	'SMOKE',
+	'回归测试',
+	'全流程',
+];
+
+export function formatUpdateNotes(notes: string | null | undefined): string {
+	const text = (notes ?? '').trim();
+	if (!text) return DEFAULT_UPDATE_NOTES;
+	// 去掉开头的版本号：先剥 "v19 "（v19 1.1.5 这种两段式），
+	// 再剥 "1.1.5 " / "v1.1.5 " / "（v1.1.5）"。第一步只认带 v 的，
+	// 免得把“3 个问题已修复”开头的 3 也剥掉。
+	const stripped = text
+		.replace(/^v\d+\s+(?=\d)/i, '')
+		.replace(/^[（(]?v?\d+(?:\.\d+){1,2}\s*[）)]?/, '')
+		.replace(/^[：:、，,。\s]+/, '')
+		.trim();
+	if (!stripped) return DEFAULT_UPDATE_NOTES;
+	if (INTERNAL_UPDATE_NOTE_MARKERS.some((marker) => stripped.includes(marker))) {
+		return DEFAULT_UPDATE_NOTES;
+	}
+	return stripped.length > 120 ? `${stripped.slice(0, 117)}…` : stripped;
+}
+
 export function useUpdate() {
   const [info, setInfo] = useState<UpdateInfo | null>(null)
   const [currentVersion, setCurrentVersion] = useState('')

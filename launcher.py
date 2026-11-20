@@ -1,8 +1,9 @@
 """简历猎手 · exe 启动器（PyInstaller 打包入口）。
 
-双击 exe 后：起本地面板（http://127.0.0.1:8686/），自动打开浏览器，
-黑窗口不要关——关掉就是停止服务。数据（配置、数据库、简历）存在 exe
-旁边 data/ 文件夹里，不会丢。
+双击 exe 后：起本地面板（http://127.0.0.1:8686/），自动在独立窗口打开。
+没有黑窗口了：exe 是无窗口程序，关掉面板窗口服务还在后台跑，
+想停服务去任务管理器结束「简历猎手.exe」。运行日志写在 exe 旁边
+data/logs/jianli-lieshou.log 里（超过 5MB 自动轮换一个 .old 备份）。
 
 带参数运行时透传给 bosshunter 命令行，例如：
     简历猎手.exe --version
@@ -14,6 +15,71 @@ import os
 import shutil
 import sys
 from pathlib import Path
+
+# 单个日志文件超过这个大小就轮换（启动时检查一次）。
+_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+class _TeeOutput:
+    """同时写两个流：日志文件 + 原来的 stdout/stderr。
+
+    无窗口 exe 从资源管理器双击启动时，原来的 stdout/stderr 是无效
+    句柄（往里写会报 OSError），那一路写失败就悄悄跳过，只保证日志
+    文件一定写进去；CI 里重定向到文件的那一路是好的，两边都有。
+    只实现 rich/click 用到的最小接口：write/flush/isatty/encoding。
+    """
+
+    def __init__(self, *streams: object) -> None:
+        self._streams = [s for s in streams if s is not None]
+
+    def write(self, data: str) -> int:
+        for stream in self._streams:
+            try:
+                stream.write(data)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        return len(data)
+
+    def flush(self) -> None:
+        for stream in self._streams:
+            try:
+                stream.flush()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+    def isatty(self) -> bool:
+        return False
+
+    @property
+    def encoding(self) -> str:
+        return "utf-8"
+
+
+def _redirect_output_to_log(exe_dir: Path) -> object | None:
+    """Frozen + web 模式：把 stdout/stderr 同时写进日志文件。
+
+    返回 Tee 对象（已装好），失败返回 None（原样不动，绝不挡启动）。
+    只在 web 模式调：--version 这类一次性命令的输出要留在控制台上。
+    """
+    log_dir = exe_dir / "data" / "logs"
+    log_path = log_dir / "jianli-lieshou.log"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        if log_path.is_file() and log_path.stat().st_size > _LOG_MAX_BYTES:
+            try:
+                log_path.replace(log_dir / "jianli-lieshou.log.old")
+            except OSError:
+                pass
+        log_file = open(log_path, "a", encoding="utf-8", buffering=1)
+    except OSError:
+        return None
+    tee_out = _TeeOutput(getattr(sys, "stdout", None), log_file)
+    tee_err = _TeeOutput(getattr(sys, "stderr", None), log_file)
+    # 两路各一个 Tee、共用同一个日志文件：stdout 的内容不进 stderr
+    # 的重定向文件（CI 里 out/err 是分开的两个文件），日志里顺序不乱。
+    sys.stdout = tee_out  # type: ignore[assignment]
+    sys.stderr = tee_err  # type: ignore[assignment]
+    return tee_out
 
 
 def _exe_dir() -> Path:
@@ -65,6 +131,11 @@ def main() -> None:
         os.environ.setdefault("BOSSHUNTER_NODE_PATH", str(node))
     config_path = _ensure_config(exe_dir) if getattr(sys, "frozen", False) else exe_dir / "config.yaml"
     args = sys.argv[1:] or ["web"]
+    if getattr(sys, "frozen", False) and "web" in args:
+        # 无窗口 exe：启动前就把输出接到日志文件，不然双击启动时
+        # 往无效的 stdout 句柄写东西会直接炸掉启动（WinError 6）。
+        # 只在 web 模式做：--version 这类一次性命令的输出要留在控制台上。
+        _redirect_output_to_log(exe_dir)
     if not getattr(sys, "frozen", False):
         print("简历猎手正在启动，请稍等...")
         print("面板地址：http://127.0.0.1:8686/（关掉这个窗口就是停止服务）")

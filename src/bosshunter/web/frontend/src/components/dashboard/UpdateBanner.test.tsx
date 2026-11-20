@@ -1,9 +1,17 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { UpdateBanner } from './UpdateBanner'
+import { SKIPPED_UPDATE_VERSION_KEY } from './UpdateModal'
 import type { UpdateState } from '@/hooks/useUpdate'
 
-afterEach(() => cleanup())
+beforeEach(() => {
+  window.localStorage.clear()
+})
+
+afterEach(() => {
+  cleanup()
+  window.localStorage.clear()
+})
 
 function fakeUpdate(overrides: Partial<UpdateState> = {}): UpdateState {
   return {
@@ -127,5 +135,31 @@ describe('UpdateBanner', () => {
   it('shows the applying state while the new version is being swapped in', () => {
     render(<UpdateBanner update={fakeUpdate({ phase: 'applying' })} />)
     expect(screen.getByText('正在换上新版本，面板马上重新打开…')).toBeTruthy()
+  })
+
+  it('stays hidden after 跳过此版本, like the modal does', () => {
+    // 回归：之前只有弹窗查跳过记录，横幅还留着，跳过了还提醒同一件事。
+    window.localStorage.setItem(SKIPPED_UPDATE_VERSION_KEY, '1.0.2')
+    const { container } = render(<UpdateBanner update={fakeUpdate()} />)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('never shows internal release wording: v19 notes become the default copy', () => {
+    render(
+      <UpdateBanner
+        update={fakeUpdate({
+          info: {
+            version: '1.1.5',
+            size: 66_549_810,
+            sha256: 'a'.repeat(64),
+            notes: 'v19 1.1.5 只升版号，验证 v18 的 update.bat 修复',
+            current_version: '1.1.4',
+          },
+        })}
+      />,
+    )
+    expect(screen.getByText(/修了一些小问题，用起来更稳/)).toBeTruthy()
+    expect(screen.queryByText(/只升版号/)).toBeNull()
+    expect(screen.queryByText(/update\.bat/)).toBeNull()
   })
 })

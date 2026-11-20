@@ -93,7 +93,6 @@ if [ "$SKIP_CHROME" -eq 0 ]; then
 	echo "[BossHunter] Starting the BossHunter Chrome profile..."
 	launch_chrome \
 		--remote-debugging-port=9222 \
-		--disable-blink-features=AutomationControlled \
 		--user-data-dir="$CHROME_PROFILE" \
 		"https://www.zhipin.com"
 

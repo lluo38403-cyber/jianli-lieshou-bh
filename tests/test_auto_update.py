@@ -105,7 +105,7 @@ class VersionCompareTests(unittest.TestCase):
 class UpdateStubHandler(BaseHTTPRequestHandler):
     """Stub for the relay update contract: /api/version + /download/latest."""
 
-    version_payload = {"version": "1.1.6", "size": 0, "sha256": "0" * 64, "notes": ""}
+    version_payload = {"version": "1.1.7", "size": 0, "sha256": "0" * 64, "notes": ""}
     zip_bytes = b""
     status = 200
     requests: list = []
@@ -160,7 +160,7 @@ class UpdateCheckTests(unittest.TestCase):
     def setUp(self):
         _reset_update_state()
         UpdateStubHandler.version_payload = {
-            "version": "1.1.6",
+            "version": "1.1.7",
             "size": 123,
             "sha256": hashlib.sha256(_make_zip()).hexdigest(),
             "notes": "更快更稳",
@@ -193,7 +193,7 @@ class UpdateCheckTests(unittest.TestCase):
         info = check_for_update(self._config())
         self.assertIsNotNone(info)
         assert info is not None
-        self.assertEqual(info["version"], "1.1.6")
+        self.assertEqual(info["version"], "1.1.7")
         self.assertEqual(info["current_version"], __version__)
         self.assertEqual(info["size"], 123)
         self.assertEqual(info["notes"], "更快更稳")
@@ -222,9 +222,9 @@ class UpdateCheckTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         for bad in (
             {"size": 1, "sha256": "a" * 64},
-            {"version": "1.1.6", "size": 1},
-            {"version": "1.1.6", "size": 1, "sha256": "not-a-hash"},
-            {"version": "1.1.6", "size": 1, "sha256": "a" * 64, "notes": 5},
+            {"version": "1.1.7", "size": 1},
+            {"version": "1.1.7", "size": 1, "sha256": "not-a-hash"},
+            {"version": "1.1.7", "size": 1, "sha256": "a" * 64, "notes": 5},
         ):
             with self.subTest(bad=bad):
                 UpdateStubHandler.version_payload = bad
@@ -262,7 +262,7 @@ class UpdateDownloadTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.6",
+            "version": "1.1.7",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -290,7 +290,7 @@ class UpdateDownloadTests(unittest.TestCase):
 
     def _info(self):
         return {
-            "version": "1.1.6",
+            "version": "1.1.7",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -391,7 +391,7 @@ class UpdateDownloadTests(unittest.TestCase):
         bad = buf.getvalue()
         UpdateStubHandler.zip_bytes = bad
         UpdateStubHandler.version_payload = {
-            "version": "1.1.6",
+            "version": "1.1.7",
             "size": len(bad),
             "sha256": hashlib.sha256(bad).hexdigest(),
             "notes": "",
@@ -675,6 +675,19 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertNotIn("tasklist", script.lower())
         self.assertNotIn("|", script)
 
+    def test_bat_launch_flags_hide_the_console_window(self):
+        # 回归：只用 DETACHED_PROCESS 不够——detached 的 cmd 自己没有
+        # 控制台，它再拉起的 ping / PowerShell / robocopy 各自会新开
+        # 一个黑框（v1.0.8 用户实拍：findstr /C:"2108" 黑框弹在面板
+        # 前面）。CREATE_NO_WINDOW（0x08000000）必须在启动标志里，
+        # bat 和它拉起的控制台程序才都不开窗口。
+        from bosshunter.updater import _windows_launch_flags
+
+        flags = _windows_launch_flags()
+        self.assertTrue(flags & 0x08000000, "CREATE_NO_WINDOW 缺失")
+        self.assertTrue(flags & 0x00000008, "DETACHED_PROCESS 缺失")
+        self.assertTrue(flags & 0x00000200, "CREATE_NEW_PROCESS_GROUP 缺失")
+
     def test_batch_strips_trailing_backslash_from_dirs(self):
         # 回归：INSTALL_DIR=%~dp0 自带末尾反斜杠，robocopy "%INSTALL_DIR%"
         # 变成 "%...\"——CommandLineToArgvW 把 \" 当转义引号，开关全被
@@ -856,7 +869,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.6"},
+                "info": {"version": "1.1.7"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -867,6 +880,43 @@ class UpdateApplyTests(unittest.TestCase):
             # 拒绝时只写了备份和 update.bat，不动安装文件
             self.assertEqual((install / "简历猎手.exe").read_bytes(), b"old-exe")
 
+    def test_apply_closes_app_window_first_and_launches_bat_hidden(self):
+        # 回归：更新换文件前必须先关主界面 --app 窗口（只关 exe 启动时
+        # 持有的那个句柄，绝不碰登录浏览器），再以不带控制台窗口的
+        # 方式拉起 update.bat。顺序不能反：窗口不关，文件可能被占住、
+        # 端口也交接不干净。Windows 路径在 Linux 上用 mock 走一遍
+        # （扮 _is_windows 而不是 os.name——patch os.name 会连
+        # pathlib.Path 一起改成 WindowsPath，在 Linux 上建不出来）。
+        from unittest.mock import patch
+
+        order: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp) / "staging"
+            (staging / "_internal").mkdir(parents=True)
+            (staging / "简历猎手.exe").write_bytes(b"new-exe")
+            (staging / "_internal" / "app.bin").write_bytes(b"new-app")
+            updater._STATE.update({
+                "status": "ready",
+                "staging_dir": str(staging),
+                "info": {"version": "1.1.7"},
+            })
+            install = Path(tmp) / "install"
+            install.mkdir()
+            (install / "简历猎手.exe").write_bytes(b"old-exe")
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.app_window.close_app_window") as close,
+                patch("bosshunter.updater.subprocess.Popen") as popen,
+            ):
+                close.side_effect = lambda: order.append("close")
+                popen.side_effect = lambda *args, **kwargs: order.append("popen")
+                apply_update(install, "简历猎手.exe")
+            self.assertEqual(order, ["close", "popen"])
+            close.assert_called_once()
+            popen.assert_called_once()
+            flags = popen.call_args.kwargs.get("creationflags", 0)
+            self.assertTrue(flags & 0x08000000, "拉起 update.bat 必须带 CREATE_NO_WINDOW")
+
     def test_apply_rejects_bad_staging_before_touching_install(self):
         # 回归：staging 里没有新版 payload 时，旧实现只查安装目录的
         # exe，照样写 bat、退出程序，白换一遍。
@@ -876,7 +926,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(Path(tmp) / "empty-staging"),
-                "info": {"version": "1.1.6"},
+                "info": {"version": "1.1.7"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -885,6 +935,93 @@ class UpdateApplyTests(unittest.TestCase):
                 apply_update(install, "简历猎手.exe")
             self.assertIn("安装包", str(caught.exception))
             self.assertEqual(list(install.iterdir()), [install / "简历猎手.exe"])
+
+
+class CleanupStaleUpdateTests(unittest.TestCase):
+    def test_returns_false_off_windows_without_running_anything(self):
+        from unittest.mock import Mock, patch
+
+        with patch("bosshunter.updater.subprocess.run") as run:
+            self.assertFalse(updater.cleanup_stale_update_processes())
+        run.assert_not_called()
+
+    def test_kills_stale_bat_cmd_first_then_findstr_and_drops_pending(self):
+        from unittest.mock import Mock, patch
+
+        # 回归：v1.0.8 的 bat 里 findstr /C:"简历猎手.exe" 卡住，黑框
+        # 一直挂在面板前面。只杀 findstr 不够——管子一断旧 bat 就以为
+        # 程序退了，直接去 robocopy，失败回滚会把备份里的旧版盖回刚
+        # 手动重下的新版上。所以先杀跑 update.bat 的 cmd，再杀 findstr；
+        # 两个都只认命令行里带简历猎手.exe、且已活超过 10 分钟的。
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            pending = install / "update-pending.json"
+            pending.write_text('{"expected_version": "1.1.5"}', encoding="utf-8")
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.updater.subprocess.run") as run,
+            ):
+                run.return_value = Mock(stdout="2\n", returncode=0)
+                self.assertTrue(updater.cleanup_stale_update_processes(install))
+            run.assert_called_once()
+            argv = run.call_args.args[0]
+            self.assertEqual(argv[0], "powershell.exe")
+            self.assertIn("-NoProfile", argv)
+            script = argv[-1]
+            self.assertIn("update.bat", script)
+            self.assertIn("findstr.exe", script)
+            self.assertIn("简历猎手.exe", script)
+            # 只杀超过 10 分钟的残留：刚拉起的新 bat 只有几秒，绝不能碰。
+            self.assertIn("TotalMinutes", script)
+            # cmd 在 findstr 前面：先杀 bat 的 cmd，它才没机会去换文件。
+            self.assertLess(script.index("cmd.exe"), script.index("findstr.exe"))
+            flags = run.call_args.kwargs.get("creationflags", 0)
+            self.assertTrue(flags & 0x08000000, "清残留自己也不能弹黑框")
+            # 那次挂起更新的 pending 标记清掉，不然新版本启动时会报
+            # 一次并不存在的更新失败。
+            self.assertFalse(pending.exists())
+
+    def test_keeps_pending_when_nothing_was_killed(self):
+        from unittest.mock import Mock, patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            pending = install / "update-pending.json"
+            pending.write_text('{"expected_version": "1.1.5"}', encoding="utf-8")
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.updater.subprocess.run") as run,
+            ):
+                run.return_value = Mock(stdout="0\n", returncode=0)
+                self.assertFalse(updater.cleanup_stale_update_processes(install))
+            self.assertTrue(pending.exists())
+
+    def test_returns_false_when_powershell_output_is_unexpected(self):
+        from unittest.mock import Mock, patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            pending = install / "update-pending.json"
+            pending.write_text('{"expected_version": "1.1.5"}', encoding="utf-8")
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.updater.subprocess.run") as run,
+            ):
+                run.return_value = Mock(stdout="oops\n", returncode=0)
+                self.assertFalse(updater.cleanup_stale_update_processes(install))
+            self.assertTrue(pending.exists())
+
+    def test_returns_false_when_powershell_itself_fails(self):
+        from unittest.mock import Mock, patch
+
+        with (
+            patch("bosshunter.updater._is_windows", return_value=True),
+            patch("bosshunter.updater.subprocess.run", side_effect=OSError("no powershell")),
+        ):
+            self.assertFalse(updater.cleanup_stale_update_processes())
 
 
 class UpdateRouteTests(unittest.TestCase):
@@ -896,7 +1033,7 @@ class UpdateRouteTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.6",
+            "version": "1.1.7",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "更快更稳",
@@ -988,7 +1125,7 @@ class UpdateRouteTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             data = json.loads(body)
             self.assertTrue(data["update_available"])
-            self.assertEqual(data["version"], "1.1.6")
+            self.assertEqual(data["version"], "1.1.7")
             self.assertEqual(data["current_version"], __version__)
             self.assertEqual(data["notes"], "更快更稳")
 
@@ -998,9 +1135,9 @@ class UpdateRouteTests(unittest.TestCase):
         # 后才能重新查到新版。
         with tempfile.TemporaryDirectory() as tmp:
             base = self._base_dir(tmp)
-            updater.write_pending_update(base, "1.1.6")
+            updater.write_pending_update(base, "1.1.7")
             updater.write_update_result(
-                base, {"status": "failed", "expected_version": "1.1.6", "reason_code": "copy"}
+                base, {"status": "failed", "expected_version": "1.1.7", "reason_code": "copy"}
             )
             original_get_install_dir = updater.get_install_dir
             updater.get_install_dir = lambda: base
@@ -1019,7 +1156,7 @@ class UpdateRouteTests(unittest.TestCase):
                 self.assertTrue(status.startswith("200"), body)
                 data = json.loads(body)
                 self.assertTrue(data["update_available"])
-                self.assertEqual(data["version"], "1.1.6")
+                self.assertEqual(data["version"], "1.1.7")
             finally:
                 updater.get_install_dir = original_get_install_dir
 

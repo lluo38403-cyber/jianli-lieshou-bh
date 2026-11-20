@@ -53,7 +53,7 @@ class LaunchDebuggableBrowserTests(unittest.TestCase):
 
     def test_spawns_chrome_with_debug_args_and_dedicated_profile(self):
         _sleep, popen, debug_version, _port, profile, _discover = self._patches(self)
-        from bosshunter.browser.runtime import launch_debuggable_browser
+        from bosshunter.browser.runtime import _AUTOMATION_START_PAGE, launch_debuggable_browser
 
         # 前 3 次是拉起前对 9222/9229/9333 的探测，第 4 次是等启动应答。
         debug_version.side_effect = [None, None, None, _live_version()]
@@ -62,9 +62,15 @@ class LaunchDebuggableBrowserTests(unittest.TestCase):
         argv = popen.call_args.args[0]
         self.assertEqual(argv[0], "C:/Chrome/chrome.exe")
         self.assertIn("--remote-debugging-port=9222", argv)
-        self.assertIn("--disable-blink-features=AutomationControlled", argv)
+        # 回归：--disable-blink-features=AutomationControlled 只会让
+        # Chrome 顶上挂一条“不受支持的命令行标记”警告；CDP 直连的真人
+        # Chrome 里 navigator.webdriver 本来就是 false，不需要它。
+        self.assertNotIn("--disable-blink-features=AutomationControlled", argv)
         self.assertIn(f"--user-data-dir={profile.return_value}", argv)
-        self.assertIn("about:blank", argv)
+        # 起始页不再是孤零零的 about:blank 白屏，是一句中文说明。
+        self.assertNotIn("about:blank", argv)
+        self.assertEqual(argv[-1], _AUTOMATION_START_PAGE)
+        self.assertTrue(argv[-1].startswith("data:text/html,"))
         profile.assert_called_once()
 
     def test_skips_port_occupied_by_non_chrome_process(self):

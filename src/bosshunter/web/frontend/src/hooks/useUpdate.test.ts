@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
-import { classifyUpdateError, getUpdateErrorCopy, useUpdate } from './useUpdate'
+import { classifyUpdateError, formatUpdateNotes, getUpdateErrorCopy, useUpdate } from './useUpdate'
 
 function jsonResponse(body: unknown, ok = true) {
   return new Response(JSON.stringify(body), {
@@ -349,5 +349,49 @@ describe('useUpdate failure recovery', () => {
     expect(result.current.phase).toBe('error')
     expect(result.current.errorKind).toBe('download')
     expect(result.current.error).toContain('断开')
+  })
+})
+
+describe('formatUpdateNotes', () => {
+  it('把 v19 那句内部说明换成默认文案', () => {
+    // 回归：v19 上线时中继存的说明是“v19 1.1.5 只升版号，验证 v18
+    // 的 update.bat 修复”，直接显示在首页卡片和弹窗里，用户看不懂。
+    expect(formatUpdateNotes('v19 1.1.5 只升版号，验证 v18 的 update.bat 修复')).toBe(
+      '修了一些小问题，用起来更稳。',
+    )
+  })
+
+  it('剥掉开头的版本号，正常说明原样通过', () => {
+    expect(formatUpdateNotes('1.1.5 修复了面板更新时换文件失败的问题')).toBe(
+      '修复了面板更新时换文件失败的问题',
+    )
+    expect(formatUpdateNotes('v1.1.5 界面改成独立窗口打开')).toBe('界面改成独立窗口打开')
+    expect(formatUpdateNotes('修复了面板更新时换文件失败的问题，更新过程更稳了。')).toBe(
+      '修复了面板更新时换文件失败的问题，更新过程更稳了。',
+    )
+  })
+
+  it('空说明和只有版本号的说明都给默认文案', () => {
+    expect(formatUpdateNotes('')).toBe('修了一些小问题，用起来更稳。')
+    expect(formatUpdateNotes(null)).toBe('修了一些小问题，用起来更稳。')
+    expect(formatUpdateNotes(undefined)).toBe('修了一些小问题，用起来更稳。')
+    expect(formatUpdateNotes('v1.1.5')).toBe('修了一些小问题，用起来更稳。')
+  })
+
+  it('含内部口径的说明都换成默认文案，不露测试术语', () => {
+    expect(formatUpdateNotes('验证 update.bat 修复后发布')).toBe('修了一些小问题，用起来更稳。')
+    expect(formatUpdateNotes('CI 全过，SMOKE_OK')).toBe('修了一些小问题，用起来更稳。')
+    expect(formatUpdateNotes('update-flow 全流程测试通过')).toBe('修了一些小问题，用起来更稳。')
+  })
+
+  it('不误剥正常说明开头的数字', () => {
+    expect(formatUpdateNotes('3 个已知问题已修复')).toBe('3 个已知问题已修复')
+  })
+
+  it('超长说明截断到 120 字以内并加省略号', () => {
+    const long = `修${'了'.repeat(150)}`
+    const formatted = formatUpdateNotes(long)
+    expect(formatted.length).toBeLessThanOrEqual(120)
+    expect(formatted.endsWith('…')).toBe(true)
   })
 })

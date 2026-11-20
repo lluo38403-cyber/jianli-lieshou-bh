@@ -1,13 +1,16 @@
 """Local end-to-end check for the anti-detection layer.
 
 Starts an ISOLATED Chrome for Testing (headless) on debug port 9333 with
---disable-blink-features=AutomationControlled, plus its own Browser Runtime
+no stealth launch arg (v20 dropped --disable-blink-features=
+AutomationControlled: a CDP-attached real Chrome already reports
+navigator.webdriver as false without it, and the flag only buys Chrome's
+"unsupported command-line flag" warning), plus its own Browser Runtime
 proxy on port 3457 that only ever probes 9333. It never touches port 9222
 (the TG residential Chrome) or the running proxy on 3456.
 
 Checks, against real pages in a real browser:
-  1. navigator.webdriver is undefined (no automation flag on a CDP-attached
-     real Chrome with the stealth launch arg).
+  1. navigator.webdriver is false (no automation flag on a CDP-attached
+     real Chrome, with no stealth launch arg).
   2. human_browse() actually scrolls the page in random steps.
   3. CAPTCHA_DETECT_JS reports null on a clean job page and 'captcha' on a
      slider-verification fixture page.
@@ -71,7 +74,6 @@ def main():
             "--headless=new",
             "--no-sandbox",
             f"--remote-debugging-port={CHROME_PORT}",
-            "--disable-blink-features=AutomationControlled",
             f"--user-data-dir={tmp / 'profile'}",
             "--no-first-run",
             "--disable-gpu",

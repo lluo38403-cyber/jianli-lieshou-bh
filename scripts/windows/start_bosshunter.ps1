@@ -59,7 +59,6 @@ $Chrome = $ChromeCandidates | Select-Object -First 1
 $ChromeProfile = Join-Path $env:LOCALAPPDATA "BossHunterChrome"
 $ChromeArguments = @(
 	"--remote-debugging-port=9222",
-	"--disable-blink-features=AutomationControlled",
 	"--user-data-dir=$ChromeProfile",
 	"https://www.zhipin.com"
 )

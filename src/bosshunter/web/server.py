@@ -4066,6 +4066,24 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 			"前端资源未构建：请在 src/bosshunter/web/frontend 下执行 "
 			"`npm ci && npm run build`（或安装官方发布的 wheel）后重试。"
 		)
+	# 启动时清掉旧版挂起的更新进程：v1.0.8 及更早的 bat 里 findstr 会
+	# 卡住，黑框一直挂在面板前面。清不掉也不挡启动（函数里全吞掉）。
+	try:
+		from bosshunter.updater import cleanup_stale_update_processes
+
+		cleanup_stale_update_processes()
+	except Exception:
+		pass
+	# 端口已被上一次的服务占着：不再起新服务，只开窗口复用现有服务，
+	# 不报错（之前挂起的“端口被占处理”：直接起服务会报地址已被占用）。
+	# 只有认得出是自家服务的才复用——别的程序占着端口不算。
+	from bosshunter.app_window import is_our_service_alive, launch_app_window
+
+	panel_url = f"http://{host}:{port}"
+	if is_our_service_alive(host, port):
+		if open_browser:
+			launch_app_window(panel_url)
+		return
 	from bosshunter.collection_session_store import list_sessions
 	for session in list_sessions(DATA_DIR / "bosshunter.db", active_only=True):
 		if task_runner.status()["active"]:
@@ -4074,11 +4092,12 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 			task_runner.start("collect", {**load_config(CONFIG_PATH), "_collection_options": session["options"], "_continuous_session_id": session["id"]})
 
 	if open_browser:
-		import webbrowser
 		import threading
 		def _open():
 			time.sleep(1)
-			webbrowser.open(f"http://{host}:{port}")
+			# 独立应用窗口打开界面（Edge/Chrome --app 模式）；拉不起来
+			# 就降级回默认浏览器，任何环境都能进界面。
+			launch_app_window(panel_url)
 		threading.Thread(target=_open, daemon=True).start()
 
 	# 启动时悄悄查一次有没有新版：后台线程、10 秒超时，查不到就当没有，

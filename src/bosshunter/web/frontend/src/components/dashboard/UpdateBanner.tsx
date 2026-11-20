@@ -1,5 +1,6 @@
-import { formatUpdateSize, getUpdateErrorCopy, type UpdateState } from '@/hooks/useUpdate'
+import { formatUpdateNotes, formatUpdateSize, getUpdateErrorCopy, type UpdateState } from '@/hooks/useUpdate'
 import { Button } from '@/components/ui/button'
+import { getSkippedUpdateVersion } from './UpdateModal'
 
 interface UpdateBannerProps {
   update: UpdateState
@@ -10,6 +11,9 @@ export function UpdateBanner({ update }: UpdateBannerProps) {
   const { info, phase, progress, error, errorKind, manualDownloadUrl, dismissed, checking } = update
 
   if (dismissed || !info) return null
+  // 点过“跳过此版本”后横幅也不再出现（之前只有弹窗查这个记录，
+  // 横幅还留着，跳过了还提醒同一件事）。
+  if (getSkippedUpdateVersion() === info.version) return null
 
   const sizeText = formatUpdateSize(info.size)
   // 失败按下载 / 校验 / 替换三步给说法：哪步失败、为什么、旧版本能不能用、
@@ -53,7 +57,7 @@ export function UpdateBanner({ update }: UpdateBannerProps) {
               <>
                 新版本 {info.version}
                 {sizeText ? `，大概 ${sizeText}` : ''}
-                {info.notes ? ` — ${info.notes}` : ''}
+                {` — ${formatUpdateNotes(info.notes)}`}
                 {phaseText ? (
                   <>
                     <br />

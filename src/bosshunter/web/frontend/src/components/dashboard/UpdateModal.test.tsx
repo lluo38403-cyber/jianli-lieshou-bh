@@ -167,4 +167,45 @@ describe('UpdateModal', () => {
     fireEvent.click(screen.getByText('页面上的别的按钮'))
     expect(onOtherClick).toHaveBeenCalledTimes(1)
   })
+
+  it('reports open/close through onOpenChange so the page can hide the banner', async () => {
+    const onOpenChange = vi.fn()
+    render(<UpdateModal update={fakeUpdate()} onOpenChange={onOpenChange} />)
+    expect(await screen.findByTestId('update-modal')).toBeTruthy()
+    expect(onOpenChange).toHaveBeenLastCalledWith(true)
+    fireEvent.click(screen.getByText('稍后再说'))
+    expect(screen.queryByTestId('update-modal')).toBeNull()
+    expect(onOpenChange).toHaveBeenLastCalledWith(false)
+  })
+
+  it('never shows internal release wording: v19 notes become the default copy', async () => {
+    render(
+      <UpdateModal
+        update={fakeUpdate({
+          info: {
+            version: '1.1.5',
+            size: 66_549_810,
+            sha256: 'a'.repeat(64),
+            notes: 'v19 1.1.5 只升版号，验证 v18 的 update.bat 修复',
+            current_version: '1.1.4',
+          },
+        })}
+      />,
+    )
+    expect(await screen.findByTestId('update-modal')).toBeTruthy()
+    expect(screen.getByText(/修了一些小问题，用起来更稳/)).toBeTruthy()
+    expect(screen.queryByText(/只升版号/)).toBeNull()
+    expect(screen.queryByText(/update\.bat/)).toBeNull()
+  })
+
+  it('is a readable card on narrow windows, not a thin strip', async () => {
+    render(<UpdateModal update={fakeUpdate()} />)
+    const modal = await screen.findByTestId('update-modal')
+    // 窄屏左右留边、全宽但不贴边；宽屏固定 26rem，不挤成细长条。
+    expect(modal.className).toContain('inset-x-4')
+    expect(modal.className).toContain('sm:w-[26rem]')
+    expect(modal.className).toContain('max-h-[calc(100dvh-2rem)]')
+    // 说明最多三行，超长也不把卡片撑成细长条。
+    expect(screen.getByText(/更快更稳/).className).toContain('line-clamp-3')
+  })
 })

@@ -1,5 +1,5 @@
 import { useConfig } from '@/hooks/useConfig'
-import { useUpdate, formatUpdateSize } from '@/hooks/useUpdate'
+import { useUpdate, formatUpdateNotes, formatUpdateSize } from '@/hooks/useUpdate'
 import { UpdateModal } from '@/components/dashboard/UpdateModal'
 import { CHECK_UPDATE_EVENT } from '@/lib/updateEvents'
 import { Button } from '@/components/ui/button'
@@ -687,7 +687,7 @@ export default function ConfigPage() {
               <p className="text-sm text-muted">
                 有新版本 {update.info.version} 了
                 {formatUpdateSize(update.info.size) ? `，大概 ${formatUpdateSize(update.info.size)}` : ''}
-                {update.info.notes ? ` — ${update.info.notes}` : ''}，点一下就能换上，不用重新下载。
+                {` — ${formatUpdateNotes(update.info.notes)}`}，点一下就能换上，不用重新下载。
               </p>
             ) : update.phase === 'error' && update.error ? (
               <p className="text-sm text-muted">{update.error}</p>

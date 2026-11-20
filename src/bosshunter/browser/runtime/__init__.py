@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,17 @@ from bosshunter.config import DEFAULTS
 _browser_config: dict[str, Any] | None = None
 _runtime_process: subprocess.Popen | None = None
 _MIN_NODE_MAJOR = 22
+
+# 自动化浏览器拉起后的起始页：一句中文说明这个窗口是干什么的，
+# 别让它空着一张 about:blank 白屏晾在那里（用户会以为出问题了）。
+# 不用面板地址：拉浏览器时不一定知道面板端口，data: 页不依赖服务。
+_AUTOMATION_START_PAGE = "data:text/html," + urllib.parse.quote(
+    "<meta charset=utf-8><title>简历猎手浏览器</title>"
+    "<body style=\"font:16px/1.6 sans-serif;color:#555;padding:40px\">"
+    "这是简历猎手的浏览器窗口：登录招聘网站、过验证码、投递都在这里进行，"
+    "平时不用管它，也不用关。</body>",
+    safe="",
+)
 
 
 def _default_browser_config() -> dict[str, Any]:
@@ -130,11 +142,21 @@ def check_node_available() -> dict[str, Any]:
         if executable != "node" and not Path(executable).is_file():
             continue
         try:
+            # creationflags 只在 Windows 上传：CPython 在非 Windows 上
+            # 收到非零 creationflags 直接抛 ValueError（之前没加这个
+            # 判断，verify 全量跑出 16 个失败，全是这一句）。
+            run_kwargs: dict[str, Any] = {}
+            if os.name == "nt":
+                # Windows 上不加这个，node --version 会闪一下黑框。
+                # fallback 写死真实值 0x08000000：Linux 上 subprocess
+                # 没有这个属性，传了也会被忽略，测试还能断言到。
+                run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
             result = subprocess.run(
                 [executable, "--version"],
                 capture_output=True,
                 text=True,
                 timeout=5,
+                **run_kwargs,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             errors.append(str(exc))
@@ -260,14 +282,25 @@ def _chrome_debug_version(port: int) -> dict[str, Any] | None:
 
 
 def _launch_kwargs() -> dict[str, Any]:
-    """Detached-process kwargs shared by the proxy and the browser launch."""
+    """Detached-process kwargs shared by the proxy and the browser launch.
+
+    Windows 上再加 CREATE_NO_WINDOW：detached 的进程自己没有控制台，
+    但它拉起的控制台子程序会各自新开黑框；CREATE_NO_WINDOW 让整条
+    链都不开窗口（node --version 探测、cdp-proxy、Chrome 拉起都走这里）。
+    """
     kwargs: dict[str, Any] = {
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "stdin": subprocess.DEVNULL,
     }
     if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        # getattr fallback 写死真实值：Linux 上 subprocess 没有这些
+        # 属性，测试里把 os.name 扮成 nt 时也不会炸。
+        kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+            | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        )
     else:
         kwargs["start_new_session"] = True
     return kwargs
@@ -278,9 +311,14 @@ def launch_debuggable_browser(config: dict[str, Any] | None = None) -> bool:
 
     先看配置的 chrome_ports 有没有已经在监听的调试端口（用户自己拉的
     也认）；没有才按 discovered 的启动文件拉一个：专用配置目录 +
-    --remote-debugging-port + --disable-blink-features=AutomationControlled。
-    拉起后等调试端口应答才算成功。用户关了自动拉起
+    --remote-debugging-port。拉起后等调试端口应答才算成功。用户关了自动拉起
     （browser.auto_launch_browser=false）或运行组件本身就不自启时不动。
+
+    注意：不加 --disable-blink-features=AutomationControlled——CDP 直连
+    的真人 Chrome 里 navigator.webdriver 本来就是 false（见 antibot.py），
+    这参数除了让 Chrome 顶上挂一条“您使用的是不受支持的命令行标记”
+    警告，什么都没多做。起始页也不用 about:blank，改成一句中文说明，
+    免得空闲时一张白屏晾在那里。
     """
     browser = get_browser_config(config)
     if browser.get("runtime") != "builtin" or not browser.get("auto_start_proxy", True):
@@ -316,11 +354,10 @@ def launch_debuggable_browser(config: dict[str, Any] | None = None) -> bool:
             [
                 executable,
                 f"--remote-debugging-port={port}",
-                "--disable-blink-features=AutomationControlled",
                 f"--user-data-dir={profile_dir}",
                 "--no-first-run",
                 "--no-default-browser-check",
-                "about:blank",
+                _AUTOMATION_START_PAGE,
             ],
             **_launch_kwargs(),
         )

@@ -408,6 +408,7 @@ function GettingStartedCard({
             <h2 className="text-lg font-black text-foreground">先花 2 分钟准备一下</h2>
           </div>
           <p className="text-sm text-muted">按提示填好简历和想找的工作，再点一下检查，确认能正常跑起来。只想先搜搜岗位，可以先不填简历。</p>
+          <p className="mt-1 text-sm text-muted">第一次双击打开时，如果 Windows 弹出蓝色提示说“发布者未知”，点「仍要运行」就能继续用——程序还没签名，不是电脑出问题。</p>
         </div>
         <Button size="sm" onClick={() => window.dispatchEvent(new Event(START_ONBOARDING_EVENT))}>带我走一遍</Button>
       </div>
@@ -460,6 +461,9 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const auth = useAuth()
   const [updateNote, setUpdateNote] = useState('')
   const [manualUpdateSignal, setManualUpdateSignal] = useState(0)
+  // 更新弹窗开着时收起顶部横幅：同一件事只出现一块（v1.0.8 上两块
+  // 同时出现，用户分不清该点哪个）。
+  const [updateModalOpen, setUpdateModalOpen] = useState(false)
   const handleManualUpdateCheck = useCallback(async () => {
     setUpdateNote('')
     const found = await update.check(true)
@@ -939,8 +943,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   return (
     <div className="space-y-4">
       <AuthStatusBar auth={auth} />
-      <UpdateBanner update={update} />
-      <UpdateModal update={update} manualCheckSignal={manualUpdateSignal} />
+      {!updateModalOpen && <UpdateBanner update={update} />}
+      <UpdateModal update={update} manualCheckSignal={manualUpdateSignal} onOpenChange={setUpdateModalOpen} />
       {showGettingStarted && (
         <GettingStartedCard
           onCheck={runStandalonePreflight}

@@ -68,6 +68,35 @@ class BrowserRuntimeManagerTests(unittest.TestCase):
         self.assertEqual(result["version"], "v22.1.0")
         self.assertEqual(result["executable"], "node")
 
+    @patch("os.name", "nt")
+    @patch("bosshunter.browser.runtime.subprocess.run")
+    @patch("bosshunter.browser.runtime._candidate_node_executables")
+    def test_check_node_available_hides_the_console_window(self, candidates, run):
+        # 回归：Windows 上 node --version 不带 CREATE_NO_WINDOW 会闪
+        # 一下黑框。run 的 creationflags 必须带上它。
+        # 注意：os.name 扮成 nt 时 _candidate_node_executables 已 mock，
+        # 不走 Path 分支（pathlib.Path 会跟着 os.name 变成 WindowsPath）。
+        from bosshunter.browser.runtime import check_node_available
+
+        candidates.return_value = ["node"]
+        run.return_value = Mock(returncode=0, stdout="v22.1.0\n")
+
+        check_node_available()
+
+        flags = run.call_args.kwargs.get("creationflags", 0)
+        self.assertTrue(flags & 0x08000000, "CREATE_NO_WINDOW 缺失")
+
+    @patch("os.name", "nt")
+    def test_launch_kwargs_hide_the_console_window_on_windows(self):
+        # 回归：只用 DETACHED_PROCESS 不够——detached 的进程自己没有
+        # 控制台，但它拉起的控制台子程序会各自新开黑框；node 运行时
+        # 和浏览器拉起都走这里，必须带 CREATE_NO_WINDOW。
+        from bosshunter.browser.runtime import _launch_kwargs
+
+        flags = _launch_kwargs().get("creationflags", 0)
+        self.assertTrue(flags & 0x08000000, "CREATE_NO_WINDOW 缺失")
+        self.assertTrue(flags & 0x00000008, "DETACHED_PROCESS 缺失")
+
     @patch("bosshunter.browser.runtime.subprocess.run")
     @patch("bosshunter.browser.runtime.Path.is_file", return_value=True)
     @patch("bosshunter.browser.runtime._candidate_node_executables")

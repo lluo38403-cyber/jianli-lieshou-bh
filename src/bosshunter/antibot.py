@@ -6,10 +6,12 @@
 架构说明（先读懂再改）：
 - 本项目不启动浏览器：浏览器是用户自己的 Chrome，由启动脚本
   （scripts/windows/start_bosshunter.ps1、scripts/macos/start_bosshunter.sh）
-  用 --remote-debugging-port 拉起，Python 通过 CDP 桥接服务连上去。
-  所以指纹层面的“抹除”只能做到两点：一是启动脚本里加
-  --disable-blink-features=AutomationControlled（见 CHROME_STEALTH_ARGS），
-  二是保持用户真实指纹稳定。
+  或面板自动拉起（launch_debuggable_browser）用 --remote-debugging-port
+  拉起，Python 通过 CDP 桥接服务连上去。
+- 指纹层面的“抹除”只有一条：保持用户真实指纹稳定。以前启动参数里
+  还有 --disable-blink-features=AutomationControlled，v20 拿掉了——
+  CDP 直连的真人 Chrome 里 navigator.webdriver 本来就是 false，这参数
+  除了让 Chrome 顶上挂一条“不受支持的命令行标记”警告，什么都没多做。
 - 刻意不做 User-Agent / 分辨率随机化：这是用户每天都在用的真人
   Chrome，同一个登录账号每次换一个 UA / 分辨率，反而是更强的机器人
   信号（指纹不一致）。真正的防检测靠行为随机化 + 及时停手。
@@ -17,7 +19,8 @@
   check_webdriver_flag() 只用来在本地验证时自检，不做门禁。
 
 四个机制（与 lucky 定的四点一一对应）：
-1. 指纹：启动参数 + 真实指纹保持稳定（本文件只给常量，参数在启动脚本里）。
+1. 指纹：只剩真实指纹保持稳定（启动参数里的
+   --disable-blink-features=AutomationControlled 已在 v20 拿掉，见上）。
 2. 人性化行为：micro_pause() 做 3-8 秒高斯延迟；human_browse() 在点
    投递前模拟上下滚动浏览，而不是干等；分平台日上限 + 全局日上限。
 3. 验证码阻断：handle_page_risk() 检测到滑块/安全验证页就建一条
@@ -50,9 +53,12 @@ from bosshunter.db import (
 )
 
 # 启动脚本里给 Chrome 加的参数（两个启动脚本都要同步）。
-# 注意：本文件不启动浏览器，改参数请改 scripts/windows/start_bosshunter.ps1
-# 和 scripts/macos/start_bosshunter.sh。
-CHROME_STEALTH_ARGS = ("--disable-blink-features=AutomationControlled",)
+# v20 已空：--disable-blink-features=AutomationControlled 拿掉了——
+# CDP 直连的真人 Chrome 里 navigator.webdriver 本来就是 false，这参数
+# 除了让 Chrome 顶上挂一条“不受支持的命令行标记”警告，什么都没多做。
+# 常量留着（空元组），免得别处引用断掉；改参数请改
+# scripts/windows/start_bosshunter.ps1 和 scripts/macos/start_bosshunter.sh。
+CHROME_STEALTH_ARGS: tuple[str, ...] = ()
 
 # 平台展示名（面板文案用）。
 PLATFORM_NAMES = {

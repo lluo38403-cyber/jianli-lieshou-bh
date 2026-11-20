@@ -450,18 +450,24 @@ def test_webdriver_flag_helper_reports_undefined_as_false():
     assert antibot.check_webdriver_flag(fake_true, "t") is True
 
 
-def test_stealth_launch_arg_present():
-    assert "--disable-blink-features=AutomationControlled" in antibot.CHROME_STEALTH_ARGS
+def test_stealth_launch_arg_removed():
+    # 回归：--disable-blink-features=AutomationControlled 只会让 Chrome
+    # 顶上挂一条“不受支持的命令行标记”警告；CDP 直连的真人 Chrome 里
+    # navigator.webdriver 本来就是 false，不需要它（v20 拿掉）。
+    assert antibot.CHROME_STEALTH_ARGS == ()
+    assert "--disable-blink-features=AutomationControlled" not in antibot.CHROME_STEALTH_ARGS
 
 
-def test_stealth_arg_reaches_every_chrome_launch_path(tmp_path):
-    """反检测第一层要落到用户真正用的启动路径上：exe 本身不拉 Chrome，
-    用户按启动脚本、QUICKSTART 命令或面板诊断提示手动起 Chrome——
-    三处都要带上抹除参数，缺一处就等于这层没上线。"""
+def test_stealth_arg_reaches_no_chrome_launch_path(tmp_path):
+    """v20 拿掉抹除参数后，任何一条用户真正用的启动路径上都不该再有它：
+    启动脚本、面板诊断提示、QUICKSTART 手动命令——有一处残留，Chrome
+    顶上就还挂那条警告。"""
     repo = Path(__file__).resolve().parents[1]
     flag = "--disable-blink-features=AutomationControlled"
-    assert flag in (repo / "scripts" / "windows" / "start_bosshunter.ps1").read_text(encoding="utf-8")
-    assert flag in (repo / "scripts" / "macos" / "start_bosshunter.sh").read_text(encoding="utf-8")
-    assert flag in (repo / "src" / "bosshunter" / "browser" / "diagnostics.py").read_text(encoding="utf-8")
+    assert flag not in (repo / "scripts" / "windows" / "start_bosshunter.ps1").read_text(encoding="utf-8")
+    assert flag not in (repo / "scripts" / "macos" / "start_bosshunter.sh").read_text(encoding="utf-8")
+    assert flag not in (repo / "src" / "bosshunter" / "browser" / "diagnostics.py").read_text(encoding="utf-8")
     quickstart = (repo / "docs" / "QUICKSTART.md").read_text(encoding="utf-8")
-    assert quickstart.count(flag) >= 3, "QUICKSTART 三条手动启动命令都要带抹除参数"
+    assert flag not in quickstart
+    # runtime/__init__.py 的 docstring 里会特意提一句这个参数为什么不加
+    # （防后人加回去），真正的拉起参数由 test_browser_autolaunch 断言。
