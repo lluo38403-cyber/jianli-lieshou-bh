@@ -550,7 +550,7 @@ class ResumeArtifactTests(unittest.TestCase):
         )
         call_claude.return_value = tailored
 
-        def write_four_page_pdf(_markdown_text, output_path):
+        def write_four_page_pdf(_markdown_text, output_path, stop_event=None):
             output_path.write_bytes(
                 b"%PDF-1.4\n"
                 b"1 0 obj<</Type /Page>>endobj\n"
@@ -614,7 +614,7 @@ class ResumePdfRuntimeTests(unittest.TestCase):
         new_tab.assert_called_once()
         self.assertTrue(new_tab.call_args.args[0].startswith("file:///"))
         self.assertIs(new_tab.call_args.kwargs["background"], True)
-        wait_for_load.assert_called_once_with("target-1", timeout=10)
+        wait_for_load.assert_called_once_with("target-1", timeout=10, stop_event=None)
         print_pdf.assert_called_once_with("target-1", output.resolve())
         self.balance_pages.assert_called_once_with("target-1")
         close_tab.assert_called_once_with("target-1")

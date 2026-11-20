@@ -12,7 +12,7 @@ from rich.console import Console
 
 from bosshunter.ai.credentials import call_ai_text, get_ai_service
 from bosshunter.browser import close_tab, evaluate, new_tab, print_pdf, screenshot, wait_for_load
-from bosshunter.cancellation import OperationCancelled, run_cancellable, stop_requested
+from bosshunter.cancellation import OperationCancelled, get_stop_event, run_cancellable, stop_requested
 from bosshunter.db import get_db
 from bosshunter.web.resume_upload import ResumeUploadError
 
@@ -881,7 +881,7 @@ def _balance_pdf_pages(target_id: str) -> None:
         })()""" % json.dumps(starts))
 
 
-def _render_pdf(markdown_text: str, output_path: Path) -> bool:
+def _render_pdf(markdown_text: str, output_path: Path, stop_event=None) -> bool:
     """Render markdown to PDF via Chrome CDP.
 
     If Chrome is unavailable, keep the UTF-8 Markdown instead of producing a
@@ -890,7 +890,7 @@ def _render_pdf(markdown_text: str, output_path: Path) -> bool:
     full_html = _resume_html(markdown_text)
 
     # Strategy 1: Use Chrome CDP to print PDF (preferred, no extra deps)
-    if _render_pdf_via_cdp(full_html, output_path):
+    if _render_pdf_via_cdp(full_html, output_path, stop_event=stop_event):
         return True
     return False
 
@@ -958,7 +958,7 @@ def _render_png_via_cdp(html_content: str, output_path: Path) -> bool:
         temp_html.unlink(missing_ok=True)
 
 
-def _render_pdf_via_cdp(html_content: str, output_path: Path) -> bool:
+def _render_pdf_via_cdp(html_content: str, output_path: Path, stop_event=None) -> bool:
     """Use Browser Runtime Page.printToPDF via the Python browser facade."""
     import tempfile
     import time
@@ -976,7 +976,7 @@ def _render_pdf_via_cdp(html_content: str, output_path: Path) -> bool:
             target_id = None
             try:
                 target_id = new_tab(file_url, background=True)
-                if target_id and wait_for_load(target_id, timeout=10):
+                if target_id and wait_for_load(target_id, timeout=10, stop_event=stop_event):
                     _balance_pdf_pages(target_id)
                     output_path.parent.mkdir(parents=True, exist_ok=True)
                     output_path.unlink(missing_ok=True)
@@ -1033,7 +1033,8 @@ def _save_resume_artifacts(
         image_path.unlink(missing_ok=True)
 
     pdf_path = output_dir / f"{base_name}.pdf"
-    pdf_ready = _render_pdf(tailored_md, pdf_path)
+    # 收到停止立即中断：PDF 渲染的页面等待不再占满 10 秒，失败只影响 PDF（MD 已落盘）。
+    pdf_ready = _render_pdf(tailored_md, pdf_path, stop_event=get_stop_event(config))
     if pdf_ready:
         pdf_pages = _pdf_page_count(pdf_path)
         max_pages = _resume_max_pages_from_config(config)

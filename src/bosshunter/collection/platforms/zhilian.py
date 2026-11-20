@@ -854,7 +854,7 @@ class ZhilianCollector:
         except (TypeError, ValueError):
             return 24
 
-    def _submit_keyword(self, target_id: str, keyword: str) -> None:
+    def _submit_keyword(self, target_id: str, keyword: str, stop_event=None) -> None:
         before_state = self._search_state(target_id)
         actions = (
             self.browser.click_action,
@@ -893,7 +893,7 @@ class ZhilianCollector:
                 raise CollectionError("selector_changed", "智联搜索按钮选择器未命中，可能是页面结构变化")
             if submit_payload.get("ok") and submit_payload.get("value") != keyword:
                 raise CollectionError("search_not_applied", "智联搜索框未写入目标关键词")
-            self._wait_for_search_results(target_id, keyword, before_state)
+            self._wait_for_search_results(target_id, keyword, before_state, stop_event=stop_event)
             return
 
         # Keep the evaluate seam for unit-test fakes and older Browser Runtime
@@ -905,7 +905,7 @@ class ZhilianCollector:
             raise CollectionError("selector_changed", "智联搜索框选择器未命中，可能是页面结构变化")
         if submit_payload.get("ok") and submit_payload.get("value") != keyword:
             raise CollectionError("search_not_applied", "智联搜索框未写入目标关键词")
-        self._wait_for_search_results(target_id, keyword, before_state)
+        self._wait_for_search_results(target_id, keyword, before_state, stop_event=stop_event)
 
     @staticmethod
     def _parse_payload(value: Any) -> dict[str, Any]:
@@ -931,6 +931,7 @@ class ZhilianCollector:
         *,
         attempts: int = 3,
         retry_delay: float = 0.8,
+        stop_event=None,
     ) -> dict[str, Any]:
         """Read a SPA detail panel after allowing short render transitions."""
         detail: dict[str, Any] = {}
@@ -943,7 +944,13 @@ class ZhilianCollector:
             if detail.get("status") not in {"login_required", "selector_changed"}:
                 return detail
             if attempt + 1 < attempts:
-                self.sleep(retry_delay)
+                # 收到停止立即中断：不等重试间隔，调用方随后走正常停止分支。
+                # 无 stop_event 时仍走注入的 self.sleep，保持原有可测试缝隙。
+                if stop_event is not None:
+                    if _wait_or_stop(stop_event, retry_delay):
+                        return detail
+                else:
+                    self.sleep(retry_delay)
         return detail
 
     def _wait_for_search_results(
@@ -952,6 +959,7 @@ class ZhilianCollector:
         keyword: str,
         before_state: dict[str, Any],
         timeout: float = 8.0,
+        stop_event=None,
     ) -> None:
         """Wait until the keyword route and refreshed list are both observable.
 
@@ -976,7 +984,9 @@ class ZhilianCollector:
             refreshed = str(last_state.get("signature") or "") != old_signature
             if value == keyword and keyword_route and refreshed:
                 return
-            time.sleep(0.5)
+            # 收到停止立即中断：不等搜索结果刷新，调用方随后走正常停止分支。
+            if _wait_or_stop(stop_event, 0.5):
+                return
         if last_state and str(last_state.get("input") or "") != keyword:
             raise CollectionError("search_not_applied", "智联搜索框关键词未生效，已停止采集以避免采到无关岗位")
         raise CollectionError("search_not_applied", "智联搜索结果未按目标关键词刷新，已停止采集以避免采到无关岗位")
@@ -998,7 +1008,7 @@ class ZhilianCollector:
         except TypeError:
             return self.browser.evaluate(target_id, js)
 
-    def _ensure_host_tab(self, request: PlatformCollectionRequest) -> tuple[str, bool]:
+    def _ensure_host_tab(self, request: PlatformCollectionRequest, stop_event=None) -> tuple[str, bool]:
         """找一个智联搜索页作为 fetch 宿主（与 fe-api.zhaopin.com 同域 cookie）。
 
         返回 ``(target_id, owned)``；复用用户已有页面时 ``owned=False``。
@@ -1030,7 +1040,12 @@ class ZhilianCollector:
         host_target = self.browser.new_tab(tmp_url, background=False)
         if not host_target:
             raise CollectionBlockedError("rate_limit", "无法打开智联页面作为 API 宿主")
-        self.sleep(5)
+        # 收到停止立即中断：不等宿主页 5 秒预热，调用方随后走正常停止分支。
+        # 无 stop_event 时仍走注入的 self.sleep，保持原有可测试缝隙。
+        if stop_event is not None:
+            _wait_or_stop(stop_event, 5)
+        else:
+            self.sleep(5)
         return host_target, True
 
     def _fetch_page(self, host_target: str, kw_encoded: str, city_id: str, start: int) -> dict:
@@ -1126,7 +1141,7 @@ class ZhilianCollector:
         max_pages = min(max(1, int(request.max_pages or 1)), HARD_MAX_PAGES)
 
         try:
-            host_target, owns_host = self._ensure_host_tab(request)
+            host_target, owns_host = self._ensure_host_tab(request, stop_event=hooks.stop_event)
         except CollectionBlockedError:
             return None
         except Exception:
@@ -1141,6 +1156,10 @@ class ZhilianCollector:
 
         api_failed = False
         try:
+            # 收到停止立即中断：宿主页预热期间收到停止，不进 API 循环，直接走正常停止分支
+            #（城市为空时循环不执行，也要在这里拦截，否则会误报“采集完毕”）。
+            if hooks.stop_event is not None and hooks.stop_event.is_set():
+                return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
             for city in request.cities:
                 city_id = str(request.city_codes.get(city) or "").strip()
                 for kw in request.keywords:
@@ -1323,14 +1342,20 @@ class ZhilianCollector:
                             return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                         hooks.on_event(phase="loading_list", keyword=keyword, city=city, page=page)
                         try:
-                            self.browser.wait_for_load(target_id, timeout=10)
+                            self.browser.wait_for_load(target_id, timeout=10, stop_event=hooks.stop_event)
+                            # 收到停止立即中断：不等搜索页加载，直接走正常停止分支。
+                            if hooks.stop_event is not None and hooks.stop_event.is_set():
+                                return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                             if page == start_page:
-                                self._submit_keyword(target_id, keyword)
+                                self._submit_keyword(target_id, keyword, stop_event=hooks.stop_event)
                                 if start_page > 1:
                                     self.browser.evaluate(target_id, _build_page_script(page))
                             else:
                                 self.browser.evaluate(target_id, _build_page_script(page))
-                            self.browser.wait_for_load(target_id, timeout=10)
+                            self.browser.wait_for_load(target_id, timeout=10, stop_event=hooks.stop_event)
+                            # 收到停止立即中断：不等翻页后加载，直接走正常停止分支。
+                            if hooks.stop_event is not None and hooks.stop_event.is_set():
+                                return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                         except CollectionError as exc:
                             return PlatformCollectionResult(self.platform, "blocked", exc.code, exc.message)
                         except Exception:
@@ -1403,7 +1428,10 @@ class ZhilianCollector:
                                 else:
                                     self.sleep(1.5)
                                 try:
-                                    detail = self._read_detail_with_retry(target_id, city)
+                                    detail = self._read_detail_with_retry(target_id, city, stop_event=hooks.stop_event)
+                                    # 收到停止立即中断：详情重试提前返回的旧结果不再处理，直接走正常停止分支。
+                                    if hooks.stop_event is not None and hooks.stop_event.is_set():
+                                        return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                                     if detail.get("status") == "blocked":
                                         return PlatformCollectionResult(self.platform, "blocked", "rate_limit", "智联页面出现验证或限流，已停止整个采集队列")
                                     if detail.get("status") == "login_required":
@@ -1463,10 +1491,16 @@ class ZhilianCollector:
                                 continue
                             detail_requests += 1
                             try:
-                                self.browser.wait_for_load(detail_target, timeout=10)
-                                detail = self._read_detail_with_retry(detail_target, city)
+                                self.browser.wait_for_load(detail_target, timeout=10, stop_event=hooks.stop_event)
+                                # 收到停止立即中断：不等详情加载，直接走正常停止分支。
+                                if hooks.stop_event is not None and hooks.stop_event.is_set():
+                                    return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
+                                detail = self._read_detail_with_retry(detail_target, city, stop_event=hooks.stop_event)
                             finally:
                                 self.browser.close_tab(detail_target)
+                            # 收到停止立即中断：详情重试提前返回的旧结果不再处理，直接走正常停止分支。
+                            if hooks.stop_event is not None and hooks.stop_event.is_set():
+                                return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                             try:
                                 if detail.get("status") == "blocked":
                                     return PlatformCollectionResult(self.platform, "blocked", "rate_limit", "智联详情页出现验证或限流，已停止整个采集队列")

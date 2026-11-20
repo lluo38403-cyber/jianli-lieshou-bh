@@ -275,7 +275,11 @@ def _deliver_via_detail_page(job: dict, throttle_config: dict, platform: str) ->
         close_tab(target_id)
         return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
 
-    wait_for_load(target_id, timeout=15)
+    wait_for_load(target_id, timeout=15, stop_event=stop_event)
+    # 收到停止立即中断：不等详情页加载完，直接走正常停止分支。
+    if _stop_requested(stop_event):
+        close_tab(target_id)
+        return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
     # 像真人一样滚动浏览详情页，再点投递。
     try:
         detail_min = float(throttle_config.get("detail_browse_min", 6))
@@ -391,7 +395,7 @@ def check_inbox(platform: str, config: dict) -> dict:
     if not target_id:
         return {"platform": platform, "error": "open_page_failed", "unread": 0, "samples": []}
     try:
-        wait_for_load(target_id, timeout=15)
+        wait_for_load(target_id, timeout=15, stop_event=stop_event)
         if _sleep_or_stop(2, stop_event):
             return {"platform": platform, "error": "stopped", "unread": 0, "samples": []}
         result = _parse_js_result(evaluate(target_id, """

@@ -387,7 +387,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
             <h2 className="mt-1 text-2xl font-black">{mode === 'full' ? '找新岗位的设置' : '岗位采集'}</h2>
             <p className="mt-1 text-sm leading-6 text-muted">平台一个一个来，不会同时找；每个平台只要设翻几页、按什么排。</p>
           </div>
-          <Button variant="ghost" size="sm" onClick={onClose} disabled={starting} aria-label="关闭"><X className="h-5 w-5" /></Button>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={starting} aria-label="关闭" title={starting ? '正在开始，稍等一下就能关' : undefined}><X className="h-5 w-5" /></Button>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
@@ -435,7 +435,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
                 onClick={() => setActiveTab(platform)}
                 className={`min-w-0 flex-1 rounded-full px-2 py-1.5 text-xs font-black transition ${activeTab === platform ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted hover:text-primary'}`}
               >
-                {PLATFORM_SHORT_LABELS[platform]}{drafts[platform].enabled ? '' : '（没用）'}
+                {PLATFORM_SHORT_LABELS[platform]}{drafts[platform].enabled ? '' : '（没在用）'}
               </button>
             ))}
           </div>
@@ -512,7 +512,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         </section>}
         {error && <div className="mt-3 rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
         </div>
-        <div className="sticky bottom-0 flex shrink-0 flex-wrap justify-end gap-2 border-t border-card-border bg-card px-6 py-3"><Button variant="secondary" onClick={onClose} disabled={starting}>取消</Button><Button onClick={() => void start()} disabled={Boolean(activeTask) || starting}>{starting ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" />正在开始…</span> : mode === 'full' ? '开始自动找工作' : '重新采集'}</Button></div>
+        <div className="sticky bottom-0 flex shrink-0 flex-wrap justify-end gap-2 border-t border-card-border bg-card px-6 py-3"><Button variant="secondary" onClick={onClose} disabled={starting} title={starting ? '正在开始，稍等一下就能关' : undefined}>取消</Button><Button onClick={() => void start()} disabled={Boolean(activeTask) || starting} title={activeTask ? '现在有任务在跑，先停下再开始' : undefined}>{starting ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" />正在开始…</span> : mode === 'full' ? '开始自动找工作' : '重新采集'}</Button></div>
       </div>
     </div>
   )

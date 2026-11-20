@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { RefreshCw } from 'lucide-react'
-import { PLATFORM_IDS, PLATFORM_LABELS, openPlatformLogin, type PlatformId } from '@/lib/platforms'
+import { PLATFORM_IDS, PLATFORM_LABELS, openPlatformLogin, portMismatchNote, type PlatformId } from '@/lib/platforms'
 import { getPlatformLoginStatusLabel } from '@/lib/status'
 import { getEffectiveLoginStatus, isPlatformLoginStale, type EffectiveLoginStatus } from '@/lib/platformLogin'
 import type { PlatformLoginInfo } from '@/hooks/useDashboard'
@@ -51,20 +51,24 @@ export function PlatformStatusCard({ platformLogin, browserName = '浏览器', o
   const refreshDisabled = refreshing || checking || !onRefresh
 
   const handleOpenLogin = async (platform: PlatformId) => {
-    if (loginBusy) return
+    if (loginBusy) {
+      setLoginFeedback({ platform, message: '正在打开工作浏览器，请稍等一下。', ok: true })
+      return
+    }
     setLoginBusy(platform)
     setLoginFeedback({ platform, message: `正在打开工作浏览器，准备去${PLATFORM_LABELS[platform]}登录…`, ok: true })
     try {
       const result = await openPlatformLogin(platform)
+      const base = result.ok
+        ? result.reusedTab
+          ? `已经打开了${PLATFORM_LABELS[platform]}的标签页，直接切过去了。`
+          : result.browserStarted
+            ? `工作浏览器已启动，正在打开${PLATFORM_LABELS[platform]}登录页。`
+            : `已在工作浏览器打开${PLATFORM_LABELS[platform]}登录页。`
+        : result.message || '浏览器没连上，再点一次试试。'
       setLoginFeedback({
         platform,
-        message: result.ok
-          ? result.reusedTab
-            ? `已经打开了${PLATFORM_LABELS[platform]}的标签页，直接切过去了。`
-            : result.browserStarted
-              ? `工作浏览器已启动，正在打开${PLATFORM_LABELS[platform]}登录页。`
-              : `已在工作浏览器打开${PLATFORM_LABELS[platform]}登录页。`
-          : result.message || '浏览器没连上，再点一次试试。',
+        message: result.ok ? `${base}${portMismatchNote(result)}` : base,
         ok: result.ok,
       })
     } finally {

@@ -60,6 +60,24 @@ export default function ConfigPage() {
     return () => window.removeEventListener(CHECK_UPDATE_EVENT, onCheckUpdate)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  // v28：首页预检失败点“去传简历”会带 #resume-upload 跳过来；设置内容
+  // 是异步加载的，挂载时可能还没渲染出来，轮询几次再滚过去。
+  useEffect(() => {
+    const hash = window.location.hash
+    if (!hash) return
+    let attempts = 0
+    const timer = window.setInterval(() => {
+      attempts += 1
+      const target = document.querySelector(hash)
+      if (target && typeof (target as HTMLElement).scrollIntoView === 'function') {
+        ;(target as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' })
+        window.clearInterval(timer)
+      } else if (attempts >= 10) {
+        window.clearInterval(timer)
+      }
+    }, 300)
+    return () => window.clearInterval(timer)
+  }, [])
   const [cityOptions, setCityOptions] = useState<CityOption[]>([])
   const [zhilianCityOptions, setZhilianCityOptions] = useState<CityOption[]>([])
   const [job51CityOptions, setJob51CityOptions] = useState<CityOption[]>([])
@@ -241,7 +259,7 @@ export default function ConfigPage() {
         {/* Profile Section */}
         <SectionCard title="我的简历和我">
           <div className="space-y-4">
-            <div data-tour="resume-upload">
+            <div data-tour="resume-upload" id="resume-upload" className="scroll-mt-6">
               <ResumeUploadSection
                 currentResumePath={config.profile?.resume_path || ''}
                 updateConfig={updateConfig}
@@ -308,7 +326,7 @@ export default function ConfigPage() {
                     onClick={() => setActiveTab(platform)}
                     className={`min-w-0 flex-1 rounded-full px-2 py-1.5 text-xs font-black transition ${(activeTab ?? guidePlatform ?? 'boss') === platform ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted hover:text-primary'}`}
                   >
-                    {PLATFORM_SHORT_LABELS[platform]}{enabled ? '' : '（没用）'}
+                    {PLATFORM_SHORT_LABELS[platform]}{enabled ? '' : '（没在用）'}
                   </button>
                 )
               })}

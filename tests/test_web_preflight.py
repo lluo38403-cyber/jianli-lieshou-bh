@@ -3,7 +3,12 @@ from unittest.mock import Mock, patch
 
 import httpx
 
-from bosshunter.web.preflight import check_ai_connection, check_browser_connection, collect_preflight_checks
+from bosshunter.web.preflight import (
+	check_ai_connection,
+	check_browser_connection,
+	collect_preflight_checks,
+	is_boss_login_url,
+)
 
 
 class AiPreflightTests(unittest.TestCase):
@@ -366,6 +371,164 @@ class BrowserPreflightTests(unittest.TestCase):
 		self.assertIn("Chromium", product_check["message"])
 
 	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_boss_personal_center_url_is_not_a_login_warning(self, diagnostics):
+		# A1：个人中心页 https://www.zhipin.com/web/user/ 是已登录，旧的
+		# "/user/" 宽松子串会误判掉线。
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": {"targetId": "1", "url": "https://www.zhipin.com/web/user/"},
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+
+		checks = check_browser_connection({})
+
+		tab_check = next(check for check in checks if check["id"] == "boss_tab")
+		self.assertEqual(tab_check["status"], "pass")
+		self.assertFalse(any(check["id"] == "boss_login" for check in checks))
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_boss_header_login_url_is_a_login_warning(self, diagnostics):
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": {"targetId": "1", "url": "https://www.zhipin.com/web/user/?ka=header-login"},
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+
+		checks = check_browser_connection({})
+
+		login_check = next(check for check in checks if check["id"] == "boss_login")
+		self.assertEqual(login_check["status"], "warning")
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_logged_in_zhilian_missing_tab_is_warning_not_error(self, diagnostics):
+		# A2：已登录却没打开页面，开始任务时会自动打开，不拦。
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": None,
+			"zhilian_tab": None,
+			"zhilian_page": None,
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+
+		checks = check_browser_connection({}, {"platform_order": ["zhilian"]}, login_states={"zhilian": "logged_in"})
+
+		tab_check = next(check for check in checks if check["id"] == "zhilian_tab")
+		self.assertEqual(tab_check["status"], "warning")
+		self.assertIn("会自动打开", tab_check["message"])
+		self.assertFalse(any(check["status"] == "error" for check in checks))
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_logged_out_zhilian_missing_tab_still_errors(self, diagnostics):
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": None,
+			"zhilian_tab": None,
+			"zhilian_page": None,
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+
+		checks = check_browser_connection({}, {"platform_order": ["zhilian"]}, login_states={"zhilian": "logged_out"})
+
+		tab_check = next(check for check in checks if check["id"] == "zhilian_tab")
+		self.assertEqual(tab_check["status"], "error")
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_logged_in_51job_missing_tab_is_warning(self, diagnostics):
+		# login_states 也接受 DB 行那样的 dict（{"status": ...}）。
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": None,
+			"job51_tab": None,
+			"job51_page": None,
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+
+		checks = check_browser_connection(
+			{}, {"platform_order": ["51job"]}, login_states={"51job": {"status": "logged_in"}}
+		)
+
+		tab_check = next(check for check in checks if check["id"] == "51job_tab")
+		self.assertEqual(tab_check["status"], "warning")
+		self.assertIn("会自动打开", tab_check["message"])
+		self.assertFalse(any(check["status"] == "error" for check in checks))
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_logged_in_liepin_missing_tab_is_warning(self, diagnostics):
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": None,
+			"liepin_tab": None,
+			"liepin_page": None,
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+
+		checks = check_browser_connection({}, {"platform_order": ["liepin"]}, login_states={"liepin": "logged_in"})
+
+		tab_check = next(check for check in checks if check["id"] == "liepin_tab")
+		self.assertEqual(tab_check["status"], "warning")
+		self.assertIn("会自动打开", tab_check["message"])
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_logged_in_boss_missing_tab_mentions_auto_open(self, diagnostics):
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": None,
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+
+		checks = check_browser_connection({}, login_states={"boss": "logged_in"})
+
+		tab_check = next(check for check in checks if check["id"] == "boss_tab")
+		self.assertEqual(tab_check["status"], "warning")
+		self.assertIn("会自动打开", tab_check["message"])
+
+	@patch("bosshunter.web.preflight.check_browser_connection")
+	def test_collect_preflight_checks_passes_login_states_through(self, browser_check):
+		# A2：collect_preflight_checks 的 login_states 要透传给
+		# check_browser_connection，server.py 接线后才起作用。
+		browser_check.return_value = []
+
+		collect_preflight_checks("monitor", {}, login_states={"boss": "logged_in"})
+
+		browser_check.assert_called_once()
+		self.assertEqual(browser_check.call_args.kwargs["login_states"], {"boss": "logged_in"})
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
 	def test_selected_zhilian_requires_real_search_page_state(self, diagnostics):
 		diagnostics.return_value = {
 			"node": {"available": True, "version": "v22"},
@@ -385,6 +548,26 @@ class BrowserPreflightTests(unittest.TestCase):
 		login_check = next(check for check in checks if check["id"] == "zhilian_login")
 		self.assertEqual(login_check["status"], "error")
 		self.assertIn("要求登录", login_check["message"])
+
+
+class IsBossLoginUrlTests(unittest.TestCase):
+	"""A1：BOSS 登录页精确判定，与 boss.py 的正则同一口径。"""
+
+	def test_login_page_urls_are_login(self):
+		self.assertTrue(is_boss_login_url("https://www.zhipin.com/web/user/login"))
+		self.assertTrue(is_boss_login_url("https://www.zhipin.com/web/user/login?ka=header-login"))
+		self.assertTrue(is_boss_login_url("https://www.zhipin.com/web/user/?ka=header-login"))
+
+	def test_personal_center_url_is_not_login(self):
+		self.assertFalse(is_boss_login_url("https://www.zhipin.com/web/user/"))
+		self.assertFalse(is_boss_login_url("https://www.zhipin.com/web/user"))
+		self.assertFalse(is_boss_login_url("https://www.zhipin.com/web/geek/job"))
+
+	def test_other_platform_urls_are_not_affected(self):
+		self.assertFalse(is_boss_login_url("https://www.zhaopin.com/login"))
+		self.assertFalse(is_boss_login_url("https://www.zhipin.com/web/user/verify"))
+		self.assertFalse(is_boss_login_url(None))
+		self.assertFalse(is_boss_login_url(""))
 
 
 if __name__ == "__main__":

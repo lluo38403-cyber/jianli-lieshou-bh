@@ -28,7 +28,7 @@ import type { ActivityData, TopCompany } from '@/hooks/useDashboard'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
 import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
 import { parseHistoryDetail } from '@/lib/historyDetail'
-import { PLATFORM_LABELS, PLATFORM_IDS, openPlatformLogin, type PlatformId } from '@/lib/platforms'
+import { PLATFORM_LABELS, PLATFORM_IDS, openPlatformLogin, openPlatformPage, portMismatchNote, type PlatformId } from '@/lib/platforms'
 import { derivePlatformLoginStates } from '@/lib/platformLogin'
 import {
   EMPTY_JOB_FILTERS,
@@ -186,6 +186,38 @@ interface PreflightCheck {
   action?: 'config' | 'browser' | ''
 }
 
+/** 各平台“未发现已打开的页面”检查项 id → 平台（v28：已登录却缺页时自动开页）。 */
+const PLATFORM_TAB_CHECK_IDS: Record<string, PlatformId> = {
+  boss_tab: 'boss',
+  zhilian_tab: 'zhilian',
+  '51job_tab': '51job',
+  liepin_tab: 'liepin',
+}
+
+function scrollToElementById(id: string) {
+  const target = document.getElementById(id)
+  if (target && typeof target.scrollIntoView === 'function') {
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+}
+
+/** 预检失败提示：列出实际没通过的项，最多列 3 项，多了加“等 N 项”。 */
+function preflightFailureNotice(checks: PreflightCheck[]): string {
+  const failed = checks.filter(check => check.status === 'error')
+  const items = failed.length ? failed : checks.filter(check => check.status !== 'pass')
+  if (items.length === 0) return '启动前预检未通过，请按检查提示修复后，再重新启动。'
+  const shown = items.slice(0, 3).map(check => check.message)
+  const suffix = items.length > 3 ? `等 ${items.length} 项` : ''
+  return `启动前预检未通过：${shown.join('；')}${suffix}。`
+}
+
+/** 启动失败的提示：刚强制停下、旧任务还没完全退出时后端会报“浏览器正忙”，
+ * 那是后端锁的正常保护，如实告诉用户等几秒再点，不要写成错误。 */
+function startFailureMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : '操作失败'
+  return /忙|busy/i.test(message) ? '上一个任务还在退出，等几秒再点启动。' : message
+}
+
 const modes: Array<{ mode: WorkbenchMode; title: string; description: string }> = [
   {
     mode: 'full',
@@ -335,16 +367,44 @@ function CompactNotice({ message, danger = false }: { message: string; danger?: 
   )
 }
 
+/** 每个未通过项的落点：简历去设置页的上传区，浏览器/登录相关去首页的
+ * 登录态卡片，配置相关去设置页，都没有明确落点就再检查一次。 */
+function preflightCheckAction(check: PreflightCheck, onRetry: () => void): { label: string; onClick: () => void } {
+  if (check.id === 'resume') {
+    return { label: '去传简历', onClick: () => window.location.assign('/config#resume-upload') }
+  }
+  if (check.action === 'config') {
+    return { label: '去设置', onClick: () => window.location.assign('/config') }
+  }
+  if (
+    check.action === 'browser'
+    || ['browser_runtime', 'chrome_connection', 'chrome_product'].includes(check.id)
+    || check.id in PLATFORM_TAB_CHECK_IDS
+    || check.id.endsWith('_login')
+    || check.id.endsWith('_blocked')
+    || check.id.endsWith('_page')
+  ) {
+    return { label: '去登录看看', onClick: () => scrollToElementById('platform-login-card') }
+  }
+  return { label: '再检查一次', onClick: onRetry }
+}
+
 function PreflightPanel({
   checks,
   checking,
   onRetry,
+  expandSignal = 0,
 }: {
   checks: PreflightCheck[]
   checking: boolean
   onRetry: () => void
+  /** 每次预检失败就 +1：失败时自动展开详情，不用用户自己点开看。 */
+  expandSignal?: number
 }) {
   const [expanded, setExpanded] = useState(false)
+  useEffect(() => {
+    if (expandSignal > 0) setExpanded(true)
+  }, [expandSignal])
   const actionableChecks = checks.filter(check => check.status !== 'pass')
   if (actionableChecks.length === 0) return null
 
@@ -376,12 +436,18 @@ function PreflightPanel({
         </Button>
       </div>
       <div id="preflight-details" hidden={!expanded} className="space-y-2 border-t border-current/10 py-2 text-xs leading-5">
-        {actionableChecks.map(check => (
-          <div key={`${check.id}-${check.title}`} className="break-words">
-            <p className="text-foreground"><span className="font-semibold">{check.title}：</span>{check.message}</p>
-            {check.detail && <p className="text-muted">{check.detail}</p>}
-          </div>
-        ))}
+        {actionableChecks.map(check => {
+          const action = preflightCheckAction(check, onRetry)
+          return (
+            <div key={`${check.id}-${check.title}`} className="break-words">
+              <p className="text-foreground"><span className="font-semibold">{check.title}：</span>{check.message}</p>
+              {check.detail && <p className="text-muted">{check.detail}</p>}
+              <Button variant="ghost" size="sm" className="mt-1 h-7 shrink-0 px-1" onClick={action.onClick} disabled={checking && action.label === '再检查一次'}>
+                {checking && action.label === '再检查一次' ? '检查中…' : action.label}
+              </Button>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -391,16 +457,21 @@ function GettingStartedCard({
   onCheck,
   checking,
   notice,
+  noticeDanger = false,
   checks,
   onRetry,
+  expandSignal = 0,
   browserName = '浏览器',
   onLoginFeedback,
 }: {
   onCheck: () => void
   checking: boolean
   notice: string
+  /** 预检失败的提示用红字：notice 本身是失败的具体原因时才为 true。 */
+  noticeDanger?: boolean
   checks: PreflightCheck[]
   onRetry: () => void
+  expandSignal?: number
   browserName?: string
   /** 登录按钮的启动/跳转反馈（接到首页提示条上）。 */
   onLoginFeedback?: (message: string) => void
@@ -410,19 +481,21 @@ function GettingStartedCard({
   // v27：登录按钮承担拉起浏览器 + 跳转的职责。点一次就给明确反馈：
   // 正在启动 / 已打开 / 已切到打开的标签页 / 失败原因，不再静默。
   const handleOpenLogin = async (platform: PlatformId) => {
-    if (loginBusy) return
+    if (loginBusy) {
+      onLoginFeedback?.('正在打开工作浏览器，请稍等一下。')
+      return
+    }
     setLoginBusy(platform)
     onLoginFeedback?.(`正在打开工作浏览器，准备去${PLATFORM_LABELS[platform]}登录…`)
     try {
       const result = await openPlatformLogin(platform)
       if (result.ok) {
-        onLoginFeedback?.(
-          result.reusedTab
-            ? `已经打开了${PLATFORM_LABELS[platform]}的标签页，直接切过去了。`
-            : result.browserStarted
-              ? `工作浏览器已启动，正在打开${PLATFORM_LABELS[platform]}登录页。`
-              : `已在工作浏览器打开${PLATFORM_LABELS[platform]}登录页。`,
-        )
+        const base = result.reusedTab
+          ? `已经打开了${PLATFORM_LABELS[platform]}的标签页，直接切过去了。`
+          : result.browserStarted
+            ? `工作浏览器已启动，正在打开${PLATFORM_LABELS[platform]}登录页。`
+            : `已在工作浏览器打开${PLATFORM_LABELS[platform]}登录页。`
+        onLoginFeedback?.(`${base}${portMismatchNote(result)}`)
       } else {
         onLoginFeedback?.(result.message || '浏览器没连上，再点一次试试。')
       }
@@ -468,9 +541,9 @@ function GettingStartedCard({
           {checking ? '检查中' : '检查一下能不能跑'}
         </Button>
       </div>
-      {notice && <CompactNotice message={notice} />}
+      {notice && <CompactNotice message={notice} danger={noticeDanger && checks.some(check => check.status !== 'pass')} />}
       {checks.some(check => check.status !== 'pass') && (
-        <PreflightPanel checks={checks} checking={checking} onRetry={onRetry} />
+        <PreflightPanel checks={checks} checking={checking} onRetry={onRetry} expandSignal={expandSignal} />
       )}
     </section>
   )
@@ -499,6 +572,13 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   } = useDashboard(view)
   const [selected, setSelected] = useState<string[]>([])
   const [notice, setNotice] = useState('')
+  /** 预检失败的提示用红字醒目；只在确实有未通过项时才红。 */
+  const [noticeDanger, setNoticeDanger] = useState(false)
+  /** 每次预检失败就 +1，传给检查面板让它自动展开。 */
+  const [preflightFailSignal, setPreflightFailSignal] = useState(0)
+  /** 停下超过 10 秒还没停住时，才出现“强制停止”。 */
+  const [forceStopVisible, setForceStopVisible] = useState(false)
+  const [forceStopping, setForceStopping] = useState(false)
   const update = useUpdateContext()
   const auth = useAuth()
   const [updateNote, setUpdateNote] = useState('')
@@ -687,6 +767,17 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const greetTaskRunning = activeTask != null && activeTask.mode === 'greet'
     && (activeTask.status === 'running' || activeTask.status === 'stopping')
 
+  // v28：进入“正在停下”开始计时，10 秒还没停下就给出“强制停止”；
+  // 停住了或任务没了就把强制按钮收起来。
+  useEffect(() => {
+    if (activeTask?.status !== 'stopping') {
+      setForceStopVisible(false)
+      return
+    }
+    const timer = window.setTimeout(() => setForceStopVisible(true), 10000)
+    return () => window.clearTimeout(timer)
+  }, [activeTask?.status])
+
   useEffect(() => {
     const startedId = startedGreetTaskIdRef.current
     if (!startedId) return
@@ -722,15 +813,91 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     const data = await parsePreflightResponse(res)
     setPreflightChecks(data.checks)
     if (!data.ok) {
-      setNotice('')
-      return false
+      // v28：失败不清空已有提示（保留上一次的有效信息），只把提示条
+      // 标红；同时自动展开下面的检查面板并滚过去看（弹窗开着时不滚，
+      // 失败原因已经写进弹窗里了）。
+      setNoticeDanger(true)
+      setPreflightFailSignal(signal => signal + 1)
+      if (!collectDialogOpen) {
+        window.setTimeout(() => {
+          const panel = document.querySelector('[aria-label="启动检查结果"]')
+          if (panel && typeof (panel as HTMLElement).scrollIntoView === 'function') {
+            ;(panel as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+          }
+        }, 50)
+      }
+      return { ok: false as const, checks: data.checks }
     }
-    return true
+    setNoticeDanger(false)
+    return { ok: true as const, checks: data.checks }
+  }
+
+  /** 预检里“未发现已打开的页面”且登录态是已登录的平台：可以自动开页补上。 */
+  const missingLoggedInPlatforms = (checks: PreflightCheck[]): PlatformId[] => {
+    const login = workbench.platform_login
+    return (Object.keys(PLATFORM_TAB_CHECK_IDS) as Array<keyof typeof PLATFORM_TAB_CHECK_IDS>).filter(key => {
+      const platform = PLATFORM_TAB_CHECK_IDS[key]
+      const check = checks.find(item => item.id === key)
+      return Boolean(
+        check
+        && check.status !== 'pass'
+        && check.message.includes('未发现已打开')
+        && login?.[platform]?.status === 'logged_in',
+      )
+    }).map(key => PLATFORM_TAB_CHECK_IDS[key])
+  }
+
+  /** 给缺页的平台自动开一页（走工作浏览器首页），返回没打开的平台。 */
+  const openMissingPlatformPages = async (checks: PreflightCheck[]): Promise<PlatformId[]> => {
+    const missing = missingLoggedInPlatforms(checks)
+    const failed: PlatformId[] = []
+    for (const platform of missing) {
+      const result = await openPlatformPage(platform)
+      if (!result.ok) failed.push(platform)
+    }
+    return failed
+  }
+
+  const openFailSuffix = (failed: PlatformId[]): string =>
+    failed.length
+      ? `${failed.map(platform => PLATFORM_LABELS[platform]).join('、')}页面没自动打开，开始任务时会再打开。`
+      : ''
+
+  /** 启动流程的预检：通过后把“已登录却缺页”的平台自动开页再重查一次；
+   * 拦住的若只是这类缺页，也先开页再重查一次；重查还不过才算真没通过。
+   * 返回 ok 与没自动打开的平台（启动提示里要如实告诉用户）。
+   * 注意：后端已把“已登录却缺页”降级为提醒时，失败兜底那条路不会走到；
+   * 没降级时兜底保证同一版行为一致——最终是否放行仍由重查的后端定。 */
+  const runPreflightWithAutoOpen = async (mode: WorkbenchMode, options?: Record<string, unknown>): Promise<{ ok: boolean; checks: PreflightCheck[]; openFailed: PlatformId[] }> => {
+    const first = await runPreflight(mode, options)
+    if (!first.ok) {
+      const blockers = first.checks.filter(check => check.status === 'error')
+      const missing = missingLoggedInPlatforms(first.checks)
+      const onlyMissingPages = blockers.length > 0
+        && missing.length > 0
+        && blockers.every(check => {
+          const platform = PLATFORM_TAB_CHECK_IDS[check.id]
+          return platform !== undefined && missing.includes(platform)
+        })
+      if (!onlyMissingPages) return { ok: false, checks: first.checks, openFailed: [] }
+      const openFailed = await openMissingPlatformPages(first.checks)
+      const second = await runPreflight(mode, options)
+      return { ok: second.ok, checks: second.checks, openFailed }
+    }
+    const missing = missingLoggedInPlatforms(first.checks)
+    if (missing.length === 0) return { ok: true, checks: first.checks, openFailed: [] }
+    const openFailed = await openMissingPlatformPages(first.checks)
+    const second = await runPreflight(mode, options)
+    return { ok: second.ok, checks: second.checks, openFailed }
   }
 
   const handleModeClick = async (mode: WorkbenchMode) => {
     try {
       if (activeTask?.mode === mode) {
+        if (activeTask.status === 'stopping') {
+          setNotice(`正在停下${activeTask.label}，请稍等一下。`)
+          return
+        }
         if (window.confirm(`是否停止当前${activeTask.label}任务？已入库岗位会保留。`)) {
           setModePending(mode)
           setNotice(`正在停下${activeTask.label}…`)
@@ -739,7 +906,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         }
         return
       }
-      if (modePending) return
+      if (modePending) {
+        setNotice('正在处理上一个操作，请稍等一下。')
+        return
+      }
       if (activeTask) {
         setNotice(
           activeTask.status === 'stopping'
@@ -756,24 +926,32 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       const target = modes.find(item => item.mode === mode)
       setModePending(mode)
       setNotice(`${target?.title || '任务'}启动前预检中...`)
-      if (!(await runPreflight(mode))) return
+      const preflight = await runPreflightWithAutoOpen(mode)
+      if (!preflight.ok) {
+        setNotice(`${preflightFailureNotice(preflight.checks)}${openFailSuffix(preflight.openFailed)}`)
+        return
+      }
       setNotice(`${target?.title || '任务'}启动中，请稍候...`)
       await startTask(mode)
-      setNotice(`${target?.title || '任务'}已启动，日志会在下方更新。`)
+      const suffix = openFailSuffix(preflight.openFailed)
+      setNotice(`${target?.title || '任务'}已启动，日志会在下方更新。${suffix}`)
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : '操作失败')
+      setNotice(startFailureMessage(err))
     } finally {
       setModePending(null)
     }
   }
 
   const retryPreflight = async () => {
-    if (modePending) return
+    if (modePending) {
+      setNotice('正在检查中，请稍等一下。')
+      return
+    }
     try {
       setModePending(preflightMode)
       setNotice('正在重新检查运行环境...')
-      await runPreflight(preflightMode)
-      setNotice('')
+      const result = await runPreflight(preflightMode)
+      setNotice(result.ok ? '检查通过，可以开始任务。' : preflightFailureNotice(result.checks))
     } catch {
       setNotice('重新检查失败，请确认简历猎手还在运行。')
     } finally {
@@ -782,12 +960,15 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   }
 
   const runStandalonePreflight = async () => {
-    if (modePending || preflightRunning) return
+    if (modePending || preflightRunning) {
+      setNotice('正在检查中，请稍等一下。')
+      return
+    }
     try {
       setPreflightRunning(true)
       setNotice('正在检查全流程运行环境...')
-      const ok = await runPreflight('full')
-      setNotice(ok ? '全流程预检通过，可以开始任务。' : '')
+      const result = await runPreflight('full')
+      setNotice(result.ok ? '全流程预检通过，可以开始任务。' : preflightFailureNotice(result.checks))
     } catch {
       setNotice('检查没通过，请确认简历猎手还在运行。')
     } finally {
@@ -800,16 +981,19 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     setModePending(mode)
     setNotice(mode === 'full' ? '全流程启动前预检中...' : '岗位采集启动前预检中...')
     try {
-      if (!(await runPreflight(mode, options))) {
-        setNotice('启动前预检未通过：请按下方检查提示修复后，再重新启动。')
-        return { ok: false, error: '启动前预检未通过：请关闭弹窗后按检查提示修复，再重新启动。' }
+      const preflight = await runPreflightWithAutoOpen(mode, options)
+      if (!preflight.ok) {
+        const message = `${preflightFailureNotice(preflight.checks)}${openFailSuffix(preflight.openFailed)}`
+        setNotice(message)
+        return { ok: false, error: `${message}请关闭弹窗后按检查提示修复，再重新启动。` }
       }
       setNotice('启动前预检通过，正在启动任务...')
       await startTask(mode, options)
-      setNotice(mode === 'full' ? '全流程已启动，进度会在下方更新。' : '岗位采集已启动，进度会在下方更新。')
+      const suffix = openFailSuffix(preflight.openFailed)
+      setNotice(mode === 'full' ? `全流程已启动，进度会在下方更新。${suffix}` : `岗位采集已启动，进度会在下方更新。${suffix}`)
       return { ok: true }
     } catch (err) {
-      const message = err instanceof Error ? err.message : '岗位采集启动失败'
+      const message = startFailureMessage(err)
       setNotice(message)
       return { ok: false, error: message }
     } finally {
@@ -821,7 +1005,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   // 开一轮岗位采集。跳过启动前预检是故意的：这轮刚刚还在跑，环境没
   // 变，唯一挡着的就是锁；真有登录失效，采集里会再次判出来并重新上锁。
   const retryCollectionAfterRisk = async () => {
-    if (modePending) return
+    if (modePending) {
+      setNotice('正在处理上一个操作，请稍等一下。')
+      return
+    }
     try {
       setModePending('collect')
       setNotice('正在解除冷却，马上重新开始找岗位…')
@@ -836,6 +1023,34 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       setNotice(err instanceof Error ? err.message : '重试失败')
     } finally {
       setModePending(null)
+    }
+  }
+
+  /** v28：停下超过 10 秒还没停住时才出现的强制停止。按约定的
+   * POST /api/workbench/force-stop 写（后端由总协调接线）：成功返回
+   * {"ok": true, "status": "stopped"}，失败返回 ok:false + message。
+   * 强制停下后马上点启动可能报“浏览器正忙”，那是后端锁的正常保护，
+   * 启动失败提示里会如实写“等几秒再点启动”，不要写成错误。 */
+  const forceStopTask = async () => {
+    if (!activeTask || forceStopping) return
+    setForceStopping(true)
+    try {
+      const res = await fetch('/api/workbench/force-stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: activeTask.id }),
+      })
+      const data = await res.json().catch(() => ({})) as { ok?: boolean; status?: string; message?: string; error?: string }
+      if (res.ok && data.ok) {
+        setNotice(`${activeTask.label}已经停下了。`)
+        await refresh()
+      } else {
+        setNotice(data.message || data.error || '强制停止没成功，再等一下或重启程序试试。')
+      }
+    } catch {
+      setNotice('强制停止没发出去，请确认简历猎手还在运行。')
+    } finally {
+      setForceStopping(false)
     }
   }
 
@@ -1041,12 +1256,15 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           onCheck={runStandalonePreflight}
           checking={preflightRunning || Boolean(modePending)}
           notice={notice}
+          noticeDanger={noticeDanger}
           checks={preflightChecks}
           onRetry={retryPreflight}
+          expandSignal={preflightFailSignal}
           browserName={browserName}
           onLoginFeedback={setNotice}
         />
       )}
+      <div id="platform-login-card" className="scroll-mt-6">
       <PlatformStatusCard
         platformLogin={workbench.platform_login}
         browserName={browserName}
@@ -1056,6 +1274,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         refreshError={platformLoginRefreshError || null}
         checking={browserDiagLoading || platformLoginRefreshing}
       />
+      </div>
       <BrowserDiagnosticsPanel diagnostics={browserDiag} onRefresh={fetchBrowserDiagnostics} />
       <section id="today-workbench" className="animate-fade-up scroll-mt-6 rounded-2xl border border-card-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
@@ -1129,9 +1348,9 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             )
           })}
         </div>
-        {!showGettingStarted && notice && <CompactNotice message={notice} />}
+        {!showGettingStarted && notice && <CompactNotice message={notice} danger={noticeDanger && preflightChecks.some(check => check.status !== 'pass')} />}
         {!showGettingStarted && preflightChecks.some(check => check.status !== 'pass') && (
-          <PreflightPanel checks={preflightChecks} checking={Boolean(modePending) || preflightRunning} onRetry={retryPreflight} />
+          <PreflightPanel checks={preflightChecks} checking={Boolean(modePending) || preflightRunning} onRetry={retryPreflight} expandSignal={preflightFailSignal} />
         )}
         {error && <CompactNotice message={error} danger />}
         <CollectionSessionsPanel />
@@ -1141,6 +1360,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               <div className="text-sm font-semibold">{visibleTask.label}</div>
             <div className="flex flex-wrap items-center gap-2">
               {activeTask && (
+                <>
                 <Button
                   size="sm"
                   variant="secondary"
@@ -1159,6 +1379,18 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 >
                   {activeTask.status === 'stopping' ? '正在停下...' : '停下'}
                 </Button>
+                {activeTask.status === 'stopping' && forceStopVisible && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={forceStopping}
+                    onClick={() => { void forceStopTask() }}
+                    title="停下超过 10 秒还没停住时用；会直接结束任务，马上再点启动可能提示等几秒"
+                  >
+                    {forceStopping ? '正在强制停止…' : '强制停止'}
+                  </Button>
+                )}
+                </>
               )}
             </div>
             </div>

@@ -529,6 +529,7 @@ class RunServerFreshStartTests(unittest.TestCase):
             patch("bosshunter.updater.cleanup_stale_update_processes"),
             patch("bosshunter.updater.ensure_desktop_shortcut"),
             patch("bosshunter.app_window.is_our_service_alive", return_value=False),
+            patch("bosshunter.app_window.launch_splash_window") as splash,
             patch("bosshunter.collection_session_store.list_sessions", return_value=[]),
             patch("bosshunter.browser.runtime.set_data_dir") as set_data,
             patch("bosshunter.browser.runtime.cleanup_stale_browser_resources") as stale,
@@ -544,9 +545,13 @@ class RunServerFreshStartTests(unittest.TestCase):
         write_inst.assert_called_once()
         hooks.assert_called_once_with(server.DATA_DIR, 8686)
         app.run.assert_called_once()
+        # v28：启动页替代了 _open 线程的“等服务就绪再开窗”；重型清理
+        # 改到守护线程，不挡首屏。
+        splash.assert_called_once_with("http://127.0.0.1:8686")
         targets = [c.kwargs["target"].__name__ for c in thread_cls.call_args_list]
-        self.assertIn("_open", targets)
+        self.assertIn("_startup_housekeeping", targets)
         self.assertIn("_watch_app_close", targets)
+        self.assertNotIn("_open", targets)
 
 
 if __name__ == "__main__":

@@ -742,7 +742,10 @@ class BossCollector:
                                     continue
                                 if wait(3 * delay_multiplier):
                                     return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
-                                if not self.browser.wait_for_load(worker_target, timeout=10):
+                                if not self.browser.wait_for_load(worker_target, timeout=10, stop_event=hooks.stop_event):
+                                    # 收到停止立即中断：不等页面加载失败重试，直接走正常停止分支。
+                                    if hooks.stop_event is not None and hooks.stop_event.is_set():
+                                        return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
                                     combo_complete = False
                                     page_failures += 1
                                     hooks.on_parse_failed("BOSS 搜索页加载超时")
@@ -873,7 +876,10 @@ class BossCollector:
                                 continue
                             if wait(2 * delay_multiplier):
                                 return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
-                            self.browser.wait_for_load(detail_target, timeout=10)
+                            self.browser.wait_for_load(detail_target, timeout=10, stop_event=hooks.stop_event)
+                            # 收到停止立即中断：不等详情解析，直接走正常停止分支。
+                            if hooks.stop_event is not None and hooks.stop_event.is_set():
+                                return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
                             signal = confirm_risk(detail_target)
                             if signal and signal["kind"] == "user_stopped":
                                 return make_result(self.platform, "stopped", "user_stopped", "用户已停止")

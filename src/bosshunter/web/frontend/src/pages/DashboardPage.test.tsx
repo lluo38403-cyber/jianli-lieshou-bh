@@ -370,6 +370,60 @@ describe('DashboardPage workbench task panel', () => {
       expect(screen.getAllByText('单独采集已经让它停下了。').length).toBeGreaterThan(0)
     })
   })
+
+  it('lists the actual failing preflight items in the notice and expands the panel with a fix button', async () => {
+    preflightResponse = () => jsonResponse({
+      ok: false,
+      checks: [
+        { id: 'resume', title: '简历文件', status: 'error', message: '尚未配置有效简历', detail: '打开“配置 → 个人信息”，上传简历。', action: 'config' },
+        { id: 'search_keywords', title: '搜索关键词', status: 'error', message: '尚未填写搜索关键词', detail: '打开“配置 → 搜索设置”，至少添加一个岗位关键词。', action: 'config' },
+      ],
+    })
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
+
+    const guide = await screen.findByRole('region', { name: '开始使用' })
+    fireEvent.click(within(guide).getByRole('button', { name: '检查一下能不能跑' }))
+    const results = await within(guide).findByRole('region', { name: '启动检查结果' })
+    // 失败提示列具体项，不用点“看看详情”就能看到详情和去修复的按钮。
+    await waitFor(() => expect(screen.getAllByText('启动前预检未通过：尚未配置有效简历；尚未填写搜索关键词。').length).toBeGreaterThan(0))
+    expect(within(results).getByText('打开“配置 → 个人信息”，上传简历。')).toBeTruthy()
+    expect(within(results).getByRole('button', { name: '去传简历' })).toBeTruthy()
+    expect(within(results).getAllByRole('button', { name: '去设置' }).length).toBeGreaterThan(0)
+  })
+
+  it('tells the user to wait instead of silently swallowing a second mode click', async () => {
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
+    const monitorCard = await screen.findByRole('button', { name: /只看 HR 回复/ })
+    fireEvent.click(monitorCard)
+    fireEvent.click(monitorCard)
+    expect(screen.getAllByText('正在处理上一个操作，请稍等一下。').length).toBeGreaterThan(0)
+  })
+
+  it('shows a force-stop button after stopping for 10 seconds and reports success', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      workbenchPayload = baseWorkbench({
+        task: buildTask({ mode: 'collect', label: '单独采集', status: 'stopping', stop_requested: true }),
+      })
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === '/api/workbench/force-stop' && init?.method === 'POST') {
+          return jsonResponse({ ok: true, status: 'stopped' })
+        }
+        return fetchMock(input, init)
+      }))
+      render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
+      expect(await screen.findByRole('button', { name: '正在停下...' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: '强制停止' })).toBeNull()
+      await act(async () => { vi.advanceTimersByTime(10000) })
+      const forceButton = await screen.findByRole('button', { name: '强制停止' })
+      fireEvent.click(forceButton)
+      await waitFor(() => {
+        expect(screen.getAllByText('单独采集已经停下了。').length).toBeGreaterThan(0)
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   it('displays the final edited version alongside both generated candidates', async () => {
     workbenchPayload = baseWorkbench({ pending_greetings: [{
       id: 'final-preview', company: '测试公司', title: '测试岗位', status: 'ready',

@@ -7,7 +7,15 @@ import { PLATFORM_IDS, type PlatformId } from '@/lib/platforms'
  * 检测结果；浏览器没连上时无法判断，返回 null、沿用旧值——与后台
  * 巡检“连不上不写库”的口径一致）。后端改了判定口径时这里要同步改，
  * 否则卡片和“检查能不能跑”会各说各话。
+ *
+ * BOSS 登录页是精确判定，与采集侧 boss.py 同一正则：
+ * /\/web\/user\/(?:login|\?ka=header-login)/i —— 只有登录页才算掉线，
+ * 个人中心页 https://www.zhipin.com/web/user/ 是已登录，绝不能再用
+ * '/user/' 宽松子串判掉线。
  */
+export function isBossLoginUrl(url: string): boolean {
+  return /\/web\/user\/(?:login|\?ka=header-login)/i.test(url || '')
+}
 export function derivePlatformLoginStates(
   diagnostics: unknown,
 ): Partial<Record<PlatformId, PlatformLoginInfo>> | null {
@@ -26,7 +34,7 @@ export function derivePlatformLoginStates(
   const bossUrl = tabUrl(result.boss_tab).toLowerCase()
   if (!isRecord(result.boss_tab)) {
     states.boss = { status: 'unknown', checked_at: now, detail: '未发现已打开的 BOSS 直聘页面' }
-  } else if (bossUrl.includes('/login') || bossUrl.includes('/user/') || bossUrl.includes('signin')) {
+  } else if (isBossLoginUrl(bossUrl)) {
     states.boss = { status: 'logged_out', checked_at: now, detail: 'BOSS 直聘页面停在登录页' }
   } else {
     states.boss = { status: 'logged_in', checked_at: now, detail: '已发现 BOSS 直聘页面，未见登录页' }

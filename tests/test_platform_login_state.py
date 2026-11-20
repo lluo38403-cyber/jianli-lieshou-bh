@@ -142,6 +142,20 @@ class DerivePlatformLoginStatesTests(unittest.TestCase):
         )
         self.assertEqual(states["boss"]["status"], "logged_out")
 
+    def test_boss_header_login_url_is_logged_out(self):
+        states = derive_platform_login_states(
+            self._result(boss_tab={"targetId": "1", "url": "https://www.zhipin.com/web/user/?ka=header-login"})
+        )
+        self.assertEqual(states["boss"]["status"], "logged_out")
+
+    def test_boss_personal_center_url_is_logged_in(self):
+        # A1：个人中心页不是登录页，旧的 "/user/" 宽松子串会误判掉线，
+        # 写库后还会触发熔断停用该平台直到当天结束。
+        states = derive_platform_login_states(
+            self._result(boss_tab={"targetId": "1", "url": "https://www.zhipin.com/web/user/"})
+        )
+        self.assertEqual(states["boss"]["status"], "logged_in")
+
     def test_login_required_pages_are_logged_out(self):
         states = derive_platform_login_states(
             self._result(

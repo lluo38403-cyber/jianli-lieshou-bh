@@ -149,6 +149,26 @@ function probeDevtoolsWsPath(port, wsPath, timeoutMs = 5000) {
 }
 
 async function discoverChromePort() {
+  // 发现顺序：先试配置端口（COMMON_PORTS，工作浏览器优先），再回落到
+  // 默认配置的 DevToolsActivePort 文件。v27 起面板 --app 窗口与工作
+  // 浏览器共用配置端口（默认 9222）与专用配置目录；用户个人 Chrome
+  // 只要曾经带调试端口启动过，默认配置目录下就会留下一个
+  // DevToolsActivePort 文件——先扫它会先连上个人 Chrome，登录页就
+  // 落到个人浏览器（另一个独立窗口），与 --app 窗口用的工作浏览器
+  // 实例分裂。配置端口优先保证“去登录”落在工作浏览器；默认 Chrome
+  // 只作为兜底：用户只开了一个允许远程调试的默认 Chrome 时仍能连上。
+  for (const port of COMMON_PORTS) {
+    if (await checkPort(port)) {
+      const version = await getChromeVersion(port);
+      if (version?.webSocketDebuggerUrl) {
+        const product = version.Browser || null;
+        const browserName = browserNameFromProduct(product) || '未知浏览器';
+        console.log(`[BossHunter Browser Runtime] Found Chrome debug port: ${port}`);
+        return { port, wsUrl: version.webSocketDebuggerUrl, product, browserName };
+      }
+    }
+  }
+
   for (const filePath of activePortFiles()) {
     try {
       const lines = fs.readFileSync(filePath, 'utf8').trim().split(/\r?\n/).filter(Boolean);
@@ -158,9 +178,9 @@ async function discoverChromePort() {
         const version = await getChromeVersion(port);
         // A stale DevToolsActivePort can leave a port that accepts TCP but no
         // longer speaks CDP; require real CDP proof before trusting it,
-        // otherwise fall through to the COMMON_PORTS probe below. Chrome does not
-        // always expose /json/version, so a recorded path that actually upgrades
-        // to a DevTools socket counts as proof too.
+        // otherwise skip this file. Chrome does not always expose
+        // /json/version, so a recorded path that actually upgrades to a
+        // DevTools socket counts as proof too.
         const wsUrl = version?.webSocketDebuggerUrl
           || (wsPath && await probeDevtoolsWsPath(port, wsPath) ? `ws://127.0.0.1:${port}${wsPath}` : null);
         if (!wsUrl) {
@@ -177,17 +197,6 @@ async function discoverChromePort() {
     } catch {}
   }
 
-  for (const port of COMMON_PORTS) {
-    if (await checkPort(port)) {
-      const version = await getChromeVersion(port);
-      if (version?.webSocketDebuggerUrl) {
-        const product = version.Browser || null;
-        const browserName = browserNameFromProduct(product) || '未知浏览器';
-        console.log(`[BossHunter Browser Runtime] Found Chrome debug port: ${port}`);
-        return { port, wsUrl: version.webSocketDebuggerUrl, product, browserName };
-      }
-    }
-  }
   return null;
 }
 

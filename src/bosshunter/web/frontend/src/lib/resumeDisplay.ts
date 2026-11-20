@@ -63,14 +63,39 @@ export function resumeDropOutsideTip(): string {
   return '请将文件拖放到简历上传区域'
 }
 
-/** Two error channels: load/upload vs outside-drop tip. GET must not wipe the tip. */
+/** v28 PDF 导入：判断是否为 PDF（大小写不敏感），用于成功提示文案。Pure. */
+export function isPdfResumeFile(filename: string | null | undefined): boolean {
+  return String(filename || '').trim().toLowerCase().endsWith('.pdf')
+}
+
+/** 客户端接受的简历格式，与后端 SUPPORTED_RESUME_EXTENSIONS 一致（大小写不敏感）。Pure. */
+const SUPPORTED_RESUME_EXTENSIONS = new Set(['.md', '.docx', '.pdf', '.txt'])
+
+export function isSupportedResumeFile(filename: string | null | undefined): boolean {
+  const name = String(filename || '').trim().toLowerCase()
+  const dot = name.lastIndexOf('.')
+  if (dot < 0) return false
+  return SUPPORTED_RESUME_EXTENSIONS.has(name.slice(dot))
+}
+
+/** 不支持的格式被客户端校验挡下时的提示，与后端口径一致。Pure. */
+export const UNSUPPORTED_RESUME_MESSAGE = '仅支持 .md、.docx、.pdf 或 .txt 格式'
+
+/** PDF 上传成功后的提示。Pure. */
+export const PDF_UPLOAD_SUCCESS_MESSAGE = 'PDF 简历上传成功'
+
+/** 非 PDF 简历上传成功后的提示。Pure. */
+export const RESUME_UPLOAD_SUCCESS_MESSAGE = '简历上传成功'
+
+/** Three message channels: load/upload error, outside-drop tip, upload success. GET must not wipe the tip. */
 export type ResumePanelMessages = {
   loadError: string
   dropOutsideTip: string
+  success: string
 }
 
 export function emptyResumePanelMessages(): ResumePanelMessages {
-  return { loadError: '', dropOutsideTip: '' }
+  return { loadError: '', dropOutsideTip: '', success: '' }
 }
 
 /** Prefer load/upload errors; fall back to the outside-drop tip. Pure. */
@@ -80,9 +105,9 @@ export function resumePanelVisibleMessage(messages: ResumePanelMessages): string
   return String(messages.dropOutsideTip || '').trim()
 }
 
-/** Successful GET /api/resume clears load errors but keeps an outside-drop tip. Pure. */
+/** Successful GET /api/resume clears load errors but keeps an outside-drop tip and any upload success. Pure. */
 export function afterSuccessfulResumeLoad(messages: ResumePanelMessages): ResumePanelMessages {
-  return { loadError: '', dropOutsideTip: messages.dropOutsideTip }
+  return { loadError: '', dropOutsideTip: messages.dropOutsideTip, success: messages.success }
 }
 
 /** Failed GET /api/resume sets the load error without clearing the tip. Pure. */
@@ -90,7 +115,15 @@ export function afterResumeLoadFailure(
   messages: ResumePanelMessages,
   error: string,
 ): ResumePanelMessages {
-  return { loadError: error, dropOutsideTip: messages.dropOutsideTip }
+  return { loadError: error, dropOutsideTip: messages.dropOutsideTip, success: '' }
+}
+
+/** Successful upload sets the success message and clears the load error. Pure. */
+export function afterSuccessfulResumeUpload(
+  messages: ResumePanelMessages,
+  success: string,
+): ResumePanelMessages {
+  return { loadError: '', dropOutsideTip: messages.dropOutsideTip, success }
 }
 
 /** File dropped outside the upload zone. Pure. */

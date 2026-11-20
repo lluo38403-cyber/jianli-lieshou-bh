@@ -4,11 +4,17 @@ import {
   afterDropOutside,
   afterResumeLoadFailure,
   afterSuccessfulResumeLoad,
+  afterSuccessfulResumeUpload,
   afterUploadAttempt,
   emptyResumePanelMessages,
+  isPdfResumeFile,
+  isSupportedResumeFile,
+  PDF_UPLOAD_SUCCESS_MESSAGE,
+  RESUME_UPLOAD_SUCCESS_MESSAGE,
   resumeDropOutsideTip,
   resumeLoadErrorMessage,
   resumePanelVisibleMessage,
+  UNSUPPORTED_RESUME_MESSAGE,
   shouldSyncResumePath,
   type ResumeInfo,
   type ResumePanelMessages,
@@ -87,6 +93,12 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
   }, [currentResumePath, updateConfig])
 
   const uploadResumeFile = useCallback(async (file: File) => {
+    // v28 PDF 导入：客户端先校验，接受后端支持的 .md/.docx/.pdf/.txt
+    //（大小写不敏感）；不支持的格式直接给提示，不发请求。错误走已有的消息通道。
+    if (!isSupportedResumeFile(file.name)) {
+      setPanelMessages((prev) => afterResumeLoadFailure(prev, UNSUPPORTED_RESUME_MESSAGE))
+      return
+    }
     setPanelMessages(afterUploadAttempt(emptyResumePanelMessages()))
     const form = new FormData()
     form.append('file', file)
@@ -99,6 +111,12 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
       }
       const { success: _success, ...info } = data
       setResumeInfo(info as ResumeInfo)
+      setPanelMessages((prev) =>
+        afterSuccessfulResumeUpload(
+          prev,
+          isPdfResumeFile(file.name) ? PDF_UPLOAD_SUCCESS_MESSAGE : RESUME_UPLOAD_SUCCESS_MESSAGE,
+        ),
+      )
       // Upload already persisted resume_path server-side.
       updateConfig('profile.resume_path', data.path, { markDirty: false })
     } catch {
@@ -186,6 +204,9 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
           <input type="file" accept=".md,.docx,.pdf,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={handleResumeUpload} className="hidden" />
         </label>
       )}
+      {panelMessages.success ? (
+        <p className="mt-2 rounded-lg bg-success-soft px-3 py-2 text-xs text-success">{panelMessages.success}</p>
+      ) : null}
       {panelMessage ? (
         <p className="mt-2 rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">{panelMessage}</p>
       ) : null}

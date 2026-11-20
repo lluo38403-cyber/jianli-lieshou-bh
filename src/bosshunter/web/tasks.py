@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from threading import Event, Lock, Thread, Timer
@@ -10,6 +11,9 @@ from uuid import uuid4
 
 from bosshunter.browser.ownership import browser_execution
 from contextlib import nullcontext
+
+
+logger = logging.getLogger(__name__)
 
 
 MODE_LABELS = {
@@ -95,6 +99,9 @@ class WorkbenchTaskRunner:
         self._tasks: dict[str, WorkbenchTask] = {}
         self._threads: dict[str, Thread] = {}
         self._deadline_timers: dict[str, Timer] = {}
+        # 每次 start() 给任务记一个 run 世代；force_stop() 推进世代，旧线程的
+        # 完成回调核对不上当前世代时直接丢弃，不得复活任务状态。
+        self._generations: dict[str, int] = {}
         self._lock = Lock()
 
     def start(
@@ -132,7 +139,9 @@ class WorkbenchTaskRunner:
             if before_start is not None:
                 before_start()
             self._tasks[task.id] = task
-            thread = Thread(target=self._run, args=(task, config), daemon=True)
+            generation = 1
+            self._generations[task.id] = generation
+            thread = Thread(target=self._run, args=(task, config, generation), daemon=True)
             self._threads[task.id] = thread
             if deadline:
                 delay_seconds = max((deadline - datetime.now()).total_seconds(), 0)
@@ -180,18 +189,76 @@ class WorkbenchTaskRunner:
                 monitor_wakeup_event.set()
             return task.snapshot()
 
+    def force_stop(self, task_id: str, reason: str = "用户已强制停止", *, wait_seconds: float = 10.0) -> dict:
+        """Force a task to ``stopped`` when its worker thread will not end.
+
+        Intended flow: ``stop()`` first, then ``force_stop()`` once the worker
+        has not ended within ``wait_seconds`` (default 10s). The wait happens
+        outside the lock; if the thread ends naturally inside the wait, its
+        own terminal snapshot is returned and nothing is forced.
+
+        Only task state is touched: the browser lock is NOT released, the
+        worker thread is NOT killed, and the browser is NOT touched. While
+        the old thread is still alive, a new task fails fast with
+        ``BrowserBusyError`` -- the frontend should tell the user the previous
+        task is still exiting and to retry starting in a few seconds.
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            thread = self._threads.get(task_id)
+            if not task:
+                raise KeyError(task_id)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=max(wait_seconds, 0.0))
+        with self._lock:
+            if task.status in TERMINAL_STATUSES:
+                return task.snapshot()
+            # 推进 run 世代：旧线程最终返回时，完成回调核对不上当前世代会被
+            # 直接丢弃，不得复活任务状态。
+            self._generations[task.id] = self._generations.get(task.id, 1) + 1
+            task.stop_requested.set()
+            task.status = "stopped"
+            task.stop_reason = reason
+            task.error = None
+            if isinstance(task.progress, dict) and "stage" in task.progress:
+                task.progress["stage"] = "stopped"
+            if reason and (not task.logs or task.logs[-1] != reason):
+                task.logs.append(reason)
+            task.updated_at = datetime.now().isoformat(timespec="seconds")
+            confirmation_event = task.context.get("confirmation_event")
+            if isinstance(confirmation_event, Event):
+                confirmation_event.set()
+            monitor_wakeup_event = task.context.get("monitor_wakeup_event")
+            if isinstance(monitor_wakeup_event, Event):
+                monitor_wakeup_event.set()
+            logger.warning(
+                "任务 %s（%s）执行线程在 %.1f 秒内未结束，已强制标记为 stopped；"
+                "旧线程返回时将被丢弃，浏览器锁不释放",
+                task.id,
+                task.label,
+                wait_seconds,
+            )
+            return task.snapshot()
+
+    def _is_current_run_locked(self, task_id: str, generation: int) -> bool:
+        """核对完成回调的 run 世代；调用方须已持有 ``self._lock``。"""
+        return self._generations.get(task_id) == generation
+
     def wait(self, timeout: float | None = None) -> None:
         threads = list(self._threads.values())
         for thread in threads:
             thread.join(timeout=timeout)
 
-    def _run(self, task: WorkbenchTask, config: dict) -> None:
+    def _run(self, task: WorkbenchTask, config: dict, generation: int) -> None:
         try:
             executor = self._executors.get(task.mode)
             if executor:
                 with browser_execution() if task.mode in {"full", "collect", "monitor", "deliver"} else nullcontext():
                     executor(task, config)
             with self._lock:
+                if not self._is_current_run_locked(task.id, generation):
+                    # 已被 force_stop 接管：旧线程的完成回调直接丢弃，不得复活任务状态。
+                    return
                 if task.stop_requested.is_set():
                     task.status = "stopped"
                 else:
@@ -199,6 +266,9 @@ class WorkbenchTaskRunner:
                 task.updated_at = datetime.now().isoformat(timespec="seconds")
         except Exception as exc:
             with self._lock:
+                if not self._is_current_run_locked(task.id, generation):
+                    # 已被 force_stop 接管：旧线程的完成回调直接丢弃，不得复活任务状态。
+                    return
                 if task.stop_requested.is_set():
                     task.status = "stopped"
                     task.error = None
@@ -209,6 +279,8 @@ class WorkbenchTaskRunner:
         finally:
             with self._lock:
                 timer = self._deadline_timers.pop(task.id, None)
+                if self._generations.get(task.id) == generation:
+                    self._generations.pop(task.id, None)
             if timer:
                 timer.cancel()
 

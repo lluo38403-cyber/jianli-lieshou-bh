@@ -2,8 +2,9 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
+import httpx
 import yaml
 
 from bosshunter.config import load_config
@@ -161,11 +162,14 @@ class BrowserRuntimeManagerTests(unittest.TestCase):
         result = runtime_targets({"browser": {"proxy_host": "127.0.0.1", "proxy_port": 3456}})
 
         self.assertIsNone(result)
-        http_get.assert_called_once_with(
-            "http://127.0.0.1:3456/health",
-            timeout=3,
-            trust_env=False,
+        # A3 之后 runtime_health 在主端口返回非 bosshunter 时还会再探
+        # 进程内端口（这里是前面用例残留的 3457），所以不再断言只调
+        # 一次；仍断言主端口被探过、且 /targets 绝不能被调。
+        self.assertIn(
+            call("http://127.0.0.1:3456/health", timeout=3, trust_env=False),
+            http_get.call_args_list,
         )
+        self.assertTrue(all("/targets" not in call_.args[0] for call_ in http_get.call_args_list))
 
     @patch("bosshunter.browser.runtime.runtime_targets")
     @patch("bosshunter.browser.runtime.start_runtime")
@@ -295,6 +299,105 @@ class BrowserRuntimeManagerTests(unittest.TestCase):
         self.assertEqual(env["BOSSHUNTER_ENABLE_PORT_GUARD"], "false")
 
 
+class RuntimeHealthFallbackTests(unittest.TestCase):
+    """A3：配置端口连不上时，读时兜底到进程内已切换的代理端口（不写盘）。"""
+
+    def setUp(self):
+        import bosshunter.browser.runtime as runtime
+
+        self._runtime = runtime
+        self._saved_config = runtime._browser_config
+        # 模拟一次端口回退：进程内配置已切到 3457，config.yaml 仍是 3456。
+        runtime.set_browser_config({"browser": {"proxy_host": "127.0.0.1", "proxy_port": 3457}})
+
+    def tearDown(self):
+        self._runtime._browser_config = self._saved_config
+
+    def _bosshunter_health(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"status": "ok", "runtime": "bosshunter", "chromePort": 9222}
+        return response
+
+    def _foreign_health(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"status": "ok", "runtime": "web-access"}
+        return response
+
+    @patch("bosshunter.browser.runtime.httpx.get")
+    def test_falls_back_to_in_process_port_when_configured_port_is_down(self, http_get):
+        from bosshunter.browser.runtime import get_runtime_url, runtime_health
+
+        def _get(url, **kwargs):
+            if ":3456/" in url:
+                raise httpx.ConnectError("connection refused", request=None)
+            return self._bosshunter_health()
+
+        http_get.side_effect = _get
+        config = {"browser": {"proxy_host": "127.0.0.1", "proxy_port": 3456}}
+
+        result = runtime_health(config)
+
+        self.assertEqual(result, {"status": "ok", "runtime": "bosshunter", "chromePort": 9222})
+        # 采用新端口：进程内配置与本次传入的 config dict 都同步（只改内存）。
+        self.assertEqual(config["browser"]["proxy_port"], 3457)
+        self.assertEqual(get_runtime_url(), "http://127.0.0.1:3457")
+        fallback_call = next(call for call in http_get.call_args_list if ":3457/" in call.args[0])
+        self.assertEqual(fallback_call.kwargs["timeout"], 1)
+
+    @patch("bosshunter.browser.runtime.httpx.get")
+    def test_returns_none_when_both_ports_are_down(self, http_get):
+        from bosshunter.browser.runtime import runtime_health
+
+        http_get.side_effect = httpx.ConnectError("connection refused", request=None)
+        config = {"browser": {"proxy_host": "127.0.0.1", "proxy_port": 3456}}
+
+        self.assertIsNone(runtime_health(config))
+        self.assertEqual(config["browser"]["proxy_port"], 3456)
+        self.assertEqual(http_get.call_count, 2)
+
+    @patch("bosshunter.browser.runtime.httpx.get")
+    def test_falls_back_when_configured_port_serves_a_foreign_runtime(self, http_get):
+        from bosshunter.browser.runtime import runtime_health
+
+        def _get(url, **kwargs):
+            if ":3456/" in url:
+                return self._foreign_health()
+            return self._bosshunter_health()
+
+        http_get.side_effect = _get
+        config = {"browser": {"proxy_host": "127.0.0.1", "proxy_port": 3456}}
+
+        result = runtime_health(config)
+
+        self.assertEqual(result["runtime"], "bosshunter")
+        self.assertEqual(config["browser"]["proxy_port"], 3457)
+
+    @patch("bosshunter.browser.runtime.httpx.get")
+    def test_fallback_is_not_adopted_when_it_is_not_bosshunter(self, http_get):
+        from bosshunter.browser.runtime import runtime_health
+
+        def _get(url, **kwargs):
+            if ":3456/" in url:
+                raise httpx.ConnectError("connection refused", request=None)
+            return self._foreign_health()
+
+        http_get.side_effect = _get
+        config = {"browser": {"proxy_host": "127.0.0.1", "proxy_port": 3456}}
+
+        self.assertIsNone(runtime_health(config))
+        self.assertEqual(config["browser"]["proxy_port"], 3456)
+
+    @patch("bosshunter.browser.runtime.httpx.get")
+    def test_no_fallback_probe_when_ports_match(self, http_get):
+        from bosshunter.browser.runtime import runtime_health
+
+        self._runtime.set_browser_config({"browser": {"proxy_host": "127.0.0.1", "proxy_port": 3456}})
+        http_get.side_effect = httpx.ConnectError("connection refused", request=None)
+
+        self.assertIsNone(runtime_health({"browser": {"proxy_host": "127.0.0.1", "proxy_port": 3456}}))
+        http_get.assert_called_once()
+
+
 class BrowserRuntimeSourceTests(unittest.TestCase):
     def test_cdp_proxy_fetches_browser_websocket_url_for_fallback_ports(self):
         script = Path(__file__).parents[1] / "src" / "bosshunter" / "browser" / "runtime" / "cdp-proxy.mjs"
@@ -302,6 +405,19 @@ class BrowserRuntimeSourceTests(unittest.TestCase):
 
         self.assertIn("/json/version", source)
         self.assertIn("webSocketDebuggerUrl", source)
+
+    def test_cdp_proxy_probes_configured_ports_before_default_profile_port_file(self):
+        # A4：配置端口（工作浏览器，默认 9222）优先于默认配置的
+        # DevToolsActivePort 文件——个人 Chrome 曾带调试端口启动过时，
+        # 先扫文件会先连上个人 Chrome，登录页落到另一个窗口。
+        script = Path(__file__).parents[1] / "src" / "bosshunter" / "browser" / "runtime" / "cdp-proxy.mjs"
+        source = script.read_text(encoding="utf-8")
+        discover = source.split("async function discoverChromePort()", 1)[1]
+
+        self.assertLess(
+            discover.index("for (const port of COMMON_PORTS)"),
+            discover.index("for (const filePath of activePortFiles())"),
+        )
 
     def test_cdp_proxy_only_reuses_bosshunter_runtime_on_occupied_port(self):
         script = Path(__file__).parents[1] / "src" / "bosshunter" / "browser" / "runtime" / "cdp-proxy.mjs"

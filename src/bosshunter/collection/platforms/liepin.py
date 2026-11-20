@@ -375,7 +375,10 @@ class LiepinCollector:
                             if not self._navigate(hooks, target_id, self.build_search_url(request, city, keyword, page=page), "猎聘翻页"):
                                 return PlatformCollectionResult(self.platform, "failed", "browser_disconnected", "猎聘翻页导航失败")
                         hooks.on_event(phase="loading_list", keyword=keyword, city=city, page=page)
-                        self.browser.wait_for_load(target_id, timeout=15)
+                        self.browser.wait_for_load(target_id, timeout=15, stop_event=hooks.stop_event)
+                        # 收到停止立即中断：不等列表渲染，直接走正常停止分支。
+                        if hooks.stop_event is not None and hooks.stop_event.is_set():
+                            return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                         self.browser.scroll(target_id, y=1800)
                         payload: dict[str, Any] = {}
                         status = "waiting"
@@ -430,7 +433,10 @@ class LiepinCollector:
                                 page_had_transient_failure = True
                                 continue
                             try:
-                                self.browser.wait_for_load(detail_target, timeout=15)
+                                self.browser.wait_for_load(detail_target, timeout=15, stop_event=hooks.stop_event)
+                                # 收到停止立即中断：不等详情渲染，直接走正常停止分支。
+                                if hooks.stop_event is not None and hooks.stop_event.is_set():
+                                    return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                                 self.browser.scroll(detail_target, y=1200)
                                 detail: dict[str, Any] = {}
                                 detail_status = "selector_changed"

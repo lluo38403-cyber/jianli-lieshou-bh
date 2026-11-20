@@ -578,7 +578,10 @@ def _verify_greeting_in_chat_list(
         return False
 
     try:
-        wait_for_load(target_id, timeout=10)
+        wait_for_load(target_id, timeout=10, stop_event=stop_event)
+        # 收到停止立即中断：不进聊天列表核验，直接返回“未核验”（调用方不记成功）。
+        if _stop_requested(stop_event):
+            return False
         company_json = json.dumps(company, ensure_ascii=False)
         expected_json = json.dumps(expected, ensure_ascii=False)
         expression = f"""

@@ -76,15 +76,27 @@ describe('derivePlatformLoginStates', () => {
     expect(derivePlatformLoginStates(null)).toBeNull()
   })
 
-  it('matches the backend loose BOSS marker: any /user/ URL reads as logged out', () => {
-    // 与后端口径一致（包括它宽松的那一面）：BOSS 标签页地址里只要有
-    // /user/ 就判掉线。采集侧 boss.py 用的是精确正则（只认
-    // /web/user/login 和 ?ka=header-login），这里先跟后端预检口径走，
-    // 不擅自收紧，否则卡片和“检查能不能跑”会各说各话。
+  it('marks BOSS logged in on the personal-center page, not logged out', () => {
+    // 与后端 preflight.is_boss_login_url 同一精确口径：个人中心页
+    // https://www.zhipin.com/web/user/ 是已登录，旧的 '/user/' 宽松
+    // 子串会误判掉线。
+    const states = derivePlatformLoginStates(diagnosticsResult({
+      boss_tab: { targetId: '1', url: 'https://www.zhipin.com/web/user/' },
+    }))
+    expect(states?.boss?.status).toBe('logged_in')
+  })
+
+  it('marks BOSS logged out only on the precise login URLs', () => {
+    // 只认 /web/user/login 和 ?ka=header-login（与采集侧 boss.py 的
+    // 精确正则同一口径），其余 /web/user/ 下的页面不算掉线。
     const states = derivePlatformLoginStates(diagnosticsResult({
       boss_tab: { targetId: '1', url: 'https://www.zhipin.com/web/user/?ka=header-login' },
     }))
     expect(states?.boss?.status).toBe('logged_out')
+    const verify = derivePlatformLoginStates(diagnosticsResult({
+      boss_tab: { targetId: '1', url: 'https://www.zhipin.com/web/user/verify' },
+    }))
+    expect(verify?.boss?.status).toBe('logged_in')
   })
 })
 

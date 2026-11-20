@@ -8,7 +8,7 @@ export const PLATFORM_LABELS: Record<string, string> = {
 export const PLATFORM_SHORT_LABELS: Record<string, string> = {
   boss: 'BOSS',
   zhilian: '智联',
-  '51job': '51job',
+  '51job': '前程无忧',
   liepin: '猎聘',
 }
 
@@ -68,14 +68,33 @@ export interface OpenLoginResult {
   reusedTab?: boolean
   /** 给用户的状态/失败说明。 */
   message?: string
+  /** v28：后端发现这次打开的浏览器调试端口不是 9222 时为 true。 */
+  portMismatch?: boolean
+  /** v28：portMismatch 为 true 时，这次实际打开在的浏览器调试端口。 */
+  chromePort?: number | string
 }
 
-export async function openPlatformLogin(platform: PlatformId): Promise<OpenLoginResult> {
-  const url = PLATFORM_LOGIN_URLS[platform]
+/** 各平台首页：开始任务时“已登录却缺页”的平台先用首页自动开一页。 */
+export const PLATFORM_HOME_URLS: Record<PlatformId, string> = {
+  boss: 'https://www.zhipin.com/',
+  zhilian: 'https://www.zhaopin.com/',
+  '51job': 'https://www.51job.com/',
+  liepin: 'https://www.liepin.com/',
+}
+
+/** portMismatch 为 true 时追加给用户的提醒；没有端口不一致返回 ''。 */
+export function portMismatchNote(result: OpenLoginResult): string {
+  if (!result.portMismatch) return ''
+  const port = result.chromePort === undefined || result.chromePort === '' ? '别的' : String(result.chromePort)
+  return `（注意：这次打开在了 ${port} 端口的浏览器里，不是在 9222 的工作浏览器，请重启程序再试）`
+}
+
+/** 在工作浏览器里打开一个网址（/api/browser/open 的同一接口）。 */
+async function openUrlInWorkBrowser(url: string): Promise<OpenLoginResult> {
   try {
     // 只走后端：在运行组件连着的浏览器（程序拉起的专用配置目录）里开
-    // 登录页，登录态才能被检测到。v27 起不再回退到 window.open：回退
-    // 会把登录页开在面板自己的浏览器里，登录态落在另一个配置目录，
+    // 页面，登录态才能被检测到。v27 起不再回退到 window.open：回退
+    // 会把页面开在面板自己的浏览器里，登录态落在另一个配置目录，
     // 程序永远检测不到——就是之前“浏览器没连上，登录查不出来”的根因。
     // 后端没接通就把失败原因交回给界面，由界面显示并让用户再点一次。
     const res = await fetch('/api/browser/open', {
@@ -83,17 +102,41 @@ export async function openPlatformLogin(platform: PlatformId): Promise<OpenLogin
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
     })
-    const data = await res.json().catch(() => ({})) as { ok?: boolean; browser_started?: boolean; reused_tab?: boolean; message?: string; error?: string }
+    const data = await res.json().catch(() => ({})) as {
+      ok?: boolean
+      browser_started?: boolean
+      reused_tab?: boolean
+      message?: string
+      error?: string
+      port_mismatch?: boolean
+      chrome_port?: number | string
+    }
     if (res.ok && data.ok) {
       return {
         ok: true,
         browserStarted: Boolean(data.browser_started),
         reusedTab: Boolean(data.reused_tab),
         message: data.message || '已在工作浏览器打开。',
+        portMismatch: Boolean(data.port_mismatch),
+        chromePort: data.chrome_port,
       }
     }
-    return { ok: false, message: data.error || '浏览器没连上，再点一次试试。' }
+    return {
+      ok: false,
+      message: data.error || '浏览器没连上，再点一次试试。',
+      portMismatch: Boolean(data.port_mismatch),
+      chromePort: data.chrome_port,
+    }
   } catch {
     return { ok: false, message: '没连上程序的浏览器，请确认简历猎手还在运行，再点一次。' }
   }
+}
+
+export async function openPlatformLogin(platform: PlatformId): Promise<OpenLoginResult> {
+  return openUrlInWorkBrowser(PLATFORM_LOGIN_URLS[platform])
+}
+
+/** 打开某平台首页（开始任务时给“已登录却缺页”的平台补一页）。 */
+export async function openPlatformPage(platform: PlatformId): Promise<OpenLoginResult> {
+  return openUrlInWorkBrowser(PLATFORM_HOME_URLS[platform])
 }

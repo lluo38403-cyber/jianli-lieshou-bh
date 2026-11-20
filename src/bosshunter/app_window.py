@@ -38,12 +38,15 @@ with one shared instance (v27):
   Closing the window never deletes the browser profile.
 """
 
+import http.server
 import json
 import logging
 import os
 import subprocess
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -62,6 +65,14 @@ _APP_WINDOW_STARTED_AT: float | None = None
 # 只看句柄就看不到关窗；面板标签页没了才是真关窗）。
 _APP_WINDOW_DEBUG_PORT: int | None = None
 _APP_WINDOW_URL: str | None = None
+# 启动页地址（v28）：窗口先开启动页时记这里；watch 的标签页检测
+# 要认启动页标签（见 watch_app_window_close）。
+_APP_WINDOW_SPLASH_URL: str | None = None
+
+
+def get_app_window_splash_url() -> str | None:
+    """Return the splash URL the --app window was launched with, if any."""
+    return _APP_WINDOW_SPLASH_URL
 
 
 def get_app_window_debug_port() -> int | None:
@@ -115,6 +126,138 @@ def wait_for_service_ready(host: str = "127.0.0.1", port: int = 8686, timeout: f
         time.sleep(interval)
 
 
+# 启动页服务在面板就绪后多久自停（给页面留出跳转时间，见
+# _SplashRequestHandler.do_GET 的 /splash-health 分支）。
+_SPLASH_STOP_DELAY_SECONDS = 5.0
+
+
+def _splash_page_html(panel_url: str) -> bytes:
+    """Render the static splash page (v28).
+
+    只写明“正在启动 + 明确状态行”，不依赖任何外部资源。页面用
+    同源 fetch 轮询启动页服务自己的 /splash-health（服务在后台帮
+    我们问面板 /api/health），通了就 location.replace 跳面板——
+    启动页与面板不在同源，直接 fetch 面板会被 CORS 挡住，所以
+    不直接问面板。panel_url 只进 JS 字符串（json.dumps 转义）。
+    """
+    panel_json = json.dumps(panel_url).replace("<", "\\u003c")
+    page = (
+        "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+        "<title>简历猎手正在启动</title>"
+        "<style>body{font-family:sans-serif;display:flex;min-height:100vh;"
+        "margin:0;align-items:center;justify-content:center;background:#f4f6f8;"
+        "color:#222}main{text-align:center}h1{font-size:20px;margin:0 0 12px}"
+        "p{font-size:14px;color:#666;margin:0}</style></head><body><main>"
+        "<h1>简历猎手正在启动，请稍等&hellip;</h1>"
+        "<p id=\"status\">正在等本地服务起来&hellip;</p></main>"
+        "<script>var panelUrl=" + panel_json + ";var tried=0;"
+        "function tick(){tried++;"
+        "fetch('/splash-health').then(function(r){return r.json()}).then(function(d){"
+        "if(d.ready){location.replace(panelUrl);return}"
+        "if(tried>60){document.getElementById('status').textContent="
+        "'启动有点慢，还在等本地服务起来，请稍等…';}"
+        "setTimeout(tick,500)}).catch(function(){setTimeout(tick,500)})}"
+        "tick();</script></body></html>"
+    )
+    return page.encode("utf-8")
+
+
+class _SplashRequestHandler(http.server.BaseHTTPRequestHandler):
+    """Serve the splash page + a same-origin readiness proxy (v28).
+
+    只认两个路径：/（启动页）和 /splash-health（问面板好了没，
+    后台用 is_our_service_alive 问面板 /api/health）。其余 404。
+    protocol_version 用 HTTP/1.1 + 显式 Content-Length，避免 Chrome
+    --app 里页面一直转圈。只在本机监听，见 start_splash_server。
+    """
+
+    panel_url = "http://127.0.0.1:8686"
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):  # 不往 stderr 刷请求日志
+        pass
+
+    def _send(self, status: int, body: bytes, content_type: str) -> None:
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def do_GET(self) -> None:
+        try:
+            path = urllib.parse.urlparse(self.path).path
+            if path in ("/", "/index.html"):
+                self._send(200, _splash_page_html(self.panel_url), "text/html; charset=utf-8")
+            elif path == "/splash-health":
+                parsed = urllib.parse.urlparse(self.panel_url)
+                ready = is_our_service_alive(
+                    parsed.hostname or "127.0.0.1",
+                    parsed.port or 8686,
+                    timeout=1.0,
+                )
+                if ready and not getattr(self.server, "_splash_stop_scheduled", False):
+                    # 服务好了：页面下次轮询就会跳面板；5 秒后自停，
+                    # 给页面留出跳转时间——调用方不用抢着停（停早了
+                    # 页面还在轮询，会卡在启动页跳不过去）。
+                    self.server._splash_stop_scheduled = True
+                    timer = threading.Timer(
+                        _SPLASH_STOP_DELAY_SECONDS, stop_splash_server, args=(self.server,)
+                    )
+                    timer.daemon = True
+                    timer.start()
+                self._send(200, json.dumps({"ready": ready}).encode("utf-8"), "application/json")
+            else:
+                self._send(404, b"not found", "text/plain")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    do_HEAD = do_GET
+
+
+def start_splash_server(panel_url: str, host: str = "127.0.0.1"):
+    """Start the lightweight splash server on a temp localhost port (v28).
+
+    只用标准库 http.server，不引新依赖。返回 server（带 .splash_url
+    属性），失败返回 None、永不抛异常。线程是 daemon：进程退出时
+    不会拖住；正常流程由 run_server 在服务就绪后调 stop_splash_server
+    干净停掉（见汇报里的 run_server 改动规格）。
+    """
+    try:
+        handler = type(
+            "SplashHandler",
+            (_SplashRequestHandler,),
+            {"panel_url": panel_url},
+        )
+        server = http.server.ThreadingHTTPServer((host, 0), handler)
+        server.daemon_threads = True
+        server.splash_url = f"http://{host}:{server.server_address[1]}/"
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server
+    except Exception as exc:
+        _logger.warning("start_splash_server: 启动页服务起不来：%s", exc)
+        return None
+
+
+def stop_splash_server(server) -> None:
+    """Stop a splash server started by start_splash_server. Idempotent, never raises."""
+    if server is None:
+        return
+    try:
+        server.shutdown()
+    except Exception:
+        pass
+    try:
+        server.server_close()
+    except Exception:
+        pass
+
+
 def find_app_browser(config: dict[str, Any] | None = None) -> str | None:
     """Return the selected browser executable path for --app mode, or None.
 
@@ -132,8 +275,20 @@ def find_app_browser(config: dict[str, Any] | None = None) -> str | None:
         return None
 
 
-def launch_app_window(url: str, config: dict[str, Any] | None = None) -> subprocess.Popen | None:
+def launch_app_window(
+    url: str,
+    config: dict[str, Any] | None = None,
+    *,
+    splash_url: str | None = None,
+    panel_url: str | None = None,
+) -> subprocess.Popen | None:
     """Open url in a standalone --app window; fall back to the default browser.
+
+    v28 启动页：传了 splash_url 就先开启动页（窗口立刻出现），
+    panel_url（默认就是 url）才是 watch_app_window_close 要盯的
+    面板地址——_APP_WINDOW_URL 记面板地址，启动页地址另记
+    _APP_WINDOW_SPLASH_URL。启动页自己会跳面板，标签页检测认
+    得启动页标签（见 watch_app_window_close）。
 
     v27：--app 窗口与工作浏览器跑在同一个 Chrome 实例里——同一个
     专用配置目录（~/.jianli-lieshou/browser-profile）+ 同一个调试
@@ -150,6 +305,10 @@ def launch_app_window(url: str, config: dict[str, Any] | None = None) -> subproc
     environment the user still reaches the panel.
     """
     global _APP_WINDOW_PROC
+    global _APP_WINDOW_STARTED_AT
+    global _APP_WINDOW_DEBUG_PORT
+    global _APP_WINDOW_URL
+    global _APP_WINDOW_SPLASH_URL
     executable = find_app_browser(config)
     if executable:
         # creationflags 只在 Windows 上传：CPython 在非 Windows 上收到
@@ -189,25 +348,25 @@ def launch_app_window(url: str, config: dict[str, Any] | None = None) -> subproc
             debug_port = None
             profile_dir = None
         args = [executable, f"--app={url}"]
+        if splash_url is not None:
+            # v28：先开启动页，窗口立刻出现；面板地址另记（watch 目标）。
+            args = [executable, f"--app={splash_url}"]
         if debug_port is not None and profile_dir is not None:
             args = [
                 executable,
                 f"--user-data-dir={profile_dir}",
                 f"--remote-debugging-port={debug_port}",
-                f"--app={url}",
-            ]
+            ] + args[1:]
         try:
             proc = subprocess.Popen(args, **kwargs)
         except OSError:
             proc = None
         if proc is not None:
-            global _APP_WINDOW_STARTED_AT
-            global _APP_WINDOW_DEBUG_PORT
-            global _APP_WINDOW_URL
             _APP_WINDOW_PROC = proc
             _APP_WINDOW_STARTED_AT = time.monotonic()
             _APP_WINDOW_DEBUG_PORT = debug_port
-            _APP_WINDOW_URL = url
+            _APP_WINDOW_URL = panel_url if panel_url is not None else url
+            _APP_WINDOW_SPLASH_URL = splash_url
             if debug_port is not None and profile_dir is not None and not port_listening:
                 # 这次新拉的实例：记下来，v25 的退出清理按它停 Chrome。
                 # 交接的不记——那是已在跑实例的进程，不是这次拉的。
@@ -219,10 +378,41 @@ def launch_app_window(url: str, config: dict[str, Any] | None = None) -> subproc
                     pass
             return proc
     # 没找到 Edge/Chrome，或拉起失败：走默认浏览器，总能进界面。
+    # v28：有启动页就开启动页（它自己会跳面板）。句柄没有，但
+    # URL 还是记下来，watch 的状态与 --app 路径一致。
+    _APP_WINDOW_URL = panel_url if panel_url is not None else url
+    _APP_WINDOW_SPLASH_URL = splash_url
     import webbrowser
 
-    webbrowser.open(url)
+    webbrowser.open(splash_url if splash_url is not None else url)
     return None
+
+
+def launch_splash_window(
+    panel_url: str, config: dict[str, Any] | None = None
+) -> tuple[subprocess.Popen | None, object | None]:
+    """Start the splash server and open the --app window onto it (v28).
+
+    返回 (proc, splash_server)：启动页服务在面板就绪后 5 秒自停，
+    调用方不用抢着停；关窗退出时进程直接退出，服务随之消失。
+    启动页服务起不来就直接开面板窗口（旧行为），不挡启动。
+    永不抛异常。
+    """
+    try:
+        server = start_splash_server(panel_url)
+    except Exception:
+        server = None
+    if server is None:
+        return launch_app_window(panel_url, config), None
+    try:
+        proc = launch_app_window(
+            panel_url, config, splash_url=server.splash_url, panel_url=panel_url
+        )
+    except Exception:
+        # 窗口都没拉起来：启动页服务也没人看了，直接停掉。
+        stop_splash_server(server)
+        return None, None
+    return proc, server
 
 
 def close_app_window(timeout: float = 3.0) -> bool:
@@ -236,10 +426,12 @@ def close_app_window(timeout: float = 3.0) -> bool:
     时句柄早已退出，直接放过。关窗从不删浏览器配置。
     """
     global _APP_WINDOW_PROC
+    global _APP_WINDOW_STARTED_AT
+    global _APP_WINDOW_SPLASH_URL
     proc = _APP_WINDOW_PROC
     _APP_WINDOW_PROC = None
-    global _APP_WINDOW_STARTED_AT
     _APP_WINDOW_STARTED_AT = None
+    _APP_WINDOW_SPLASH_URL = None
     if proc is None or proc.poll() is not None:
         return False
     try:
@@ -297,6 +489,7 @@ def watch_app_window_close(
     _debug_port: int | None = None,
     _list_tabs=None,
     _tab_watch_seconds: float = 60.0,
+    _splash_url: str | None = None,
 ) -> bool:
     """Watch the held --app window; call on_close() once the user closes it.
 
@@ -341,6 +534,7 @@ def watch_app_window_close(
             # 起算，宁可漏一次真关窗也不误杀刚交接的假退出。
             started_at = clock()
         panel_url = _panel_url if _panel_url is not None else _APP_WINDOW_URL
+        splash_url = _splash_url if _splash_url is not None else _APP_WINDOW_SPLASH_URL
         debug_port = _debug_port if _debug_port is not None else _APP_WINDOW_DEBUG_PORT
         if _list_tabs is not None:
             list_tabs = _list_tabs
@@ -385,7 +579,16 @@ def watch_app_window_close(
                 except Exception:
                     urls = None
                 if urls is not None:
-                    if any(url.startswith(panel_url) for url in urls) if panel_url else False:
+                    # v28：启动页标签也算“我们的标签页”——启动页阶段
+                    # 关窗是真关窗，不是交接假退出：启动页出现过、后
+                    # 来没了，就触发 on_close（tab-only 路径下 grace
+                    # 内退出的句柄也不会把它吞掉）。
+                    def _is_our_tab(url: str) -> bool:
+                        if panel_url and url.startswith(panel_url):
+                            return True
+                        return bool(splash_url and url.startswith(splash_url))
+
+                    if any(_is_our_tab(url) for url in urls):
                         seen_panel = True
                     elif seen_panel:
                         try:

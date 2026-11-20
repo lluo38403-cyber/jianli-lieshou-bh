@@ -2177,11 +2177,17 @@ def api_workbench_preflight():
 	try:
 		config = load_config(CONFIG_PATH)
 		options = _resolve_collection_resume(mode, options)
-		checks = collect_preflight_checks(mode, config, options)
+		# v28：先刷新登录态再读库，缺页判定按已登录态降级（别用过期态）。
+		_maybe_refresh_login_states(config)
+		login_states = {}
+		db = get_db(DATA_DIR / "bosshunter.db")
+		try:
+			login_states = get_all_platform_login_states(db)
+		finally:
+			db.close()
+		checks = collect_preflight_checks(mode, config, options, login_states=login_states)
 		messages = error_messages(checks)
 		_record_last_preflight(checks)
-		# 登录态持久化：不拦 preflight 返回，失败静默。
-		_maybe_refresh_login_states(config)
 		return _json_response({"ok": not messages, "messages": messages, "checks": checks})
 	except ValueError as e:
 		return _json_response({"ok": False, "messages": [str(e)]}, 400)
@@ -2283,6 +2289,10 @@ def api_browser_open():
 			"target_id": result["target_id"],
 			"browser_started": bool(result.get("browser_started")),
 			"reused_tab": bool(result.get("reused_tab")),
+			# v28：去登录落点校验——代理实际连的 Chrome 端口与期望端口
+			# 不一致时前端追加提示（页面可能开在了个人浏览器窗口）。
+			"port_mismatch": bool(result.get("port_mismatch")),
+			"chrome_port": result.get("chrome_port"),
 			"message": result.get("message") or "",
 		})
 	except Exception as e:
@@ -2842,6 +2852,36 @@ def api_workbench_task_stop(task_id):
 		return _json_response({"error": "任务不存在"}, 404)
 	except Exception as e:
 		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/workbench/force-stop", method="POST")
+def api_workbench_force_stop():
+	"""v28：停止卡在“正在停下…”超过 10 秒时的强制停止。
+
+	先走正常 stop（落盘停止状态），再调 force_stop 等最多 10 秒；
+	线程自然结束就返回它自己的终态，等不到才强制把任务标为已停止
+	（只改任务状态，不放浏览器锁、不杀线程；旧线程回来时世代守卫
+	会丢弃它的完成回调，不会复活状态）。
+	"""
+	try:
+		try:
+			body = request.json
+		except Exception:
+			body = None
+		body = body if isinstance(body, dict) else {}
+		task_id = str(body.get("task_id") or "")
+		if not task_id:
+			active = task_runner.status().get("active")
+			task_id = str((active or {}).get("id") or "")
+		if not task_id:
+			return _json_response({"ok": False, "error": "没有正在跑的任务"}, 404)
+		task_runner.stop(task_id, "用户已强制停止")
+		snapshot = task_runner.force_stop(task_id, "用户已强制停止")
+		return _json_response({"ok": True, **snapshot})
+	except KeyError:
+		return _json_response({"ok": False, "error": "任务不存在"}, 404)
+	except Exception as e:
+		return _json_response({"ok": False, "error": str(e)}, 500)
 
 
 @app.route("/api/safety/clear-risk-lock", method="POST")
@@ -4535,13 +4575,20 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 	# 顺手确保桌面上有「简历猎手.lnk」：面板更新后重拉 exe 和新下载
 	# 第一次双击都会走到这里；建过一次就留 marker 不再建（用户手动
 	# 删了也不再补），失败同样不挡启动。
-	try:
-		from bosshunter.updater import cleanup_stale_update_processes, ensure_desktop_shortcut
+	# v28：这两步都可能在云电脑上拖几秒（PowerShell CIM 查询、COM
+	# 操作），改到守护线程里跑，不挡首屏开窗；复用路径也要触发清理。
+	import threading
 
-		cleanup_stale_update_processes()
-		ensure_desktop_shortcut()
-	except Exception:
-		pass
+	def _startup_housekeeping() -> None:
+		try:
+			from bosshunter.updater import cleanup_stale_update_processes, ensure_desktop_shortcut
+
+			cleanup_stale_update_processes()
+			ensure_desktop_shortcut()
+		except Exception:
+			pass
+
+	threading.Thread(target=_startup_housekeeping, daemon=True).start()
 	# 端口已被上一次的服务占着：不再起新服务，只开窗口复用现有服务，
 	# 不报错（之前挂起的“端口被占处理”：直接起服务会报地址已被占用）。
 	# 只有认得出是自家服务的才复用——别的程序占着端口不算。
@@ -4552,6 +4599,12 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 		if open_browser:
 			launch_app_window(panel_url)
 		return
+	# v28：先拉启动页（立即出窗口、轮询服务就绪后自己跳转面板），
+	# 重型前置检查已在守护线程里跑，不挡首屏。
+	if open_browser:
+		from bosshunter.app_window import launch_splash_window
+
+		launch_splash_window(panel_url)
 	# v25：起新服务前先做残留清理（上次被任务管理器强杀后留下的
 	# node.exe / 自动化 Chrome），再记下本实例、装好退出钩子。复用
 	# 路径（上面已 return）不做这些：那个进程只是开窗就退出，退出
@@ -4577,19 +4630,6 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 			task_runner.start("collect", {**load_config(CONFIG_PATH), "_collection_options": session["options"], "_continuous_session_id": session["id"]})
 
 	if open_browser:
-		import threading
-		def _open():
-			# 先等服务就绪再开窗：冷启动慢的机器上 1 秒不一定够，
-			# 服务还没监听就打开的 --app 窗口会一直空白、不会自动重试。
-			# 15 秒还没好也照常开（和以前一样，用户刷新就能进）。
-			from bosshunter.app_window import wait_for_service_ready
-
-			wait_for_service_ready(host, port, timeout=15.0)
-			# 独立应用窗口打开界面（Edge/Chrome --app 模式）；拉不起来
-			# 就降级回默认浏览器，任何环境都能进界面。
-			launch_app_window(panel_url)
-		threading.Thread(target=_open, daemon=True).start()
-
 		def _watch_app_close():
 			# v25：关 --app 窗口先经 beforeunload 确认（浏览器通用确认
 			# 框，见前端 closeConfirm）；用户点“离开”后句柄退出，这里

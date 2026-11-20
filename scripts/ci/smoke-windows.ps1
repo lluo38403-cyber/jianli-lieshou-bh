@@ -151,6 +151,63 @@ try {
     }
   }
   Write-Host 'stage=pages OK：首页/设置/动态接口都通'
+
+  # ---- 阶段 pdf：PDF 简历上传（v28） ----
+  # 只用 Python 标准库现场生成两份测试 PDF，不引新依赖：
+  # 一份带文字（应上传成功），一份空白页无文字层（应报扫描件错）。
+  # 生成器写进临时 .py 再跑，跑完就删；CI 上的 python 就是装包的那个。
+  $pdfGen = Join-Path $tempDir 'smoke-make-pdf.py'
+  $pdfText = Join-Path $tempDir 'smoke-resume.pdf'
+  $pdfBlank = Join-Path $tempDir 'smoke-blank.pdf'
+  @'
+def build_pdf(text):
+    esc = text.replace('\\', '\\\\').replace('(', '\\(').replace(')', '\\)')
+    stream = 'BT /F1 24 Tf 72 720 Td (' + esc + ') Tj ET' if text else ''
+    sb = stream.encode('latin-1')
+    objs = []
+    objs.append(b'<< /Type /Catalog /Pages 2 0 R >>')
+    objs.append(b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>')
+    objs.append(b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>')
+    objs.append(b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+    objs.append(b'<< /Length ' + str(len(sb)).encode() + b' >>\nstream\n' + sb + b'\nendstream')
+    out = bytearray(b'%PDF-1.4\n')
+    offsets = []
+    for i, obj in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += ('%d 0 obj\n' % i).encode() + obj + b'\nendobj\n'
+    xref_pos = len(out)
+    out += ('xref\n0 %d\n' % (len(objs) + 1)).encode()
+    out += b'0000000000 65535 f \n'
+    for off in offsets:
+        out += ('%010d 00000 n \n' % off).encode()
+    out += ('trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n' % (len(objs) + 1, xref_pos)).encode()
+    return bytes(out)
+
+import sys
+open(sys.argv[1], 'wb').write(build_pdf('Jane Doe - Senior Engineer'))
+open(sys.argv[2], 'wb').write(build_pdf(''))
+'@ | Set-Content -Path $pdfGen -Encoding utf8
+  python $pdfGen $pdfText $pdfBlank
+  if (-not (Test-Path $pdfText) -or -not (Test-Path $pdfBlank)) { throw 'stage=pdf 测试 PDF 没生成出来' }
+  try {
+    $upload = Invoke-WebRequest -Uri "$base/api/resume/upload" -Method Post -Form @{ file = Get-Item $pdfText } -TimeoutSec 15
+    $uploadJson = $upload.Content | ConvertFrom-Json
+    if (-not $uploadJson.success) { throw 'stage=pdf 带文字的 PDF 上传没成功' }
+  } catch {
+    if ($_.Exception.Message -like 'stage=pdf*') { throw $_ }
+    throw "stage=pdf 带文字的 PDF 上传失败：$($_.Exception.Message)"
+  }
+  Write-Host 'stage=pdf OK：带文字的 PDF 上传成功'
+  try {
+    $blankUpload = Invoke-WebRequest -Uri "$base/api/resume/upload" -Method Post -Form @{ file = Get-Item $pdfBlank } -TimeoutSec 15
+    throw 'stage=pdf 空白 PDF 应该报扫描件错，却上传成功了'
+  } catch {
+    if ($_.Exception.Message -like 'stage=pdf*') { throw $_ }
+    $body = $_.ErrorDetails.Message
+    if (-not $body -or $body -notmatch '扫描版') { throw "stage=pdf 空白 PDF 没报扫描件错：$body" }
+  }
+  Write-Host 'stage=pdf OK：空白 PDF 报了扫描件错'
+  Remove-Item $pdfGen, $pdfText, $pdfBlank -ErrorAction SilentlyContinue
 } catch {
   Write-Host "SMOKE_FAIL $_"
   Show-LogTail $logOut

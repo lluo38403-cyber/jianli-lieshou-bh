@@ -125,6 +125,54 @@ class BrowserFacadeTests(unittest.TestCase):
 
     @patch("bosshunter.browser.RuntimeClient")
     @patch("bosshunter.browser.ensure_runtime")
+    def test_wait_for_load_returns_quickly_when_stop_event_is_set(self, ensure_runtime, client_cls):
+        import threading
+        import time
+
+        import bosshunter.browser as browser
+
+        ensure_runtime.return_value = True
+        client_cls.return_value.info.return_value = {"ready": "loading"}
+        stop_event = threading.Event()
+        stop_event.set()
+
+        started = time.monotonic()
+        self.assertFalse(browser.wait_for_load("target-1", timeout=10, stop_event=stop_event))
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    @patch("bosshunter.browser.RuntimeClient")
+    @patch("bosshunter.browser.ensure_runtime")
+    def test_wait_for_load_returns_quickly_when_stop_event_set_mid_wait(self, ensure_runtime, client_cls):
+        import threading
+        import time
+
+        import bosshunter.browser as browser
+
+        ensure_runtime.return_value = True
+        client_cls.return_value.info.return_value = {"ready": "loading"}
+        stop_event = threading.Event()
+        threading.Timer(0.2, stop_event.set).start()
+
+        started = time.monotonic()
+        self.assertFalse(browser.wait_for_load("target-1", timeout=10, stop_event=stop_event))
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    @patch("bosshunter.browser.RuntimeClient")
+    @patch("bosshunter.browser.ensure_runtime")
+    def test_wait_for_load_without_stop_event_keeps_timeout_behavior(self, ensure_runtime, client_cls):
+        import time
+
+        import bosshunter.browser as browser
+
+        ensure_runtime.return_value = True
+        client_cls.return_value.info.return_value = {"ready": "loading"}
+
+        started = time.monotonic()
+        self.assertFalse(browser.wait_for_load("target-1", timeout=1))
+        self.assertGreaterEqual(time.monotonic() - started, 1.0)
+
+    @patch("bosshunter.browser.RuntimeClient")
+    @patch("bosshunter.browser.ensure_runtime")
     def test_check_chrome_connection_returns_health(self, ensure_runtime, client_cls):
         import bosshunter.browser as browser
 
@@ -281,6 +329,39 @@ class OpenPlatformTabTests(unittest.TestCase):
         client_cls.return_value.navigate.assert_not_called()
         client_cls.return_value.activate.assert_not_called()
         client_cls.return_value.new_tab.assert_called_once_with(self._BOSS_LOGIN)
+
+    @patch("bosshunter.browser.pick_chrome_debug_port", return_value=9222)
+    @patch("bosshunter.browser.runtime_health", return_value={"status": "ok", "runtime": "bosshunter", "chromePort": 9222})
+    @patch("bosshunter.browser.RuntimeClient")
+    @patch("bosshunter.browser.ensure_runtime")
+    @patch("bosshunter.browser.runtime_targets")
+    def test_reports_matching_chrome_port_after_open(self, runtime_targets, ensure_runtime, client_cls, health, pick):
+        # A5：代理实际连的端口与期望端口一致时 port_mismatch=False。
+        runtime_targets.return_value = [{"targetId": "x", "url": "https://example.com"}]
+        browser = self._setup(ensure_runtime, client_cls, targets=[])
+
+        result = browser.open_platform_tab(self._BOSS_LOGIN)
+
+        self.assertEqual(result["target_id"], "t-new")
+        self.assertFalse(result["port_mismatch"])
+        self.assertEqual(result["chrome_port"], 9222)
+
+    @patch("bosshunter.browser.pick_chrome_debug_port", return_value=9222)
+    @patch("bosshunter.browser.runtime_health", return_value={"status": "ok", "runtime": "bosshunter", "chromePort": 9229})
+    @patch("bosshunter.browser.RuntimeClient")
+    @patch("bosshunter.browser.ensure_runtime")
+    @patch("bosshunter.browser.runtime_targets")
+    def test_reports_port_mismatch_when_runtime_connected_elsewhere(self, runtime_targets, ensure_runtime, client_cls, health, pick):
+        # A5：代理实际连的端口（9229）不是期望的工作浏览器端口（9222）
+        # 时上报 port_mismatch=True 与实际端口，不拦这次打开。
+        runtime_targets.return_value = [{"targetId": "x", "url": "https://example.com"}]
+        browser = self._setup(ensure_runtime, client_cls, targets=[])
+
+        result = browser.open_platform_tab(self._BOSS_LOGIN)
+
+        self.assertEqual(result["target_id"], "t-new")
+        self.assertTrue(result["port_mismatch"])
+        self.assertEqual(result["chrome_port"], 9229)
 
     @patch("bosshunter.browser.RuntimeClient")
     @patch("bosshunter.browser.ensure_runtime")

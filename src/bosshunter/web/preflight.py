@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -26,8 +27,38 @@ from bosshunter.collection.orchestrator import normalize_collection_options
 
 VALID_MODES = {"full", "collect", "rescore", "monitor"}
 
+# BOSS 登录页精确判定，与采集侧 boss.py 的 JS 正则同一口径：
+# /\/web\/user\/(?:login|\?ka=header-login)/i —— 只有登录页才算离线。
+# 绝不能再用 "/user/" 宽松子串：已登录用户停在个人中心页
+# https://www.zhipin.com/web/user/ 也会被误判掉线，写库后还会触发
+# 熔断停用该平台直到当天结束（v10 有意规则，见 db.record_platform_login_state）。
+_BOSS_LOGIN_URL_RE = re.compile(r"/web/user/(?:login|\?ka=header-login)", re.IGNORECASE)
 
-def collect_preflight_checks(mode: str, config: dict, options: dict | None = None, allow_launch: bool = False) -> list[dict[str, str]]:
+
+def is_boss_login_url(url: str | None) -> bool:
+	"""True only when a BOSS tab URL is on the login page (see _BOSS_LOGIN_URL_RE)."""
+	if not url:
+		return False
+	return bool(_BOSS_LOGIN_URL_RE.search(str(url)))
+
+
+def _login_state(login_states: dict | None, platform: str) -> str:
+	"""Normalize one platform's login state from a login_states mapping.
+
+	值可以是字符串（"logged_in"）或 DB 行那样的 dict（{"status": ...}），
+	取不到 / 不是字符串时一律按 "unknown" 处理，调用方保持原有行为。
+	"""
+	if not isinstance(login_states, dict):
+		return "unknown"
+	value = login_states.get(platform)
+	if isinstance(value, dict):
+		value = value.get("status")
+	if isinstance(value, str):
+		return value.strip().lower()
+	return "unknown"
+
+
+def collect_preflight_checks(mode: str, config: dict, options: dict | None = None, allow_launch: bool = False, login_states: dict | None = None) -> list[dict[str, str]]:
 	"""Collect configuration, AI connectivity, and browser readiness checks.
 
 	默认只做检测，不拉起浏览器（“检查一下能不能跑”走这里）；
@@ -61,7 +92,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 		# ``auto_score=false`` genuinely AI-free even when credentials are saved.
 		checks.append(_check("ai_connection", "AI 接口连接", "pass", "纯采集不需要 AI", "关闭“采集后自动评分”时不会调用 AI。"))
 		try:
-			checks.extend(check_browser_connection(deepcopy(config), collection_options, allow_launch=allow_launch))
+			checks.extend(check_browser_connection(deepcopy(config), collection_options, allow_launch=allow_launch, login_states=login_states))
 		except Exception:
 			checks.append(_check("browser_runtime", "浏览器连接", "error", "浏览器连接检测失败", "请重新启动简历猎手后再试。", "browser"))
 		return checks
@@ -74,7 +105,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 				_check("ai_connection", "AI 接口连接", "error", "AI 接口检测失败", "请检查 AI 设置后重试。", "config"),
 			))
 		pending_checks.append((
-			executor.submit(check_browser_connection, deepcopy(config), collection_options, allow_launch),
+			executor.submit(check_browser_connection, deepcopy(config), collection_options, allow_launch, login_states),
 			_check("browser_runtime", "浏览器连接", "error", "浏览器连接检测失败", "请重新启动简历猎手后再试。", "browser"),
 		))
 		for future, fallback in pending_checks:
@@ -362,7 +393,7 @@ def _python_runtime_checks() -> list[dict[str, str]]:
 	]
 
 
-def check_browser_connection(config: dict, collection_options: dict | None = None, allow_launch: bool = False) -> list[dict[str, str]]:
+def check_browser_connection(config: dict, collection_options: dict | None = None, allow_launch: bool = False, login_states: dict | None = None) -> list[dict[str, str]]:
 	"""Translate Browser Runtime diagnostics into actionable checks.
 
 	只做检测，不拉起浏览器（“检查一下能不能跑”是检测；拉起只在
@@ -459,7 +490,7 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 			boss_tab = result.get("boss_tab")
 			if boss_tab:
 				url = str(boss_tab.get("url") or "")
-				if any(marker in url.lower() for marker in ("/login", "/user/", "signin")):
+				if is_boss_login_url(url):
 					checks.append(
 						_check(
 							"boss_login",
@@ -480,6 +511,18 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 							"请确认该页面已登录招聘平台账号。",
 						)
 					)
+			elif _login_state(login_states, "boss") == "logged_in":
+				# 已登录却没打开页面：开始任务时会自动打开，不拦。
+				checks.append(
+					_check(
+						"boss_tab",
+						"BOSS 直聘页面",
+						"warning",
+						"未发现已打开的 BOSS 直聘页面，开始任务时会自动打开",
+						"BOSS 直聘已登录，开始任务时会自动打开对应的页面。",
+						"browser",
+					)
+				)
 			else:
 				checks.append(
 					_check(
@@ -502,17 +545,21 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 			elif state == "blocked":
 				checks.append(_check("zhilian_blocked", "智联页面状态", "error", "智联页面受到拦截", str(page_state.get("message") or "请人工处理验证码、频率限制或账号异常。"), "browser"))
 			elif state == "missing":
-				checks.append(_check("zhilian_tab", "智联招聘页面", "error", "未发现已打开的智联招聘页面", "请在已连接的浏览器中打开已登录的智联职位页后重新检查。", "browser"))
+				if _login_state(login_states, "zhilian") == "logged_in":
+					# 已登录却没打开页面：开始任务时会自动打开，降级为 warning，不拦。
+					checks.append(_check("zhilian_tab", "智联招聘页面", "warning", "未发现已打开的智联招聘页面，开始任务时会自动打开", "智联已登录，开始任务时会自动打开对应的页面。", "browser"))
+				else:
+					checks.append(_check("zhilian_tab", "智联招聘页面", "error", "未发现已打开的智联招聘页面", "请在已连接的浏览器中打开已登录的智联职位页后重新检查。", "browser"))
 			else:
 				checks.append(_check("zhilian_page", "智联页面结构", "error", "未识别到智联搜索页", str(page_state.get("message") or "请打开智联职位搜索页后重新检查。"), "browser"))
 		if "51job" in selected_platforms:
-			checks.extend(_platform_page_checks(result, "51job", "前程无忧"))
+			checks.extend(_platform_page_checks(result, "51job", "前程无忧", login_states))
 		if "liepin" in selected_platforms:
-			checks.extend(_platform_page_checks(result, "liepin", "猎聘"))
+			checks.extend(_platform_page_checks(result, "liepin", "猎聘", login_states))
 	return checks
 
 
-def _platform_page_checks(result: dict, platform: str, display: str) -> list[dict[str, str]]:
+def _platform_page_checks(result: dict, platform: str, display: str, login_states: dict | None = None) -> list[dict[str, str]]:
 	"""Login checks for 51job / Liepin, mirroring the Zhilian DOM check.
 
 	只读已打开标签页的 DOM 状态（diagnostics 已查好放在 result 里），
@@ -532,6 +579,9 @@ def _platform_page_checks(result: dict, platform: str, display: str) -> list[dic
 	if state == "blocked":
 		return [_check(f"{platform}_blocked", f"{display}页面状态", "error", f"{display}页面受到拦截", message or "请人工处理验证码、频率限制或账号异常。", "browser")]
 	if state == "missing":
+		if _login_state(login_states, platform) == "logged_in":
+			# 已登录却没打开页面：开始任务时会自动打开，降级为 warning，不拦。
+			return [_check(f"{platform}_tab", f"{display}页面", "warning", f"未发现已打开的{display}页面，开始任务时会自动打开", f"{display}已登录，开始任务时会自动打开对应的页面。", "browser")]
 		return [_check(f"{platform}_tab", f"{display}页面", "error", f"未发现已打开的{display}页面", f"请在已连接的浏览器中打开已登录的{display}职位页后重新检查。", "browser")]
 	return [_check(f"{platform}_page", f"{display}页面结构", "error", f"未识别到{display}搜索页", message or f"请打开{display}职位搜索页后重新检查。", "browser")]
 
@@ -558,7 +608,7 @@ def derive_platform_login_states(result: dict) -> dict[str, dict[str, str | None
 	boss_tab = result.get("boss_tab")
 	if isinstance(boss_tab, dict):
 		url = str(boss_tab.get("url") or "")
-		if any(marker in url.lower() for marker in ("/login", "/user/", "signin")):
+		if is_boss_login_url(url):
 			states["boss"] = {"status": "logged_out", "detail": "BOSS 直聘页面停在登录页"}
 		else:
 			states["boss"] = {"status": "logged_in", "detail": "已发现 BOSS 直聘页面，未见登录页"}

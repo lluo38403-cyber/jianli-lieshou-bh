@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -11,9 +12,13 @@ from bosshunter.browser.client import RuntimeClient
 from bosshunter.browser.runtime import (
     ensure_runtime,
     get_runtime_url,
+    pick_chrome_debug_port,
+    runtime_health,
     runtime_targets,
     set_browser_config,
 )
+
+_logger = logging.getLogger(__name__)
 
 CDP_PROXY_URL = get_runtime_url()
 CDP_DIRECT_URL = "http://localhost:9222"
@@ -122,6 +127,33 @@ def _normalize_url(url: str) -> str:
     return url.rstrip("/") or "/"
 
 
+def _chrome_port_check() -> dict[str, Any]:
+    """Compare the Chrome port the runtime actually connected to with the expected one.
+
+    打开成功后核对一次落点：runtime_health() 上报的 chromePort 与
+    pick_chrome_debug_port() 的期望端口不一致，说明代理连上的不是
+    工作浏览器（例如个人 Chrome 抢在了前面），登录页可能落在另一个
+    窗口。只做核对、不拦、不回退：调用方据 port_mismatch 决定是否提醒。
+    任一端口拿不到时无法比对，按一致处理（port_mismatch=False）。
+    """
+    try:
+        health = runtime_health()
+        actual = health.get("chromePort") if isinstance(health, dict) else None
+        expected = pick_chrome_debug_port()
+        actual_port = int(actual) if actual is not None else None
+        mismatch = actual_port is not None and expected is not None and actual_port != expected
+        if mismatch:
+            _logger.warning(
+                "去登录落点与期望不一致：代理实际连的 Chrome 端口是 %s，期望端口是 %s",
+                actual_port,
+                expected,
+            )
+        return {"port_mismatch": mismatch, "chrome_port": actual_port}
+    except Exception as exc:
+        _logger.warning("去登录落点校验失败：%s", exc)
+        return {"port_mismatch": False, "chrome_port": None}
+
+
 def open_platform_tab(url: str) -> dict[str, Any]:
     """Open a platform page in the work browser, reusing its tab if open.
 
@@ -131,6 +163,9 @@ def open_platform_tab(url: str) -> dict[str, Any]:
     浏览器还没起来、是这次现拉的——前端据此给“工作浏览器已启动”
     的反馈，而不是含糊的“已打开”。
     只在“去登录”用：采集/投递的 new_tab 语义不变（永远新开）。
+    成功返回里带 port_mismatch / chrome_port（见 _chrome_port_check）：
+    代理实际连的 Chrome 端口与期望端口不一致时前端可据此提醒用户。
+    失败时仍只报“浏览器没连上…”，不加回退。
     """
     was_up = runtime_targets() is not None
     if not _ready(target_url=url):
@@ -158,6 +193,7 @@ def open_platform_tab(url: str) -> dict[str, Any]:
             "browser_started": not was_up,
             "reused_tab": True,
             "message": "已经打开了，直接切过去了。",
+            **_chrome_port_check(),
         }
     target_id = _client().new_tab(url)
     if not target_id:
@@ -172,6 +208,7 @@ def open_platform_tab(url: str) -> dict[str, Any]:
         "browser_started": not was_up,
         "reused_tab": False,
         "message": "已在工作浏览器打开。",
+        **_chrome_port_check(),
     }
 
 
@@ -259,12 +296,25 @@ def get_page_info(target_id: str) -> dict | None:
     return _client().info(target_id)
 
 
-def wait_for_load(target_id: str, timeout: float = 10.0) -> bool:
-    """Wait for page ready state to become complete."""
+def wait_for_load(target_id: str, timeout: float = 10.0, stop_event=None) -> bool:
+    """Wait for page ready state to become complete.
+
+    Returns False on timeout or when ``stop_event`` is set. Callers must
+    check the stop event after a False return instead of treating it as a
+    page-load failure to retry: a stop interrupt is a normal interrupt,
+    not a load failure.
+    """
     start = time.time()
     while time.time() - start < timeout:
+        if stop_event is not None and stop_event.is_set():
+            return False
         info = get_page_info(target_id)
         if info and info.get("ready") == "complete":
             return True
-        time.sleep(0.5)
+        if stop_event is not None:
+            # 收到停止立即中断：不等满 0.5 秒轮询间隔。
+            if stop_event.wait(0.5):
+                return False
+        else:
+            time.sleep(0.5)
     return False

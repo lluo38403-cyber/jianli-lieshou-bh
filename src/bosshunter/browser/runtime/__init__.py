@@ -259,15 +259,64 @@ def check_node_available() -> dict[str, Any]:
     }
 
 
-def runtime_health(config: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """Return `/health` JSON when the runtime responds."""
+def _fetch_runtime_health(url: str, timeout: float) -> dict[str, Any] | None:
+    """GET one runtime /health URL; None when it does not answer healthy JSON."""
     try:
-        response = httpx.get(f"{get_runtime_url(config)}/health", timeout=3, trust_env=False)
+        response = httpx.get(url, timeout=timeout, trust_env=False)
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            return data if isinstance(data, dict) else None
     except (httpx.HTTPError, ValueError):
         return None
     return None
+
+
+def runtime_health(config: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Return `/health` JSON when the runtime responds.
+
+    读时兜底，不写盘：配置端口（新加载的 config.yaml，默认 3456）连不上
+    或返回的不是 bosshunter 时，再试进程内 _browser_config 的代理端口——
+    端口回退（_switch_runtime_port）只改了内存，没写 config.yaml，走新
+    加载配置的调用会去连旧端口。试通了就采用：set_browser_config 更新
+    进程内配置，并把本次传入的 config dict 也同步成新端口（与
+    _switch_runtime_port 同款内存同步，不写盘），这样同一次调用链里的
+    runtime_targets 也能连上新端口。兜底探测用 1 秒短超时，别让失败
+    路径变慢太多。兜底没通时返回主端口的原结果（可能是非 bosshunter
+    的 health dict，调用方靠它报“端口被占用”；连不上时返回 None）。
+    """
+    primary = _fetch_runtime_health(f"{get_runtime_url(config)}/health", timeout=3)
+    if primary and primary.get("runtime") == "bosshunter":
+        return primary
+    if _browser_config is None:
+        return primary
+    fallback_browser = get_browser_config(_browser_config)
+    primary_browser = get_browser_config(config)
+    try:
+        fallback_port = int(fallback_browser.get("proxy_port", 3456))
+    except (TypeError, ValueError):
+        return primary
+    try:
+        primary_port = int(primary_browser.get("proxy_port", 3456))
+    except (TypeError, ValueError):
+        primary_port = 3456
+    if fallback_port == primary_port:
+        return primary
+    fallback_host = str(fallback_browser.get("proxy_host", "127.0.0.1"))
+    fallback = _fetch_runtime_health(f"http://{fallback_host}:{fallback_port}/health", timeout=1)
+    if fallback and fallback.get("runtime") == "bosshunter":
+        _logger.warning(
+            "配置端口 %s 连不上，改用进程内已切换的端口 %s",
+            primary_port,
+            fallback_port,
+        )
+        set_browser_config(dict(fallback_browser))
+        if isinstance(config, dict):
+            if isinstance(config.get("browser"), dict):
+                config["browser"]["proxy_port"] = fallback_port
+            else:
+                config["proxy_port"] = fallback_port
+        return fallback
+    return primary
 
 
 def is_bosshunter_runtime(config: dict[str, Any] | None = None) -> bool:
