@@ -325,7 +325,7 @@ def _browser_problem(chrome_connected: bool, discovered: dict[str, str | None]) 
     return (
         "connection_failed",
         "浏览器已经装好了，但是现在连不上。",
-        ["点“一键启动浏览器”，程序会自动打开一个能连接的浏览器窗口。", "在打开的浏览器里登录要用的招聘网站，再点“检查一下能不能跑”。"],
+        ["点任意一个平台的“去登录”，程序会自动打开一个能连接的浏览器窗口。", "在打开的浏览器里登录要用的招聘网站，再点“检查一下能不能跑”。"],
     )
 
 
@@ -333,8 +333,8 @@ def run_browser_diagnostics(config: dict[str, Any] | None = None, allow_launch: 
     """Collect Browser Runtime readiness state.
 
     allow_launch=False 时只连已有的可调试浏览器，绝不替用户拉新窗口
-    （首页被动刷新、后台巡检、重新检测都用它）；只有用户点的“一键
-    启动浏览器”才走默认 True。注意标签页一律从本轮已取到的 targets
+    （首页被动刷新、后台巡检、重新检测都用它）；只有用户点的“去登录”
+    （或任务启动）才走默认 True。注意标签页一律从本轮已取到的 targets
     里按域名找——绝不走 browser facade 的 find_*_tab，那条路会经
     ensure_runtime 默认拉起浏览器，检测就变拉起了。
     """
@@ -342,7 +342,7 @@ def run_browser_diagnostics(config: dict[str, Any] | None = None, allow_launch: 
     # 被动检查（首页/设置页每次打开都调）只等已经在跑的 runtime：5 秒
     # 没出现就不会再出现，等满 15 秒只是白白占着一个服务端线程——云电脑
     # 上每次打开页面都可能摊上这 30 多秒（ensure_runtime 还会重试一次）。
-    # 用户主动点的“一键启动”才保持 15 秒（要拉浏览器，值得等）。
+    # 用户主动点的“去登录”才保持 15 秒（要拉浏览器，值得等）。
     runtime_ready = ensure_runtime(
         config, allow_launch=allow_launch, wait_seconds=5.0 if not allow_launch else 15.0
     )

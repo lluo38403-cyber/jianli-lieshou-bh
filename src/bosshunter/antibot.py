@@ -294,14 +294,20 @@ CAPTCHA_DETECT_JS = """
     const text = (document.body?.innerText || '').slice(0, 10000);
     const url = String(location.href || '');
     const title = String(document.title || '');
+    // 页面还没加载完不判定：内容还没渲染出来时“没有操作按钮 + 提到
+    // 验证码”很容易误判（v27：用户没收到验证码却被判验证码、停掉
+    // 整轮）。加载中一律返回无风险，调用方稍后会再查。
+    if (document.readyState !== 'complete') {
+        return JSON.stringify({risk: null, url});
+    }
     const captchaEl = document.querySelector(
         '.geetest_panel, .captcha, [class*="captcha"], [id*="captcha"], '
         + 'iframe[src*="captcha"], iframe[src*="verify"], [class*="geetest"], '
         + '[class*="slider-verify"], [class*="nc_wrapper"]'
     );
-    if (captchaEl) return JSON.stringify({risk: 'captcha', evidence: 'captcha_element', url});
+    if (captchaEl) return JSON.stringify({risk: 'captcha', evidence: 'captcha_element', detail: '页面出现了验证码组件', url});
     if (/captcha|security-check|\\/verify|geetest/i.test(url)) {
-        return JSON.stringify({risk: 'captcha', evidence: 'captcha_url', url});
+        return JSON.stringify({risk: 'captcha', evidence: 'captcha_url', detail: '页面地址指向验证码/验证页', url});
     }
     if (/\\/web\\/user\\/(?:login|\\?ka=header-login)/i.test(url)) {
         return JSON.stringify({risk: 'login_required', evidence: 'login_url', url});
@@ -321,10 +327,33 @@ CAPTCHA_DETECT_JS = """
     // Text signals only count when the page shows no normal action button:
     // a job page whose description merely mentions verification must not trip.
     const hasAction = /立即沟通|沟通|投递简历|立即投递|申请职位|立即申请/.test(text);
-    if (!hasAction && /拖动滑块|请完成安全验证|安全验证|请完成验证|验证码/.test(text)) {
-        return JSON.stringify({risk: 'captcha', evidence: 'captcha_page', url});
+    // 纯文字信号只在“挑战页”语境下才算（v27）：关键字出现在看得见的
+    // 验证弹窗/验证框里，或者页面标题就是验证提示，或者整页几乎没有
+    // 别的正文（真正的验证页除挑战外没什么内容）。岗位描述、页脚、
+    // 侧边栏里顺带提到“验证码”不算——空结果页本身就没有操作按钮，
+    // 不能只凭一个词就停掉整轮。detail 写清判据，供面板展示依据。
+    const keywordMatch = /(拖动滑块|请完成安全验证|安全验证|请完成验证|验证码)/.exec(text);
+    const challengeHit = keywordMatch && Array.from(
+        document.querySelectorAll(
+            '[class*="verify"], [class*="captcha"], [class*="geetest"], '
+            + '[class*="slider"], [class*="nc_"], [role="dialog"], dialog, .modal, .popup'
+        ) || []
+    ).find((el) => {
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && (el.innerText || '').includes(keywordMatch[1]);
+    });
+    if (!hasAction && keywordMatch) {
+        if (challengeHit) {
+            return JSON.stringify({risk: 'captcha', evidence: 'captcha_page', detail: '验证弹窗里出现“' + keywordMatch[1] + '”', url});
+        }
+        if (/验证码|安全验证|完成验证|拖动滑块/.test(title)) {
+            return JSON.stringify({risk: 'captcha', evidence: 'captcha_page', detail: '页面标题提示验证', url});
+        }
+        if (text.trim().length < 1500) {
+            return JSON.stringify({risk: 'captcha', evidence: 'captcha_page', detail: '页面几乎没有正文，只看到“' + keywordMatch[1] + '”', url});
+        }
     }
-    if (!hasAction && /操作频繁|访问频繁|请求频繁|稍后再试|频率限制/.test(text)) {
+    if (!hasAction && /操作频繁|访问频繁|请求频繁|稍后再试|频率限制/.test(text) && text.trim().length < 1500) {
         return JSON.stringify({risk: 'rate_limit', evidence: 'rate_limit_page', url});
     }
     if (!hasAction && /请先登录|登录后投递|需要登录/.test(text)) {
@@ -348,7 +377,7 @@ def _parse_js_result(result: Any) -> dict:
 
 
 def detect_page_risk(evaluate_fn: Callable[[str, str], Any], target_id: str) -> dict:
-    """Run the risk detector in the open page. Returns {risk, evidence, url}."""
+    """Run the risk detector in the open page. Returns {risk, evidence, detail, url}."""
     try:
         raw = evaluate_fn(target_id, CAPTCHA_DETECT_JS)
     except Exception:
@@ -360,6 +389,7 @@ def detect_page_risk(evaluate_fn: Callable[[str, str], Any], target_id: str) -> 
     return {
         "risk": risk,
         "evidence": result.get("evidence", ""),
+        "detail": result.get("detail", ""),
         "url": result.get("url", ""),
     }
 

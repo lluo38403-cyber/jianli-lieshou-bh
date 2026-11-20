@@ -33,10 +33,10 @@ export function BrowserDiagnosticsPanel({ diagnostics, onRefresh }: {
   const title = isNotFound ? '没找到能用的浏览器' : '浏览器连不上了'
   const fallbackMessage = isNotFound
     ? '电脑上没找到能用的浏览器，简历猎手要用你的浏览器打开招聘网站。'
-    : '浏览器已经装好了，但是现在连不上，点“一键启动浏览器”就行。'
-  // 连不上时主按钮就是一键启动：后端会拉起所选浏览器（带调试端口），
-  // 不用用户自己排错；没找到浏览器时只能重新检测（检测不拉起浏览器）。
-  const primaryLabel = checking ? '正在启动…' : isNotFound ? '重新检测' : '一键启动浏览器'
+    : '浏览器已经装好了，但是现在连不上。点上面任意一个平台的“去登录”，程序会自动打开工作浏览器。'
+  // v27：这里只做检测、不再拉起浏览器——“一键启动浏览器”按钮已删，
+  // 拉起统一走各平台的“去登录”按钮；没找到浏览器时也只能重新检测。
+  const primaryLabel = checking ? '正在检测…' : '重新检测'
 
   const handleFilePick = (file: File | undefined) => {
     if (!file) return
@@ -78,9 +78,8 @@ export function BrowserDiagnosticsPanel({ diagnostics, onRefresh }: {
   const handleRecheck = async () => {
     setChecking(true)
     try {
-      // 没找到浏览器：只重新检测，不拉起；连不上：一键启动才拉起。
-      const endpoint = isNotFound ? '/api/browser/diagnostics' : '/api/browser/launch'
-      await fetch(endpoint, { method: 'POST' })
+      // 只重新检测，不拉起浏览器；要拉起就点各平台的“去登录”。
+      await fetch('/api/browser/diagnostics', { method: 'POST' })
     } catch {
       // 重新检测失败也刷新一次，让界面显示最新结果。
     } finally {

@@ -221,7 +221,8 @@ class BrowserPreflightTests(unittest.TestCase):
 
 		chrome_check = next(check for check in checks if check["id"] == "chrome_connection")
 		self.assertEqual(chrome_check["status"], "error")
-		self.assertIn("一键启动浏览器", chrome_check["detail"])
+		self.assertIn("去登录", chrome_check["detail"])
+		self.assertNotIn("一键启动浏览器", chrome_check["detail"])
 		self.assertNotIn("chrome://inspect", chrome_check["detail"])
 		self.assertNotIn("bosshunter connect", chrome_check["detail"])
 

@@ -345,6 +345,26 @@ def get_browser_profile_dir() -> Path:
     return Path.home() / ".jianli-lieshou" / "browser-profile"
 
 
+def pick_chrome_debug_port(config: dict[str, Any] | None = None) -> int | None:
+    """Return the debug port our browser instance should use (v27).
+
+    An already-listening configured port wins (reuse the running instance,
+    ours or the user's); otherwise the first free configured port; None
+    when every configured port is busy without answering. The app window
+    and the work browser share this pick, so both land in one Chrome
+    instance instead of two taskbar icons.
+    """
+    browser = get_browser_config(config)
+    ports = [int(port) for port in browser.get("chrome_ports", [9222, 9229, 9333])]
+    for port in ports:
+        if _chrome_debug_version(port) is not None:
+            return port
+    for port in ports:
+        if _is_port_available("127.0.0.1", port):
+            return port
+    return None
+
+
 def _chrome_debug_version(port: int) -> dict[str, Any] | None:
     """Return /json/version when a debuggable Chrome answers on this port."""
     try:
@@ -407,10 +427,13 @@ def launch_debuggable_browser(config: dict[str, Any] | None = None, target_url: 
         return False
     if not browser.get("auto_launch_browser", True):
         return False
-    ports = [int(port) for port in browser.get("chrome_ports", [9222, 9229, 9333])]
-    for port in ports:
-        if _chrome_debug_version(port) is not None:
-            return True
+    # v27：端口选择走 pick_chrome_debug_port，与 --app 窗口共用同一
+    # 个 pick（已在监听的端口优先复用，否则第一个空闲端口）。
+    port = pick_chrome_debug_port(config)
+    if port is None:
+        return False
+    if _chrome_debug_version(port) is not None:
+        return True
     # diagnostics.py 在模块层 import 本模块，模块层反向 import 会循环；
     # 调用时两边都已加载完成，函数内 import 安全。
     from bosshunter.browser.diagnostics import resolve_browser_executable
@@ -418,13 +441,6 @@ def launch_debuggable_browser(config: dict[str, Any] | None = None, target_url: 
     resolved = resolve_browser_executable(config)
     executable = resolved.get("executable")
     if not executable:
-        return False
-    port = None
-    for candidate in ports:
-        if _is_port_available("127.0.0.1", candidate):
-            port = candidate
-            break
-    if port is None:
         return False
     profile_dir = get_browser_profile_dir()
     try:
@@ -1044,6 +1060,7 @@ __all__ = [
     "get_runtime_url",
     "get_runtime_script_path",
     "get_browser_profile_dir",
+    "pick_chrome_debug_port",
     "launch_debuggable_browser",
     "check_node_available",
     "runtime_health",

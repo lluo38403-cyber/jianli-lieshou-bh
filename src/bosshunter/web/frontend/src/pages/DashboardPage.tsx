@@ -28,7 +28,7 @@ import type { ActivityData, TopCompany } from '@/hooks/useDashboard'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
 import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
 import { parseHistoryDetail } from '@/lib/historyDetail'
-import { PLATFORM_LABELS, PLATFORM_IDS, openPlatformLogin } from '@/lib/platforms'
+import { PLATFORM_LABELS, PLATFORM_IDS, openPlatformLogin, type PlatformId } from '@/lib/platforms'
 import { derivePlatformLoginStates } from '@/lib/platformLogin'
 import {
   EMPTY_JOB_FILTERS,
@@ -345,38 +345,13 @@ function PreflightPanel({
   onRetry: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
-  const [launching, setLaunching] = useState(false)
-  const [launchMessage, setLaunchMessage] = useState('')
   const actionableChecks = checks.filter(check => check.status !== 'pass')
   if (actionableChecks.length === 0) return null
 
   const errors = actionableChecks.filter(check => check.status === 'error').length
   const needsConfig = actionableChecks.some(check => check.action === 'config')
-  // “浏览器运行组件未启动”/没连上远程调试这类检查（action === 'browser'）：
-  // 提示文案里说的“一键启动浏览器”就放在这里点，不用用户自己去别处找按钮。
-  const needsBrowser = actionableChecks.some(check => check.action === 'browser')
   const heading = `${actionableChecks.length} 件事${errors ? '要处理' : '提醒你'}`
   const summary = `${heading} · ${actionableChecks[0].message}`
-
-  const handleLaunchBrowser = async () => {
-    if (launching) return
-    setLaunching(true)
-    setLaunchMessage('')
-    try {
-      const res = await fetch('/api/browser/launch', { method: 'POST' })
-      const data = await res.json().catch(() => ({} as { ok?: boolean; message?: string; error?: string }))
-      // 后端约定：200 + ok:true 才算浏览器已连上；ok:false 时 message 会说明原因。
-      if (!res.ok || data.ok === false) {
-        throw new Error(data.message || data.error || '浏览器没启动起来')
-      }
-      setLaunchMessage('浏览器已启动。')
-      onRetry()
-    } catch (err) {
-      setLaunchMessage(err instanceof Error ? `${err.message}，再点一次试试。` : '浏览器没启动起来，再点一次试试。')
-    } finally {
-      setLaunching(false)
-    }
-  }
 
   return (
     <div role="region" aria-label="启动检查结果" className={`mt-2 rounded-lg border px-2 text-xs ${
@@ -395,17 +370,11 @@ function PreflightPanel({
             去设置
           </Button>
         )}
-        {needsBrowser && (
-          <Button variant="ghost" size="sm" className="h-7 shrink-0 px-1" onClick={() => void handleLaunchBrowser()} disabled={launching || checking}>
-            {launching ? '正在启动…' : '一键启动浏览器'}
-          </Button>
-        )}
         <Button variant="ghost" size="sm" className="h-7 shrink-0 px-1" onClick={onRetry} disabled={checking}>
           <RefreshCw className={`mr-1 h-3 w-3 ${checking ? 'animate-spin' : ''}`} />
           {checking ? '检查中' : '再检查一次'}
         </Button>
       </div>
-      {launchMessage && <p role="status" className="border-t border-current/10 py-2 text-xs leading-5 text-foreground">{launchMessage}</p>}
       <div id="preflight-details" hidden={!expanded} className="space-y-2 border-t border-current/10 py-2 text-xs leading-5">
         {actionableChecks.map(check => (
           <div key={`${check.id}-${check.title}`} className="break-words">
@@ -425,6 +394,7 @@ function GettingStartedCard({
   checks,
   onRetry,
   browserName = '浏览器',
+  onLoginFeedback,
 }: {
   onCheck: () => void
   checking: boolean
@@ -432,7 +402,35 @@ function GettingStartedCard({
   checks: PreflightCheck[]
   onRetry: () => void
   browserName?: string
+  /** 登录按钮的启动/跳转反馈（接到首页提示条上）。 */
+  onLoginFeedback?: (message: string) => void
 }) {
+  const [loginBusy, setLoginBusy] = useState<PlatformId | null>(null)
+
+  // v27：登录按钮承担拉起浏览器 + 跳转的职责。点一次就给明确反馈：
+  // 正在启动 / 已打开 / 已切到打开的标签页 / 失败原因，不再静默。
+  const handleOpenLogin = async (platform: PlatformId) => {
+    if (loginBusy) return
+    setLoginBusy(platform)
+    onLoginFeedback?.(`正在打开工作浏览器，准备去${PLATFORM_LABELS[platform]}登录…`)
+    try {
+      const result = await openPlatformLogin(platform)
+      if (result.ok) {
+        onLoginFeedback?.(
+          result.reusedTab
+            ? `已经打开了${PLATFORM_LABELS[platform]}的标签页，直接切过去了。`
+            : result.browserStarted
+              ? `工作浏览器已启动，正在打开${PLATFORM_LABELS[platform]}登录页。`
+              : `已在工作浏览器打开${PLATFORM_LABELS[platform]}登录页。`,
+        )
+      } else {
+        onLoginFeedback?.(result.message || '浏览器没连上，再点一次试试。')
+      }
+    } finally {
+      setLoginBusy(null)
+    }
+  }
+
   return (
     <section aria-label="开始使用" className="animate-fade-up rounded-2xl border border-primary/30 bg-card p-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -453,13 +451,15 @@ function GettingStartedCard({
             <button
               key={platform}
               type="button"
-              onClick={() => { void openPlatformLogin(platform) }}
-              className="rounded-full border border-card-border bg-surface px-2.5 py-1 text-xs font-bold text-primary hover:border-primary/40"
+              onClick={() => { void handleOpenLogin(platform) }}
+              disabled={loginBusy !== null}
+              className="rounded-full border border-card-border bg-surface px-2.5 py-1 text-xs font-bold text-primary hover:border-primary/40 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              去{PLATFORM_LABELS[platform]}登录
+              {loginBusy === platform ? '正在打开…' : `去${PLATFORM_LABELS[platform]}登录`}
             </button>
           ))}
         </div>
+        <p className="w-full text-xs text-muted">点击后会打开工作浏览器并跳转到对应招聘网站登录页。</p>
         {/* 引导区里的检查入口；漏斗非空后引导区消失，同一入口保留在
             “今天要做的事”标题栏（下面那份，data-tour 也在那一份上），
             新手引导最后一步总能找到它，老用户回首页也能直接点。 */}
@@ -817,6 +817,28 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     }
   }
 
+  // v27：风控停轮后的“立即重试”——先清掉本轮的账号风险锁，再直接重
+  // 开一轮岗位采集。跳过启动前预检是故意的：这轮刚刚还在跑，环境没
+  // 变，唯一挡着的就是锁；真有登录失效，采集里会再次判出来并重新上锁。
+  const retryCollectionAfterRisk = async () => {
+    if (modePending) return
+    try {
+      setModePending('collect')
+      setNotice('正在解除冷却，马上重新开始找岗位…')
+      const res = await fetch('/api/safety/clear-risk-lock', { method: 'POST' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || '解除冷却失败')
+      }
+      await startTask('collect')
+      setNotice('已重新开始找岗位，进度会在下方更新。')
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '重试失败')
+    } finally {
+      setModePending(null)
+    }
+  }
+
   const confirmDeliver = async (ids: string[]) => {
     if (!ids.length) return
     const count = ids.length
@@ -1022,6 +1044,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           checks={preflightChecks}
           onRetry={retryPreflight}
           browserName={browserName}
+          onLoginFeedback={setNotice}
         />
       )}
       <PlatformStatusCard
@@ -1189,7 +1212,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                   .catch(error => setNotice(error instanceof Error ? error.message : '继续失败'))
               }}><RefreshCw className="mr-1 h-3.5 w-3.5" />处理后继续</Button>}
             </div>}
-            {visibleTask.progress?.platforms && <CollectionProgressPanel progress={visibleTask.progress} />}
+            {visibleTask.progress?.platforms && <CollectionProgressPanel progress={visibleTask.progress} onRetryCollection={retryCollectionAfterRisk} />}
             {visibleTask.error && visibleTaskError && (
               <div className="mt-3 rounded-2xl border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger">
                 <div className="font-black">{visibleTaskError.title}</div>
@@ -1509,7 +1532,7 @@ function collectionReasonLabel(reason = '') {
   return ''
 }
 
-function CollectionProgressPanel({ progress }: { progress: CollectionProgress }) {
+function CollectionProgressPanel({ progress, onRetryCollection }: { progress: CollectionProgress; onRetryCollection?: () => Promise<void> }) {
   const outcome = ({ running: '采集中', scoring: '正在打分', completed: '找完了', completed_with_shortage: '找完了，但新岗位不多', completed_with_errors: '找完了，有几个出了点问题', failed: '这次没找成', stopped: '已停下', cancelled: '已取消' } as Record<string, string>)[progress.outcome || ''] || '不知道现在什么状态'
   const platforms = Object.entries(progress.platforms || {})
   return (
@@ -1571,6 +1594,12 @@ function CollectionProgressPanel({ progress }: { progress: CollectionProgress })
               </details>
             )}
             {(state.message || state.reason_code) && !state.filter_records?.some(record => record.reason === state.message) && !state.error_records?.some(record => record.reason === state.message) && <p className="mt-1 break-words text-muted">{state.message?.replace(/；本轮新增 \d+ 条，读取 \d+ 条，重复 \d+ 条，过滤 \d+ 条，解析失败 \d+ 条，保存失败 \d+ 条$/, '') || state.reason_code}</p>}
+            {onRetryCollection && ['captcha', 'blocked', 'rate_limit'].includes(state.reason_code || '') && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Button size="sm" variant="secondary" onClick={() => { void onRetryCollection() }}>立即重试（不等冷却）</Button>
+                <span className="text-muted">点一下会先解除本轮的冷却，再重新开始找岗位。如果你确实在浏览器里看到了验证码，请先在浏览器里完成验证再点。</span>
+              </div>
+            )}
           </div>
         ))}
       </div>

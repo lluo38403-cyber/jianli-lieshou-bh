@@ -55,8 +55,9 @@ class LaunchDebuggableBrowserTests(unittest.TestCase):
         _sleep, popen, debug_version, _port, profile, _discover = self._patches(self)
         from bosshunter.browser.runtime import _AUTOMATION_START_PAGE, launch_debuggable_browser
 
-        # 前 3 次是拉起前对 9222/9229/9333 的探测，第 4 次是等启动应答。
-        debug_version.side_effect = [None, None, None, _live_version()]
+        # v27：前 3 次是 pick_chrome_debug_port 对 9222/9229/9333 的探测，
+        # 第 4 次是拉起前对选中端口的复查，第 5 次是等启动应答。
+        debug_version.side_effect = [None, None, None, None, _live_version()]
         self.assertTrue(launch_debuggable_browser(_config()))
         popen.assert_called_once()
         argv = popen.call_args.args[0]
@@ -77,7 +78,7 @@ class LaunchDebuggableBrowserTests(unittest.TestCase):
         _sleep, popen, debug_version, port_available, _profile, _discover = self._patches(self)
         from bosshunter.browser.runtime import launch_debuggable_browser
 
-        debug_version.side_effect = [None, None, None, _live_version()]
+        debug_version.side_effect = [None, None, None, None, _live_version()]
         port_available.side_effect = lambda host, port: port != 9222
         self.assertTrue(launch_debuggable_browser(_config()))
         argv = popen.call_args.args[0]
@@ -88,7 +89,7 @@ class LaunchDebuggableBrowserTests(unittest.TestCase):
         from bosshunter.browser.runtime import launch_debuggable_browser
 
         discover.return_value = {"chrome": None, "edge": "C:/Edge/msedge.exe"}
-        debug_version.side_effect = [None, None, None, _live_version()]
+        debug_version.side_effect = [None, None, None, None, _live_version()]
         self.assertTrue(launch_debuggable_browser(_config()))
         self.assertEqual(popen.call_args.args[0][0], "C:/Edge/msedge.exe")
 

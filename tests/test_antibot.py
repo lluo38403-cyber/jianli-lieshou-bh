@@ -139,7 +139,11 @@ const js = fs.readFileSync(process.argv[3], 'utf8');
 global.document = {
   body: { innerText: fixture.text || '' },
   title: fixture.title || '',
+  readyState: fixture.readyState || 'complete',
   querySelector: (sel) => fixture.hasCaptchaEl ? { tagName: 'DIV' } : null,
+  querySelectorAll: (sel) => fixture.challengeEl
+    ? [{ getBoundingClientRect: () => ({ width: 200, height: 100 }), innerText: fixture.challengeText || '' }]
+    : [],
 };
 global.location = { href: fixture.url || 'https://www.zhipin.com/job_detail/abc.html' };
 console.log(eval(js));
@@ -181,6 +185,35 @@ def test_detector_flags_captcha_page_text_only_without_action_buttons():
     result = _run_detector({"text": "请完成安全验证\n拖动滑块完成验证"})
     assert result["risk"] == "captcha"
     assert result["evidence"] == "captcha_page"
+    assert result["detail"]  # the basis must be stated, not just the code
+
+
+def test_detector_ignores_loading_page():
+    # v27: a page still loading must not be judged at all.
+    result = _run_detector({"text": "请完成安全验证\n拖动滑块完成验证", "readyState": "loading"})
+    assert result["risk"] is None
+
+
+def test_detector_ignores_long_page_mentioning_verification_without_challenge():
+    # v27: the user's false positive — a long page (empty results, footer,
+    # job text) that merely mentions 验证码 with no visible challenge
+    # dialog must not stop the run.
+    long_text = "搜索结果\n" + "该岗位需要熟悉短信验证码接入流程，入职后负责相关系统的对接与维护。\n" * 60
+    assert len(long_text) > 1500
+    result = _run_detector({"text": long_text})
+    assert result["risk"] is None
+
+
+def test_detector_flags_challenge_dialog_text():
+    # v27: the keyword inside a visible challenge dialog still counts.
+    result = _run_detector({
+        "text": "请完成安全验证\n拖动滑块完成验证",
+        "challengeEl": True,
+        "challengeText": "请完成安全验证",
+    })
+    assert result["risk"] == "captcha"
+    assert result["evidence"] == "captcha_page"
+    assert "验证弹窗" in result["detail"]
 
 
 def test_detector_flags_rate_limit_and_login_and_blocked():

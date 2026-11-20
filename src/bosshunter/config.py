@@ -304,6 +304,14 @@ DEFAULTS: dict[str, Any] = {
         "interval": 30,  # 分钟
         "initial_cooldown_minutes": 10,
         "chat_url": "https://www.zhipin.com/web/geek/chat",
+        # v27：聊天页按平台分开配；chat_url 只留作 BOSS 的旧配置兼容，
+        # 新配置走 chat_urls（其余三家默认是各平台消息中心入口，可改）。
+        "chat_urls": {
+            "boss": "https://www.zhipin.com/web/geek/chat",
+            "zhilian": "https://i.zhaopin.com/",
+            "51job": "https://i.51job.com/",
+            "liepin": "https://www.liepin.com/msg/",
+        },
         "max_conversations_per_cycle": 5,
         "max_consecutive_page_failures": 3,
         "max_resume_sends_per_cycle": 5,

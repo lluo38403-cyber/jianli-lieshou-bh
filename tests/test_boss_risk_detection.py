@@ -11,13 +11,17 @@ _NODE_HARNESS = """
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { script, cases } = JSON.parse(fs.readFileSync(0, 'utf8'));
-const results = cases.map(({ url, title, body, hasContent, captcha }) => {
+const results = cases.map(({ url, title, body, hasContent, captcha, readyState, challenge, challengeText }) => {
     const document = {
         title: title || '岗位列表',
         body: { innerText: body || '' },
+        readyState: readyState || 'complete',
         querySelector: (selector) => selector.startsWith('.job-card-wrap')
             ? (hasContent === false ? null : {})
             : (captcha ? {} : null),
+        querySelectorAll: (selector) => challenge
+            ? [{ getBoundingClientRect: () => ({ width: 200, height: 100 }), innerText: challengeText || '' }]
+            : [],
     };
     return JSON.parse(vm.runInNewContext(script, {
         URL,
@@ -85,28 +89,64 @@ class BossRiskDetectionTests(unittest.TestCase):
             (
                 "captcha route",
                 {"url": "https://www.zhipin.com/captcha"},
-                {"risk": "captcha", "evidence": "captcha_url"},
+                {"risk": "captcha", "evidence": "captcha_url", "detail": "页面地址指向验证码/验证页"},
             ),
             (
                 "verify route",
                 {"url": "https://www.zhipin.com/verify"},
-                {"risk": "captcha", "evidence": "captcha_url"},
+                {"risk": "captcha", "evidence": "captcha_url", "detail": "页面地址指向验证码/验证页"},
             ),
             (
                 "security check route",
                 {"url": "https://www.zhipin.com/security-check"},
-                {"risk": "captcha", "evidence": "captcha_url"},
+                {"risk": "captcha", "evidence": "captcha_url", "detail": "页面地址指向验证码/验证页"},
             ),
-            ("captcha element", {"url": base, "captcha": True}, {"risk": "captcha", "evidence": "captcha_element"}),
+            ("captcha element", {"url": base, "captcha": True}, {"risk": "captcha", "evidence": "captcha_element", "detail": "页面出现了验证码组件"}),
             (
                 "salary filter with captcha element",
                 {"url": f"{base}?salary=403", "captcha": True},
-                {"risk": "captcha", "evidence": "captcha_element"},
+                {"risk": "captcha", "evidence": "captcha_element", "detail": "页面出现了验证码组件"},
             ),
             (
                 "captcha page",
                 {"url": base, "body": "请完成验证码", "hasContent": False},
-                {"risk": "captcha", "evidence": "captcha_page"},
+                {"risk": "captcha", "evidence": "captcha_page", "detail": "页面几乎没有正文，只看到“请完成验证”"},
+            ),
+            (
+                # v27: the user's false positive — an empty results page that
+                # merely mentions 验证码 in passing text must not stop the run.
+                "long empty results page mentioning captcha",
+                {
+                    "url": base,
+                    "body": "搜索结果\n"
+                    + "该岗位需要熟悉短信验证码接入流程，入职后负责相关系统的对接与维护。\n" * 60,
+                    "hasContent": False,
+                },
+                normal,
+            ),
+            (
+                # v27: a page still loading must not be judged at all.
+                "loading page with captcha word",
+                {"url": base, "body": "请完成验证码", "hasContent": False, "readyState": "loading"},
+                normal,
+            ),
+            (
+                # v27: the keyword inside a visible challenge dialog still counts.
+                "captcha word inside challenge dialog",
+                {
+                    "url": base,
+                    "body": "请完成验证码",
+                    "hasContent": False,
+                    "challenge": True,
+                    "challengeText": "请完成验证码",
+                },
+                {"risk": "captcha", "evidence": "captcha_page", "detail": "验证弹窗里出现“请完成验证”"},
+            ),
+            (
+                # v27: a verification title still counts.
+                "captcha title",
+                {"url": base, "body": "请完成验证码", "title": "安全验证", "hasContent": False},
+                {"risk": "captcha", "evidence": "captcha_page", "detail": "页面标题提示验证"},
             ),
             (
                 "login route",

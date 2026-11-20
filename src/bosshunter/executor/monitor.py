@@ -24,6 +24,7 @@ from bosshunter.platform_safety import (
     PlatformSafetyStop,
     TransientPlatformAccessGuard,
 )
+from bosshunter.executor.platform_delivery import DEFAULT_INBOX_URLS
 
 console = Console()
 
@@ -422,6 +423,41 @@ def _open_monitor_tab(url: str, config: dict, *, background: bool = True) -> str
         # Record attempts as well as successful opens so retries cannot become a burst.
         throttle.mark()
     return target_id
+
+
+# 各平台沟通/聊天页地址（v27：原来只有一个 monitor.chat_url，默认是
+# BOSS 的链接；其他平台没有自己的聊天页，查回复一旦接上别的平台就
+# 会把 BOSS 链接混过去。现在按平台分开配。）
+BOSS_CHAT_URL = "https://www.zhipin.com/web/geek/chat"
+
+
+def get_monitor_chat_url(config: dict, platform: str) -> str:
+    """Return the chat/inbox page URL for one platform.
+
+    优先级：monitor.chat_urls[平台]（设置页按平台填的）→
+    monitor.inbox_urls[平台]（投递流程用的各平台消息中心覆盖）→
+    老的 monitor.chat_url（只对 BOSS 生效，兼容旧配置）→ 内置默认
+    （BOSS 是沟通页直链；其余三家是各平台消息中心入口，见
+    platform_delivery.DEFAULT_INBOX_URLS）。
+    """
+    key = str(platform or "boss").strip().lower()
+    monitor_cfg = config.get("monitor", {}) or {}
+    chat_urls = monitor_cfg.get("chat_urls") or {}
+    if isinstance(chat_urls, dict):
+        value = str(chat_urls.get(key) or "").strip()
+        if value:
+            return value
+    inbox_urls = monitor_cfg.get("inbox_urls") or {}
+    if isinstance(inbox_urls, dict):
+        value = str(inbox_urls.get(key) or "").strip()
+        if value:
+            return value
+    if key == "boss":
+        legacy = str(monitor_cfg.get("chat_url") or "").strip()
+        if legacy:
+            return legacy
+        return BOSS_CHAT_URL
+    return str(DEFAULT_INBOX_URLS.get(key) or BOSS_CHAT_URL)
 
 
 def _get_monitor_chat_target(chat_url: str, config: dict) -> tuple[str | None, bool]:
@@ -985,8 +1021,7 @@ def _open_conversation_from_chat_list(
     """Open conversation from chat list. Matches by name+company, then company-only fallback."""
     if stop_requested(config):
         return None
-    monitor_cfg = config.get("monitor", {})
-    chat_url = monitor_cfg.get("chat_url", "https://www.zhipin.com/web/geek/chat")
+    chat_url = get_monitor_chat_url(config, "boss")
     target_id = _open_monitor_tab(chat_url, config, background=background)
     if not target_id:
         _record_page_failure_unless_stopped(config)
@@ -1184,7 +1219,7 @@ def _check_boss_replies(config: dict, tracked_jobs: list[dict] | None = None) ->
         db.close()
         return []
     monitor_cfg = config.get("monitor", {})
-    chat_url = monitor_cfg.get("chat_url", "https://www.zhipin.com/web/geek/chat")
+    chat_url = get_monitor_chat_url(config, "boss")
 
     # Get jobs we've sent greetings to (or already replied/resume_sent/follow_up_sent/needs_resume - keep monitoring)
     if tracked_jobs is None:

@@ -153,7 +153,7 @@ class BrowserDiagnosticsApiTests(_ServerTestBase):
         self.assertEqual(diagnostics.call_args.kwargs, {"allow_launch": False})
 
     def test_post_diagnostics_does_not_launch_browser(self):
-        # 重新检测只是检测，不拉起浏览器；拉起只走“一键启动浏览器”。
+        # 重新检测只是检测，不拉起浏览器；拉起只走各平台的“去登录”。
         with patch.object(
             server, "run_browser_diagnostics", return_value=_fake_diagnostics()
         ) as diagnostics:
@@ -163,7 +163,7 @@ class BrowserDiagnosticsApiTests(_ServerTestBase):
         self.assertEqual(diagnostics.call_args.kwargs, {"allow_launch": False})
 
     def test_post_launch_endpoint_launches_browser(self):
-        # 用户主动点的“一键启动浏览器”才允许拉起。
+        # /api/browser/launch 保留作手动恢复入口：主动调它才允许拉起。
         with patch.object(
             server, "run_browser_diagnostics", return_value=_fake_diagnostics()
         ) as diagnostics:
@@ -176,7 +176,15 @@ class BrowserDiagnosticsApiTests(_ServerTestBase):
         self.assertEqual(payload["selected_browser_name"], "浏览器")
 
     def test_browser_open_opens_url_in_runtime_browser(self):
-        with patch("bosshunter.browser.new_tab", return_value="target-1") as new_tab:
+        # v27：/api/browser/open 走 open_platform_tab（复用标签页 + 状态反馈），
+        # 不再直接调 new_tab；这里只验 HTTP 层透传。
+        result = {
+            "target_id": "target-1",
+            "browser_started": True,
+            "reused_tab": False,
+            "message": "已在工作浏览器打开。",
+        }
+        with patch("bosshunter.browser.open_platform_tab", return_value=result) as open_tab:
             status, body = self._request(
                 "/api/browser/open", "POST", {"url": "https://www.zhipin.com/web/user/login"}
             )
@@ -184,16 +192,25 @@ class BrowserDiagnosticsApiTests(_ServerTestBase):
         payload = json.loads(body)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["target_id"], "target-1")
-        new_tab.assert_called_once_with("https://www.zhipin.com/web/user/login")
+        self.assertTrue(payload["browser_started"])
+        self.assertFalse(payload["reused_tab"])
+        self.assertEqual(payload["message"], "已在工作浏览器打开。")
+        open_tab.assert_called_once_with("https://www.zhipin.com/web/user/login")
 
     def test_browser_open_returns_503_when_runtime_not_connected(self):
-        with patch("bosshunter.browser.new_tab", return_value=None):
+        result = {
+            "target_id": None,
+            "browser_started": False,
+            "reused_tab": False,
+            "message": "浏览器没连上：工作浏览器没启动起来，再点一次试试。",
+        }
+        with patch("bosshunter.browser.open_platform_tab", return_value=result):
             status, body = self._request(
                 "/api/browser/open", "POST", {"url": "https://www.zhipin.com/web/user/login"}
             )
         self.assertTrue(status.startswith("503"), body)
         error = json.loads(body)["error"]
-        self.assertIn("浏览器还没连上", error)
+        self.assertIn("浏览器没连上", error)
         self.assertNotIn("new_tab", error)
 
     def test_browser_open_rejects_non_http_url(self):

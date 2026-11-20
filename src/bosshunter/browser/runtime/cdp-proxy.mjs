@@ -426,6 +426,11 @@ const server = http.createServer(async (req, res) => {
       const resp = await sendCDP('Target.closeTarget', { targetId: q.target });
       sessions.delete(q.target);
       sendJson(res, resp.result || { ok: true });
+    } else if (pathname === '/activate') {
+      // Bring a tab (and its window) to the front: Target.activateTarget
+      // needs no session, just the browser-level connection.
+      await sendCDP('Target.activateTarget', { targetId: q.target });
+      sendJson(res, { ok: true });
     } else if (pathname === '/navigate') {
       const sessionId = await ensureSession(q.target);
       const resp = await sendCDP('Page.navigate', { url: q.url }, sessionId);

@@ -622,5 +622,64 @@ class FullFlowMonitorCooldownTests(unittest.TestCase):
         self.assertIn("首次监测冷却已取消", task.logs)
 
 
+class MonitorChatUrlTests(unittest.TestCase):
+    def test_boss_defaults_to_zhipin_chat(self):
+        from bosshunter.executor import monitor
+
+        self.assertEqual(
+            monitor.get_monitor_chat_url({}, "boss"),
+            "https://www.zhipin.com/web/geek/chat",
+        )
+
+    def test_other_platforms_default_to_their_own_inbox(self):
+        from bosshunter.executor import monitor
+
+        self.assertEqual(
+            monitor.get_monitor_chat_url({}, "liepin"),
+            "https://www.liepin.com/msg/",
+        )
+        self.assertEqual(
+            monitor.get_monitor_chat_url({}, "zhilian"),
+            "https://i.zhaopin.com/",
+        )
+        self.assertEqual(
+            monitor.get_monitor_chat_url({}, "51job"),
+            "https://i.51job.com/",
+        )
+
+    def test_chat_urls_override_wins(self):
+        from bosshunter.executor import monitor
+
+        config = {"monitor": {"chat_urls": {"liepin": "https://example.com/liepin-chat"}}}
+        self.assertEqual(
+            monitor.get_monitor_chat_url(config, "liepin"),
+            "https://example.com/liepin-chat",
+        )
+
+    def test_legacy_chat_url_only_applies_to_boss(self):
+        # 回归（v27）：原来唯一的 chat_url 默认是 BOSS 链接；旧配置里
+        # 它只能继续当 BOSS 的地址，绝不能混到别的平台上。
+        from bosshunter.executor import monitor
+
+        config = {"monitor": {"chat_url": "https://example.com/old-boss-chat"}}
+        self.assertEqual(
+            monitor.get_monitor_chat_url(config, "boss"),
+            "https://example.com/old-boss-chat",
+        )
+        self.assertEqual(
+            monitor.get_monitor_chat_url(config, "zhilian"),
+            "https://i.zhaopin.com/",
+        )
+
+    def test_inbox_urls_override_is_honored_when_chat_urls_absent(self):
+        from bosshunter.executor import monitor
+
+        config = {"monitor": {"inbox_urls": {"51job": "https://example.com/51job-inbox"}}}
+        self.assertEqual(
+            monitor.get_monitor_chat_url(config, "51job"),
+            "https://example.com/51job-inbox",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -110,7 +110,7 @@ class VersionCompareTests(unittest.TestCase):
 class UpdateStubHandler(BaseHTTPRequestHandler):
     """Stub for the relay update contract: /api/version + /download/latest."""
 
-    version_payload = {"version": "1.1.13", "size": 0, "sha256": "0" * 64, "notes": ""}
+    version_payload = {"version": "1.1.14", "size": 0, "sha256": "0" * 64, "notes": ""}
     zip_bytes = b""
     status = 200
     requests: list = []
@@ -165,7 +165,7 @@ class UpdateCheckTests(unittest.TestCase):
     def setUp(self):
         _reset_update_state()
         UpdateStubHandler.version_payload = {
-            "version": "1.1.13",
+            "version": "1.1.14",
             "size": 123,
             "sha256": hashlib.sha256(_make_zip()).hexdigest(),
             "notes": "更快更稳",
@@ -198,7 +198,7 @@ class UpdateCheckTests(unittest.TestCase):
         info = check_for_update(self._config())
         self.assertIsNotNone(info)
         assert info is not None
-        self.assertEqual(info["version"], "1.1.13")
+        self.assertEqual(info["version"], "1.1.14")
         self.assertEqual(info["current_version"], __version__)
         self.assertEqual(info["size"], 123)
         self.assertEqual(info["notes"], "更快更稳")
@@ -227,9 +227,9 @@ class UpdateCheckTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         for bad in (
             {"size": 1, "sha256": "a" * 64},
-            {"version": "1.1.13", "size": 1},
-            {"version": "1.1.13", "size": 1, "sha256": "not-a-hash"},
-            {"version": "1.1.13", "size": 1, "sha256": "a" * 64, "notes": 5},
+            {"version": "1.1.14", "size": 1},
+            {"version": "1.1.14", "size": 1, "sha256": "not-a-hash"},
+            {"version": "1.1.14", "size": 1, "sha256": "a" * 64, "notes": 5},
         ):
             with self.subTest(bad=bad):
                 UpdateStubHandler.version_payload = bad
@@ -267,7 +267,7 @@ class UpdateDownloadTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.13",
+            "version": "1.1.14",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -295,7 +295,7 @@ class UpdateDownloadTests(unittest.TestCase):
 
     def _info(self):
         return {
-            "version": "1.1.13",
+            "version": "1.1.14",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -396,7 +396,7 @@ class UpdateDownloadTests(unittest.TestCase):
         bad = buf.getvalue()
         UpdateStubHandler.zip_bytes = bad
         UpdateStubHandler.version_payload = {
-            "version": "1.1.13",
+            "version": "1.1.14",
             "size": len(bad),
             "sha256": hashlib.sha256(bad).hexdigest(),
             "notes": "",
@@ -900,7 +900,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.13"},
+                "info": {"version": "1.1.14"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -931,7 +931,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.13"},
+                "info": {"version": "1.1.14"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -956,6 +956,40 @@ class UpdateApplyTests(unittest.TestCase):
             flags = popen.call_args.kwargs.get("creationflags", 0)
             self.assertTrue(flags & 0x08000000, "拉起 update.bat 必须带 CREATE_NO_WINDOW")
 
+    def test_apply_excludes_own_pid_when_killing_install_dir_processes(self):
+        # 回归（v27，run 44707216190）：v24 的 apply_update 调
+        # _kill_install_dir_processes 时没传 exclude_pid，PowerShell 按
+        # ExecutablePath 前缀把正在跑的 exe 自己也杀了——/api/update/apply
+        # 还没回包进程就死了，三个 job 全在 stage=apply 报连接错误，
+        # update.bat 也没来得及拉起来。apply 必须把当前 PID 排除在外。
+        import os
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp) / "staging"
+            (staging / "_internal").mkdir(parents=True)
+            (staging / "简历猎手.exe").write_bytes(b"new-exe")
+            (staging / "_internal" / "app.bin").write_bytes(b"new-app")
+            updater._STATE.update({
+                "status": "ready",
+                "staging_dir": str(staging),
+                "info": {"version": "1.1.14"},
+            })
+            install = Path(tmp) / "install"
+            install.mkdir()
+            (install / "简历猎手.exe").write_bytes(b"old-exe")
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.app_window.close_app_window", return_value=True),
+                patch("bosshunter.browser.runtime.stop_runtime", return_value=True),
+                patch("bosshunter.browser.runtime.stop_launched_browser", return_value=True),
+                patch("bosshunter.updater._kill_install_dir_processes", return_value=True) as kill,
+                patch("bosshunter.updater.subprocess.Popen"),
+            ):
+                apply_update(install, "简历猎手.exe")
+            kill.assert_called_once()
+            self.assertEqual(kill.call_args.kwargs.get("exclude_pid"), os.getpid())
+
     def test_apply_logs_when_app_window_handle_cannot_close_it(self):
         # 回归：Chrome 把 --app 交给已在跑的 Chrome 实例时，拉窗那个
         # 子进程立刻就退出了，close_app_window 直接返回 False、旧面板
@@ -973,7 +1007,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.13"},
+                "info": {"version": "1.1.14"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1000,7 +1034,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.13"},
+                "info": {"version": "1.1.14"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1024,7 +1058,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(Path(tmp) / "empty-staging"),
-                "info": {"version": "1.1.13"},
+                "info": {"version": "1.1.14"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1131,7 +1165,7 @@ class UpdateRouteTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.13",
+            "version": "1.1.14",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "更快更稳",
@@ -1223,7 +1257,7 @@ class UpdateRouteTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             data = json.loads(body)
             self.assertTrue(data["update_available"])
-            self.assertEqual(data["version"], "1.1.13")
+            self.assertEqual(data["version"], "1.1.14")
             self.assertEqual(data["current_version"], __version__)
             self.assertEqual(data["notes"], "更快更稳")
 
@@ -1233,9 +1267,9 @@ class UpdateRouteTests(unittest.TestCase):
         # 后才能重新查到新版。
         with tempfile.TemporaryDirectory() as tmp:
             base = self._base_dir(tmp)
-            updater.write_pending_update(base, "1.1.13")
+            updater.write_pending_update(base, "1.1.14")
             updater.write_update_result(
-                base, {"status": "failed", "expected_version": "1.1.13", "reason_code": "copy"}
+                base, {"status": "failed", "expected_version": "1.1.14", "reason_code": "copy"}
             )
             original_get_install_dir = updater.get_install_dir
             updater.get_install_dir = lambda: base
@@ -1254,7 +1288,7 @@ class UpdateRouteTests(unittest.TestCase):
                 self.assertTrue(status.startswith("200"), body)
                 data = json.loads(body)
                 self.assertTrue(data["update_available"])
-                self.assertEqual(data["version"], "1.1.13")
+                self.assertEqual(data["version"], "1.1.14")
             finally:
                 updater.get_install_dir = original_get_install_dir
 
@@ -1490,6 +1524,23 @@ class KillInstallDirProcessesTests(unittest.TestCase):
             log = (install / "update.log").read_text(encoding="utf-8")
             self.assertIn("杀了 2 个，失败 1 个", log)
 
+    def test_excludes_given_pid_from_kill_list(self):
+        # 回归（v27，run 44707216190）：传了 exclude_pid 就必须进
+        # PowerShell 脚本的排除条件，否则按路径杀进程时会把自己也杀掉。
+        from unittest.mock import Mock, patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "install"
+            install.mkdir()
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.updater.subprocess.run") as run,
+            ):
+                run.return_value = Mock(stdout="killed=0 failed=0\n", returncode=0)
+                self.assertTrue(_kill_install_dir_processes(install, exclude_pid=4242))
+            script = run.call_args.args[0][-1]
+            self.assertIn("-and $p.ProcessId -ne 4242", script)
+
     def test_returns_false_when_powershell_itself_fails(self):
         from unittest.mock import patch
 
@@ -1521,7 +1572,7 @@ class UpdateCacheTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.13",
+            "version": "1.1.14",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -1547,7 +1598,7 @@ class UpdateCacheTests(unittest.TestCase):
         ai.update(ai_overrides)
         return {"ai": ai}
 
-    def _info(self, version="1.1.13", zip_bytes=None):
+    def _info(self, version="1.1.14", zip_bytes=None):
         data = zip_bytes if zip_bytes is not None else self.zip_bytes
         return {
             "version": version,
@@ -1572,17 +1623,17 @@ class UpdateCacheTests(unittest.TestCase):
             zip_path = self._write_zip(tmp)
             manifest = save_cached_update(install, self._info(), zip_path)
             assert manifest is not None
-            self.assertEqual(manifest["version"], "1.1.13")
+            self.assertEqual(manifest["version"], "1.1.14")
             self.assertEqual(manifest["sha256"], hashlib.sha256(self.zip_bytes).hexdigest())
             self.assertEqual(manifest["size"], len(self.zip_bytes))
             self.assertIn("downloaded_at", manifest)
-            cached_zip = self._cache_dir(install) / "jianli-lieshou-1.1.13.zip"
+            cached_zip = self._cache_dir(install) / "jianli-lieshou-1.1.14.zip"
             self.assertTrue(cached_zip.is_file())
             self.assertEqual(cached_zip.read_bytes(), self.zip_bytes)
             self.assertEqual(manifest["zip_path"], str(cached_zip))
             loaded = load_cached_update(install)
             assert loaded is not None
-            self.assertEqual(loaded["version"], "1.1.13")
+            self.assertEqual(loaded["version"], "1.1.14")
             self.assertEqual(loaded["sha256"], manifest["sha256"])
             self.assertEqual(loaded["size"], len(self.zip_bytes))
             self.assertEqual(loaded["zip_path"], str(cached_zip))
@@ -1592,7 +1643,7 @@ class UpdateCacheTests(unittest.TestCase):
             install = Path(tmp) / "install"
             install.mkdir()
             save_cached_update(install, self._info(), self._write_zip(tmp))
-            cached_zip = self._cache_dir(install) / "jianli-lieshou-1.1.13.zip"
+            cached_zip = self._cache_dir(install) / "jianli-lieshou-1.1.14.zip"
             with open(cached_zip, "ab") as fh:
                 fh.write(b"junk")
             self.assertIsNone(load_cached_update(install))
@@ -1602,7 +1653,7 @@ class UpdateCacheTests(unittest.TestCase):
             install = Path(tmp) / "install"
             install.mkdir()
             save_cached_update(install, self._info(), self._write_zip(tmp))
-            (self._cache_dir(install) / "jianli-lieshou-1.1.13.zip").unlink()
+            (self._cache_dir(install) / "jianli-lieshou-1.1.14.zip").unlink()
             self.assertIsNone(load_cached_update(install))
 
     def test_load_rejects_missing_manifest(self):
@@ -1649,7 +1700,7 @@ class UpdateCacheTests(unittest.TestCase):
             install = Path(tmp) / "install"
             install.mkdir()
             save_cached_update(install, self._info(), self._write_zip(tmp))
-            other = dict(self._info(), version="1.1.13", sha256="c" * 64)
+            other = dict(self._info(), version="1.1.14", sha256="c" * 64)
             self.assertFalse(_restore_from_cache(install, other))
             self.assertFalse((self._cache_dir(install) / "update-ready.json").exists())
             self.assertEqual(list(self._cache_dir(install).glob("*.zip")), [])
@@ -1699,7 +1750,7 @@ class UpdateCacheTests(unittest.TestCase):
             self.assertEqual(get_status()["status"], "ready", get_status())
             loaded = load_cached_update(install)
             assert loaded is not None
-            self.assertEqual(loaded["version"], "1.1.13")
+            self.assertEqual(loaded["version"], "1.1.14")
             self.assertTrue(Path(loaded["zip_path"]).is_file())
 
     def test_start_download_restores_from_cache_without_network(self):

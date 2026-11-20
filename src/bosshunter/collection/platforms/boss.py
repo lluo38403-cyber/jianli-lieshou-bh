@@ -263,14 +263,20 @@ JS_DETECT_COLLECTION_RISK = """
     const text = (document.body?.innerText || '').slice(0, 10000);
     const url = String(location.href || '');
     const title = String(document.title || '');
+    // 页面还没加载完不判定：列表还没渲染出来时“没有岗位内容 + 提到
+    // 验证码”很容易误判（v27：用户没收到验证码却被判验证码、停掉
+    // 整轮并冷却 8 分钟）。加载中一律返回无风险，调用方稍后会再查。
+    if (document.readyState !== 'complete') {
+        return JSON.stringify({risk: null});
+    }
     const hasExpectedContent = Boolean(document.querySelector(
         '.job-card-wrap, .job-sec-text, .job-detail, .job-primary'
     ));
     const captcha = document.querySelector(
         '.geetest_panel, .captcha, [class*="captcha"], [id*="captcha"], iframe[src*="captcha"], iframe[src*="verify"]'
     );
-    if (captcha) return JSON.stringify({risk: 'captcha', evidence: 'captcha_element'});
-    if (/captcha|security-check|\\/verify/i.test(url)) return JSON.stringify({risk: 'captcha', evidence: 'captcha_url'});
+    if (captcha) return JSON.stringify({risk: 'captcha', evidence: 'captcha_element', detail: '页面出现了验证码组件'});
+    if (/captcha|security-check|\\/verify/i.test(url)) return JSON.stringify({risk: 'captcha', evidence: 'captcha_url', detail: '页面地址指向验证码/验证页'});
     if (/\\/web\\/user\\/(?:login|\\?ka=header-login)/i.test(url)) return JSON.stringify({risk: 'login_required', evidence: 'login_url'});
     // Search filters may legitimately contain 403 or other error words.
     // Only explicit error paths and status parameters indicate a blocked URL.
@@ -286,13 +292,36 @@ JS_DETECT_COLLECTION_RISK = """
     if (/^(?:403(?:\\s+forbidden)?|forbidden|access denied|访问被拒绝|账号异常|账号受限)/i.test(title.trim())) {
         return JSON.stringify({risk: 'blocked', evidence: 'blocked_title'});
     }
-    if (!hasExpectedContent && /验证码|安全验证|完成验证/.test(text)) {
-        return JSON.stringify({risk: 'captcha', evidence: 'captcha_page'});
+    // 纯文字信号只在“挑战页”语境下才算（v27）：关键字出现在看得见的
+    // 验证弹窗/验证框里，或者页面标题就是验证提示，或者整页几乎没有
+    // 别的正文（真正的验证页除挑战外没什么内容）。空结果列表页本身
+    // 就没有岗位内容，页脚/岗位描述里顺带提到“验证码”不能只凭一个
+    // 词就停掉整轮。detail 写清判据，供面板展示依据。
+    const keywordMatch = /(拖动滑块|请完成安全验证|安全验证|请完成验证|验证码)/.exec(text);
+    const challengeHit = keywordMatch && Array.from(
+        document.querySelectorAll(
+            '[class*="verify"], [class*="captcha"], [class*="geetest"], '
+            + '[class*="slider"], [class*="nc_"], [role="dialog"], dialog, .modal, .popup'
+        ) || []
+    ).find((el) => {
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && (el.innerText || '').includes(keywordMatch[1]);
+    });
+    if (!hasExpectedContent && keywordMatch) {
+        if (challengeHit) {
+            return JSON.stringify({risk: 'captcha', evidence: 'captcha_page', detail: '验证弹窗里出现“' + keywordMatch[1] + '”'});
+        }
+        if (/验证码|安全验证|完成验证|拖动滑块/.test(title)) {
+            return JSON.stringify({risk: 'captcha', evidence: 'captcha_page', detail: '页面标题提示验证'});
+        }
+        if (text.trim().length < 1500) {
+            return JSON.stringify({risk: 'captcha', evidence: 'captcha_page', detail: '页面几乎没有正文，只看到“' + keywordMatch[1] + '”'});
+        }
     }
     if (!hasExpectedContent && /(?:^|\\n)\\s*403(?:\\s+forbidden)?\\s*(?:\\n|$)|访问被拒绝|账号异常|账号受限/i.test(text)) {
         return JSON.stringify({risk: 'blocked', evidence: 'blocked_page'});
     }
-    if (!hasExpectedContent && /操作频繁|访问频繁|请求频繁|稍后再试|频率限制/.test(text)) {
+    if (!hasExpectedContent && /操作频繁|访问频繁|请求频繁|稍后再试|频率限制/.test(text) && text.trim().length < 1500) {
         return JSON.stringify({risk: 'rate_limit', evidence: 'rate_limit_page'});
     }
     return JSON.stringify({risk: null});
@@ -435,7 +464,7 @@ class BossCollector:
                 ),
             )
 
-        def risk(kind: str, evidence: str = "") -> PlatformCollectionResult:
+        def risk(kind: str, evidence: str = "", detail: str = "") -> PlatformCollectionResult:
             labels = {
                 "captcha": "BOSS 采集检测到验证码",
                 "blocked": "BOSS 当前采集页连续检测到请求拦截（不代表账号封禁）",
@@ -445,6 +474,8 @@ class BossCollector:
             pause_minutes = self.randint(risk_pause_min, risk_pause_max)
             label = labels.get(kind, "BOSS 采集检测到风险")
             evidence_note = f"；证据 {evidence}" if evidence else ""
+            if detail:
+                evidence_note += f"（{detail}）"
             if self.safety_conn is not None:
                 add_risk_event(
                     self.safety_conn,
@@ -471,6 +502,7 @@ class BossCollector:
             return {
                 "kind": str(value.get("risk")),
                 "evidence": str(value.get("evidence") or "unspecified"),
+                "detail": str(value.get("detail") or ""),
             }
 
         def confirm_risk(target_id: str) -> dict[str, str] | None:
@@ -532,7 +564,7 @@ class BossCollector:
                     if signal:
                         if signal["kind"] == "user_stopped":
                             raise ListStopped(make_result(self.platform, "stopped", "user_stopped", "用户已停止"))
-                        raise ListStopped(risk(signal["kind"], signal["evidence"]))
+                        raise ListStopped(risk(signal["kind"], signal["evidence"], signal.get("detail", "")))
                 jobs = read_list()
                 valid_list_seen = valid_list_seen or isinstance(jobs, list)
                 if isinstance(jobs, list):
@@ -721,7 +753,7 @@ class BossCollector:
                                 if signal and signal["kind"] == "user_stopped":
                                     return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
                                 if signal:
-                                    return risk(signal["kind"], signal["evidence"])
+                                    return risk(signal["kind"], signal["evidence"], signal.get("detail", ""))
                                 if only_internships:
                                     if self.browser.evaluate(worker_target, JS_VERIFY_INTERNSHIP_FILTER) is not True:
                                         return make_result(
@@ -760,7 +792,7 @@ class BossCollector:
                             if signal and signal["kind"] == "user_stopped":
                                 return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
                             if signal:
-                                return risk(signal["kind"], signal["evidence"])
+                                return risk(signal["kind"], signal["evidence"], signal.get("detail", ""))
                             if self.browser.evaluate(worker_target, JS_SEARCH_READY) is not True:
                                 return make_result(self.platform, "failed", "list_load_unconfirmed", "BOSS 空列表尚未可靠加载，等待检查")
                             yield_city("no_jobs_for_search")
@@ -771,7 +803,7 @@ class BossCollector:
                             if signal and signal["kind"] == "user_stopped":
                                 return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
                             if signal:
-                                return risk(signal["kind"], signal["evidence"])
+                                return risk(signal["kind"], signal["evidence"], signal.get("detail", ""))
                             yield_city("repeated_search_page")
                         if fingerprint:
                             page_fingerprints.add(fingerprint)
@@ -846,7 +878,7 @@ class BossCollector:
                             if signal and signal["kind"] == "user_stopped":
                                 return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
                             if signal:
-                                return risk(signal["kind"], signal["evidence"])
+                                return risk(signal["kind"], signal["evidence"], signal.get("detail", ""))
                             schedule()
                             detail_result = self.browser.evaluate(detail_target, JS_EXTRACT_DETAIL)
                             try:

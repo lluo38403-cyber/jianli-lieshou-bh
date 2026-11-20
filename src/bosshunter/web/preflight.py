@@ -366,7 +366,7 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 	"""Translate Browser Runtime diagnostics into actionable checks.
 
 	只做检测，不拉起浏览器（“检查一下能不能跑”是检测；拉起只在
-	用户点“去登录”/“一键启动浏览器”或真正启动找工作/投递任务时）。
+	用户点“去登录”或真正启动找工作/投递任务时）。
 	allow_launch=True 只给任务启动门禁传。
 	"""
 	result = run_browser_diagnostics(config, allow_launch=allow_launch)
@@ -401,7 +401,7 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 			detail = "请停止占用本地 Runtime 端口的程序，或修改 browser.proxy_port 后重启。"
 		else:
 			message = "简历猎手浏览器运行组件未启动"
-			detail = "点“一键启动浏览器”，程序会自动打开浏览器并连上；还不行就点“再检查一次”。"
+			detail = "点任意一个平台的“去登录”，程序会自动打开工作浏览器并连上；还不行就点“再检查一次”。"
 		checks.append(_check("browser_runtime", "浏览器运行组件", "error", message, detail, "browser"))
 
 	if result.get("runtime") and not result.get("chrome"):
@@ -411,7 +411,7 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 				"Chrome 远程调试",
 				"error",
 				"没有连接到开启远程调试的 Google Chrome",
-				"点“一键启动浏览器”，程序会自动打开一个能连接的浏览器窗口，再点一次检查。",
+				"点任意一个平台的“去登录”，程序会自动打开一个能连接的浏览器窗口，再点一次检查。",
 				"browser",
 			)
 		)
@@ -432,7 +432,7 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 					"浏览器类型",
 					"error",
 					f"当前连接的不是 Google Chrome 或 Microsoft Edge（{detected_browser}）",
-					"请关掉现在这个浏览器窗口，再点“一键启动浏览器”。",
+					"请关掉现在这个浏览器窗口，再点任意一个平台的“去登录”。",
 					"browser",
 				)
 			)

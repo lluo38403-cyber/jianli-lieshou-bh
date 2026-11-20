@@ -160,6 +160,143 @@ class BrowserFacadeTests(unittest.TestCase):
 
         self.assertTrue(browser.print_pdf("target-1", "out.pdf"))
 
+    @patch("bosshunter.browser.client.httpx.get")
+    def test_runtime_client_activate_hits_activate_endpoint(self, get):
+        from bosshunter.browser.client import RuntimeClient
+
+        get.return_value.status_code = 200
+
+        self.assertTrue(RuntimeClient({}).activate("target-1"))
+        called_url = str(get.call_args.args[0])
+        self.assertTrue(called_url.endswith("/activate"), called_url)
+        self.assertEqual(get.call_args.kwargs["params"], {"target": "target-1"})
+
+
+class OpenPlatformTabTests(unittest.TestCase):
+    """v27: 去登录复用已打开的对应标签页，不再每次新开一个。"""
+
+    _BOSS_LOGIN = "https://www.zhipin.com/web/user/login"
+
+    def _setup(self, ensure_runtime, client_cls, *, targets):
+        import bosshunter.browser as browser
+
+        ensure_runtime.return_value = True
+        client_cls.return_value.targets.return_value = targets
+        client_cls.return_value.new_tab.return_value = "t-new"
+        client_cls.return_value.navigate.return_value = True
+        client_cls.return_value.activate.return_value = True
+        return browser
+
+    @patch("bosshunter.browser.RuntimeClient")
+    @patch("bosshunter.browser.ensure_runtime")
+    @patch("bosshunter.browser.runtime_targets")
+    def test_returns_none_when_runtime_cannot_start(self, runtime_targets, ensure_runtime, client_cls):
+        import bosshunter.browser as browser
+
+        runtime_targets.return_value = None
+        ensure_runtime.return_value = False
+
+        result = browser.open_platform_tab(self._BOSS_LOGIN)
+
+        self.assertIsNone(result["target_id"])
+        self.assertFalse(result["browser_started"])
+        self.assertFalse(result["reused_tab"])
+        self.assertIn("没连上", result["message"])
+        client_cls.return_value.new_tab.assert_not_called()
+
+    @patch("bosshunter.browser.RuntimeClient")
+    @patch("bosshunter.browser.ensure_runtime")
+    @patch("bosshunter.browser.runtime_targets")
+    def test_opens_new_tab_when_browser_already_up(self, runtime_targets, ensure_runtime, client_cls):
+        runtime_targets.return_value = [{"targetId": "x", "url": "https://example.com"}]
+        browser = self._setup(ensure_runtime, client_cls, targets=[])
+
+        result = browser.open_platform_tab(self._BOSS_LOGIN)
+
+        self.assertEqual(result["target_id"], "t-new")
+        self.assertFalse(result["browser_started"])
+        self.assertFalse(result["reused_tab"])
+        client_cls.return_value.new_tab.assert_called_once_with(self._BOSS_LOGIN)
+
+    @patch("bosshunter.browser.RuntimeClient")
+    @patch("bosshunter.browser.ensure_runtime")
+    @patch("bosshunter.browser.runtime_targets")
+    def test_reports_browser_started_when_it_was_down(self, runtime_targets, ensure_runtime, client_cls):
+        runtime_targets.return_value = None
+        browser = self._setup(ensure_runtime, client_cls, targets=[])
+
+        result = browser.open_platform_tab(self._BOSS_LOGIN)
+
+        self.assertEqual(result["target_id"], "t-new")
+        self.assertTrue(result["browser_started"])
+        self.assertFalse(result["reused_tab"])
+
+    @patch("bosshunter.browser.RuntimeClient")
+    @patch("bosshunter.browser.ensure_runtime")
+    @patch("bosshunter.browser.runtime_targets")
+    def test_reuses_exact_login_tab_without_opening_a_new_one(self, runtime_targets, ensure_runtime, client_cls):
+        runtime_targets.return_value = [{"targetId": "t-9", "url": self._BOSS_LOGIN}]
+        browser = self._setup(ensure_runtime, client_cls, targets=[
+            {"targetId": "t-9", "url": self._BOSS_LOGIN},
+        ])
+
+        result = browser.open_platform_tab(self._BOSS_LOGIN)
+
+        self.assertEqual(result["target_id"], "t-9")
+        self.assertTrue(result["reused_tab"])
+        client_cls.return_value.navigate.assert_not_called()
+        client_cls.return_value.activate.assert_called_once_with("t-9")
+        client_cls.return_value.new_tab.assert_not_called()
+
+    @patch("bosshunter.browser.RuntimeClient")
+    @patch("bosshunter.browser.ensure_runtime")
+    @patch("bosshunter.browser.runtime_targets")
+    def test_reuses_homepage_tab_by_navigating_it_to_login(self, runtime_targets, ensure_runtime, client_cls):
+        runtime_targets.return_value = [{"targetId": "t-9", "url": "https://www.zhipin.com/"}]
+        browser = self._setup(ensure_runtime, client_cls, targets=[
+            {"targetId": "t-9", "url": "https://www.zhipin.com/"},
+        ])
+
+        result = browser.open_platform_tab(self._BOSS_LOGIN)
+
+        self.assertEqual(result["target_id"], "t-9")
+        self.assertTrue(result["reused_tab"])
+        client_cls.return_value.navigate.assert_called_once_with("t-9", self._BOSS_LOGIN)
+        client_cls.return_value.activate.assert_called_once_with("t-9")
+        client_cls.return_value.new_tab.assert_not_called()
+
+    @patch("bosshunter.browser.RuntimeClient")
+    @patch("bosshunter.browser.ensure_runtime")
+    @patch("bosshunter.browser.runtime_targets")
+    def test_does_not_hijack_a_job_list_tab(self, runtime_targets, ensure_runtime, client_cls):
+        runtime_targets.return_value = [{"targetId": "t-9", "url": "https://www.zhipin.com/web/geek/job"}]
+        browser = self._setup(ensure_runtime, client_cls, targets=[
+            {"targetId": "t-9", "url": "https://www.zhipin.com/web/geek/job"},
+        ])
+
+        result = browser.open_platform_tab(self._BOSS_LOGIN)
+
+        self.assertEqual(result["target_id"], "t-new")
+        self.assertFalse(result["reused_tab"])
+        client_cls.return_value.navigate.assert_not_called()
+        client_cls.return_value.activate.assert_not_called()
+        client_cls.return_value.new_tab.assert_called_once_with(self._BOSS_LOGIN)
+
+    @patch("bosshunter.browser.RuntimeClient")
+    @patch("bosshunter.browser.ensure_runtime")
+    @patch("bosshunter.browser.runtime_targets")
+    def test_ignores_tabs_from_other_sites(self, runtime_targets, ensure_runtime, client_cls):
+        runtime_targets.return_value = [{"targetId": "t-9", "url": "https://www.zhaopin.com/"}]
+        browser = self._setup(ensure_runtime, client_cls, targets=[
+            {"targetId": "t-9", "url": "https://www.zhaopin.com/"},
+        ])
+
+        result = browser.open_platform_tab(self._BOSS_LOGIN)
+
+        self.assertEqual(result["target_id"], "t-new")
+        self.assertFalse(result["reused_tab"])
+        client_cls.return_value.new_tab.assert_called_once_with(self._BOSS_LOGIN)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -165,6 +165,37 @@ class WebApiRouteTests(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_clear_risk_lock_endpoint_clears_the_cooldown(self):
+        # v27: 立即重试 — the endpoint clears the account-safety lock so a
+        # stopped collection round can restart without waiting out the cooldown.
+        from bosshunter.db import get_active_platform_safety_lock, set_platform_safety_lock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                set_platform_safety_lock(db, "captcha", minutes=30)
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/safety/clear-risk-lock", method="POST", json_body={})
+            self.assertTrue(status.startswith("200"), body)
+            payload = json.loads(body)
+            self.assertTrue(payload["ok"])
+            self.assertTrue(payload["cleared"])
+
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                self.assertIsNone(get_active_platform_safety_lock(db))
+            finally:
+                db.close()
+
+            # Clearing again reports nothing cleared instead of erroring.
+            status, _, body = self._request("/api/safety/clear-risk-lock", method="POST", json_body={})
+            self.assertTrue(status.startswith("200"), body)
+            self.assertFalse(json.loads(body)["cleared"])
+
     def test_outsourcing_and_greeting_metadata_coexist_across_review_apis(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)

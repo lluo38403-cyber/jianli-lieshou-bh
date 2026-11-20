@@ -5,9 +5,15 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from bosshunter.browser.client import RuntimeClient
-from bosshunter.browser.runtime import ensure_runtime, get_runtime_url, set_browser_config
+from bosshunter.browser.runtime import (
+    ensure_runtime,
+    get_runtime_url,
+    runtime_targets,
+    set_browser_config,
+)
 
 CDP_PROXY_URL = get_runtime_url()
 CDP_DIRECT_URL = "http://localhost:9222"
@@ -88,6 +94,85 @@ def new_tab(url: str, background: bool = False) -> str | None:
     if not _ready(target_url=url):
         return None
     return _client().new_tab(url, background=background)
+
+
+def activate_tab(target_id: str) -> bool:
+    """Bring a tab (and its window) to the front."""
+    if not _ready():
+        return False
+    return _client().activate(target_id)
+
+
+def _same_site_host(left: str, right: str) -> bool:
+    """True when two URLs belong to the same site (last two host labels).
+
+    Good enough for the four platforms (all *.com); not a general
+    public-suffix check, and it never needs to be one here.
+    """
+    left_host = (urlparse(left).hostname or "").lower()
+    right_host = (urlparse(right).hostname or "").lower()
+    if not left_host or not right_host:
+        return False
+    left_parts = left_host.split(".")
+    right_parts = right_host.split(".")
+    return left_parts[-2:] == right_parts[-2:]
+
+
+def _normalize_url(url: str) -> str:
+    return url.rstrip("/") or "/"
+
+
+def open_platform_tab(url: str) -> dict[str, Any]:
+    """Open a platform page in the work browser, reusing its tab if open.
+
+    v27：登录按钮点一次就该有明确结果。已打开对应标签页时切过去
+    （登录页本身或站点首页：直接置前；不是目标页时先导航过去），
+    不再新开一个；没打开才新开。browser_started 表示这次调用之前
+    浏览器还没起来、是这次现拉的——前端据此给“工作浏览器已启动”
+    的反馈，而不是含糊的“已打开”。
+    只在“去登录”用：采集/投递的 new_tab 语义不变（永远新开）。
+    """
+    was_up = runtime_targets() is not None
+    if not _ready(target_url=url):
+        return {
+            "target_id": None,
+            "browser_started": False,
+            "reused_tab": False,
+            "message": "浏览器没连上：工作浏览器没启动起来，再点一次试试。",
+        }
+    for target in get_page_targets():
+        target_url = str(target.get("url") or "")
+        target_id = str(target.get("targetId") or "")
+        if not target_id or not _same_site_host(target_url, url):
+            continue
+        # 只复用“已经是目标页”或“站点首页”的标签页：别的页面（岗位
+        # 列表、详情页）可能是用户正在看的东西，不抢过来导航走。
+        target_path = urlparse(target_url).path or "/"
+        if _normalize_url(target_url) != _normalize_url(url) and target_path not in ("", "/"):
+            continue
+        if _normalize_url(target_url) != _normalize_url(url):
+            navigate(target_id, url)
+        activate_tab(target_id)
+        return {
+            "target_id": target_id,
+            "browser_started": not was_up,
+            "reused_tab": True,
+            "message": "已经打开了，直接切过去了。",
+        }
+    target_id = _client().new_tab(url)
+    if not target_id:
+        return {
+            "target_id": None,
+            "browser_started": not was_up,
+            "reused_tab": False,
+            "message": "浏览器没连上：工作浏览器没启动起来，再点一次试试。",
+        }
+    return {
+        "target_id": target_id,
+        "browser_started": not was_up,
+        "reused_tab": False,
+        "message": "已在工作浏览器打开。",
+    }
 
 
 def close_tab(target_id: str) -> bool:

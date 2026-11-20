@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from bosshunter.config import DEFAULTS, load_config
 from bosshunter.db import (
     add_platform_access,
+    clear_platform_safety_lock,
     count_platform_access_today,
     get_active_platform_safety_lock,
     get_db,
@@ -142,6 +143,18 @@ platforms:
             lock = get_active_platform_safety_lock(reopened)
             self.assertEqual(lock["reason"], "captcha")
             reopened.close()
+
+    def test_clear_platform_safety_lock_removes_the_lock(self):
+        # v27: 立即重试 clears the cooldown early instead of waiting it out.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = get_db(Path(tmp) / "bosshunter.db")
+            set_platform_safety_lock(db, "captcha", minutes=30)
+            self.assertIsNotNone(get_active_platform_safety_lock(db))
+            self.assertTrue(clear_platform_safety_lock(db))
+            self.assertIsNone(get_active_platform_safety_lock(db))
+            # Clearing again is a no-op, not an error.
+            self.assertFalse(clear_platform_safety_lock(db))
+            db.close()
 
     def test_collection_risk_stops_and_records_safe_reason(self):
         db = get_db(Path(":memory:"))

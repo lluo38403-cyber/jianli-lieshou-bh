@@ -364,7 +364,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
       if (controller.signal.aborted) return null
       const states = derivePlatformLoginStates(data)
       if (!states) {
-        setPlatformLoginRefreshError('浏览器没连上，登录态查不出来。先点“一键启动浏览器”，再点刷新试试。')
+        setPlatformLoginRefreshError('浏览器没连上，登录态查不出来。先点任意一个平台的“去登录”，再点刷新试试。')
         return data
       }
       applyPlatformLoginStates(states)

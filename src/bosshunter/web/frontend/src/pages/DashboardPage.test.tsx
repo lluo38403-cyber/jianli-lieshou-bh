@@ -217,13 +217,14 @@ describe('DashboardPage workbench task panel', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/workbench/preflight?mode=full'))
   })
 
-  it('offers one-click browser launch from the browser runtime preflight failure', async () => {
+  it('points at the platform login buttons instead of a one-click launch when the browser runtime is down', async () => {
+    // v27：“一键启动浏览器”按钮已删，拉起统一走各平台的“去登录”。
     preflightResponse = () => jsonResponse({
       ok: false,
       checks: [{
         id: 'browser_runtime', title: '浏览器运行组件', status: 'error',
         message: '简历猎手浏览器运行组件未启动',
-        detail: '点“一键启动浏览器”，程序会自动打开浏览器并连上；还不行就点“再检查一次”。',
+        detail: '点任意一个平台的“去登录”，程序会自动打开工作浏览器并连上；还不行就点“再检查一次”。',
         action: 'browser',
       }],
     })
@@ -233,40 +234,32 @@ describe('DashboardPage workbench task panel', () => {
     fireEvent.click(within(guide).getByRole('button', { name: '检查一下能不能跑' }))
     const results = await within(guide).findByRole('region', { name: '启动检查结果' })
     expect(within(results).getByRole('status').textContent).toContain('浏览器运行组件未启动')
+    expect(within(results).queryByRole('button', { name: '一键启动浏览器' })).toBeNull()
+    expect(within(results).getByText(/点任意一个平台的“去登录”/)).toBeTruthy()
     const preflightCalls = () => fetchMock.mock.calls.filter(call => String(call[0]) === '/api/workbench/preflight?mode=full').length
     expect(preflightCalls()).toBe(1)
-    fireEvent.click(within(results).getByRole('button', { name: '一键启动浏览器' }))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/browser/launch', expect.objectContaining({ method: 'POST' })))
-    // 点后有反馈，启动成功后自动重新检查。
-    await waitFor(() => expect(screen.getByText('浏览器已启动。')).toBeTruthy())
+    fireEvent.click(within(results).getByRole('button', { name: '再检查一次' }))
     await waitFor(() => expect(preflightCalls()).toBeGreaterThanOrEqual(2))
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/browser/launch', expect.anything())
   })
 
-  it('shows a failure message when one-click browser launch fails', async () => {
-    preflightResponse = () => jsonResponse({
-      ok: false,
-      checks: [{
-        id: 'browser_runtime', title: '浏览器运行组件', status: 'error',
-        message: '简历猎手浏览器运行组件未启动',
-        detail: '点“一键启动浏览器”，程序会自动打开浏览器并连上；还不行就点“再检查一次”。',
-        action: 'browser',
-      }],
-    })
+  it('reports login-button feedback in the notice when the work browser starts', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input) === '/api/browser/launch') throw new Error('拉不起来')
+      if (String(input) === '/api/browser/open') {
+        return jsonResponse({ ok: true, target_id: 't-1', browser_started: true, reused_tab: false, message: '已在工作浏览器打开。' })
+      }
       return fetchMock(input, init)
     }))
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
     render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
 
     const guide = await screen.findByRole('region', { name: '开始使用' })
-    fireEvent.click(within(guide).getByRole('button', { name: '检查一下能不能跑' }))
-    const results = await within(guide).findByRole('region', { name: '启动检查结果' })
-    fireEvent.click(within(results).getByRole('button', { name: '一键启动浏览器' }))
-    await waitFor(() => expect(screen.getByText(/再点一次试试/)).toBeTruthy())
-    // 失败后按钮还在，能再点一次，不会卡在“正在启动”。
-    expect((within(results).getByRole('button', { name: '一键启动浏览器' }) as HTMLButtonElement).disabled).toBe(false)
-    // 失败不自动重查：预检只调过一次（引导区那次）。
-    expect(fetchMock.mock.calls.filter(call => String(call[0]) === '/api/workbench/preflight?mode=full')).toHaveLength(1)
+    fireEvent.click(within(guide).getByRole('button', { name: '去BOSS 直聘登录' }))
+    await waitFor(() => expect(
+      screen.getAllByText('工作浏览器已启动，正在打开BOSS 直聘登录页。').length,
+    ).toBeGreaterThanOrEqual(1))
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/browser/launch', expect.anything())
+    expect(openSpy).not.toHaveBeenCalled()
   })
 
   it('shows per-job greet progress from task logs', async () => {
@@ -668,9 +661,10 @@ describe('DashboardPage persisted preflight and platform login status', () => {
     expect(within(statusCard).getByText('已掉线')).toBeTruthy()
     expect(within(statusCard).getByText('还没查过')).toBeTruthy()
     fireEvent.click(within(statusCard).getByRole('button', { name: '重新登录智联招聘' }))
-    // openPlatformLogin 现在先走后端 /api/browser/open，失败再回退 window.open：
-    // fetchMock 对未知地址返回 {}，后端 ok 为假，于是异步回退。
-    await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://www.zhaopin.com/', '_blank', 'noopener,noreferrer'))
+    // v27：后端没接通不再回退到 window.open——失败原因直接显示在卡片上，
+    // 让用户再点一次。fetchMock 对未知地址返回 {}，后端 ok 为假。
+    await waitFor(() => expect(within(statusCard).getByText('浏览器没连上，再点一次试试。')).toBeTruthy())
+    expect(openSpy).not.toHaveBeenCalled()
   })
 
   it('replaces stale logged-out rows with fresh diagnostics on mount', async () => {
@@ -732,13 +726,28 @@ describe('DashboardPage persisted preflight and platform login status', () => {
   })
 
   it('offers one-tap login jumps for all four platforms in the getting-started card', async () => {
+    // v27：登录按钮走后端 /api/browser/open（工作浏览器里打开），不再
+    // window.open；点一次就有反馈，失败也不回退。
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/browser/open') {
+        return jsonResponse({ ok: true, target_id: 't-1', browser_started: false, reused_tab: false, message: '已在工作浏览器打开。' })
+      }
+      return fetchMock(input, init)
+    }))
     render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
     const guide = await screen.findByRole('region', { name: '开始使用' })
+    expect(within(guide).getByText('点击后会打开工作浏览器并跳转到对应招聘网站登录页。')).toBeTruthy()
     fireEvent.click(within(guide).getByRole('button', { name: '去BOSS 直聘登录' }))
-    await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://www.zhipin.com/web/user/login', '_blank', 'noopener,noreferrer'))
+    await waitFor(() => expect(
+      screen.getAllByText('已在工作浏览器打开BOSS 直聘登录页。').length,
+    ).toBeGreaterThanOrEqual(1))
     fireEvent.click(within(guide).getByRole('button', { name: '去猎聘登录' }))
-    await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://www.liepin.com/', '_blank', 'noopener,noreferrer'))
+    await waitFor(() => expect(
+      screen.getAllByText('已在工作浏览器打开猎聘登录页。').length,
+    ).toBeGreaterThanOrEqual(1))
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/browser/launch', expect.anything())
+    expect(openSpy).not.toHaveBeenCalled()
   })
 
   it('tells the not-found and connection-failed browser cases apart', async () => {

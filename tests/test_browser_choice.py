@@ -205,7 +205,7 @@ class LaunchSelectedBrowserTests(unittest.TestCase):
         )
         from bosshunter.browser.runtime import launch_debuggable_browser
 
-        debug_version.side_effect = [None, None, None, _live_version()]
+        debug_version.side_effect = [None, None, None, None, _live_version()]
         self.assertTrue(
             launch_debuggable_browser(_browser_config(browser_choice="edge"))
         )
@@ -219,7 +219,7 @@ class LaunchSelectedBrowserTests(unittest.TestCase):
         )
         from bosshunter.browser.runtime import launch_debuggable_browser
 
-        debug_version.side_effect = [None, None, None, _live_version()]
+        debug_version.side_effect = [None, None, None, None, _live_version()]
         self.assertTrue(launch_debuggable_browser(
             _browser_config(), target_url="https://www.zhipin.com/web/user/login"
         ))
@@ -233,7 +233,7 @@ class LaunchSelectedBrowserTests(unittest.TestCase):
         )
         from bosshunter.browser.runtime import _AUTOMATION_START_PAGE, launch_debuggable_browser
 
-        debug_version.side_effect = [None, None, None, _live_version()]
+        debug_version.side_effect = [None, None, None, None, _live_version()]
         self.assertTrue(launch_debuggable_browser(_browser_config()))
         self.assertEqual(popen.call_args.args[0][-1], _AUTOMATION_START_PAGE)
 

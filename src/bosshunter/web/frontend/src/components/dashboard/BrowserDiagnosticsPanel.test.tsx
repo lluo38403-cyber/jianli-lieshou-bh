@@ -15,7 +15,7 @@ const failed: BrowserDiagnostics = {
   ok: false,
   error_kind: 'connection_failed',
   message: '浏览器已经装好了，但是现在连不上。',
-  next_steps: ['点“一键启动浏览器”，程序会自动打开一个能连接的浏览器窗口。'],
+  next_steps: ['点任意一个平台的“去登录”，程序会自动打开一个能连接的浏览器窗口。'],
   discovered: { chrome: 'C:/Program Files/Google/Chrome/Application/chrome.exe', edge: null },
   diagnostics: { chrome: false, discovered: { chrome: 'C:/Chrome/chrome.exe' } },
 }
@@ -24,9 +24,10 @@ it('shows a short Chinese message for connection failure, never raw JSON or code
   render(<BrowserDiagnosticsPanel diagnostics={failed} onRefresh={() => {}} />)
   expect(screen.getByText('浏览器连不上了')).toBeTruthy()
   expect(screen.getByText('浏览器已经装好了，但是现在连不上。')).toBeTruthy()
-  expect(screen.getByText('点“一键启动浏览器”，程序会自动打开一个能连接的浏览器窗口。')).toBeTruthy()
-  expect(screen.getByRole('button', { name: '一键启动浏览器' })).toBeTruthy()
-  expect(screen.queryByRole('button', { name: '重新检测' })).toBeNull()
+  expect(screen.getByText('点任意一个平台的“去登录”，程序会自动打开一个能连接的浏览器窗口。')).toBeTruthy()
+  // v27：“一键启动浏览器”按钮已删；连接失败也只给“重新检测”，拉起走各平台的“去登录”。
+  expect(screen.queryByRole('button', { name: '一键启动浏览器' })).toBeNull()
+  expect(screen.getByRole('button', { name: '重新检测' })).toBeTruthy()
   expect(screen.getByRole('button', { name: '一键复制诊断信息' })).toBeTruthy()
   // 页面上不出现任何代码：没有 JSON 块、没有展开器、没有浏览器路径。
   expect(document.querySelector('pre')).toBeNull()
@@ -65,14 +66,17 @@ it('the copy button copies the full diagnostics JSON in the background', async (
   await waitFor(() => expect(screen.getByRole('button', { name: '已复制' })).toBeTruthy())
 })
 
-it('one-click launch posts to the launch endpoint and calls onRefresh', async () => {
+it('recheck posts to the diagnostics endpoint and never launches the browser', async () => {
+  // v27：“一键启动浏览器”按钮已删，拉起统一走各平台的“去登录”；这里只检测。
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }))
   vi.stubGlobal('fetch', fetchMock)
   const onRefresh = vi.fn()
   render(<BrowserDiagnosticsPanel diagnostics={failed} onRefresh={onRefresh} />)
-  fireEvent.click(screen.getByRole('button', { name: '一键启动浏览器' }))
+  expect(screen.queryByRole('button', { name: '一键启动浏览器' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '重新检测' }))
   await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1))
-  expect(fetchMock).toHaveBeenCalledWith('/api/browser/launch', expect.objectContaining({ method: 'POST' }))
+  expect(fetchMock).toHaveBeenCalledWith('/api/browser/diagnostics', expect.objectContaining({ method: 'POST' }))
+  expect(fetchMock).not.toHaveBeenCalledWith('/api/browser/launch', expect.anything())
 })
 
 it('recheck posts to the diagnostics endpoint only when no browser is found', async () => {

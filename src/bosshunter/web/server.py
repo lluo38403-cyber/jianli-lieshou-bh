@@ -63,6 +63,7 @@ from bosshunter.db import (
 	JobManualSentConflictError,
 	add_history,
 	breaker_suspended_platforms,
+	clear_platform_safety_lock,
 	count_sent_today,
 	count_sent_today_by_platform,
 	count_unresolved_monitor_items,
@@ -2222,8 +2223,7 @@ def api_browser_diagnostics_refresh():
 	"""重新执行一次诊断；第一次没连上浏览器时内部再试一次。
 
 	只做检测，不拉起浏览器（“检查一下能不能跑”也是检测，不是启动）：
-	拉起只走用户主动点的“一键启动浏览器”（POST /api/browser/launch）
-	或“去登录”（POST /api/browser/open）。
+	拉起只走“去登录”（POST /api/browser/open）或任务启动。
 	"""
 	try:
 		config = load_config(CONFIG_PATH)
@@ -2237,11 +2237,13 @@ def api_browser_diagnostics_refresh():
 
 @app.route("/api/browser/launch", method="POST")
 def api_browser_launch():
-	"""用户主动点的“一键启动浏览器”：拉起所选浏览器，再返回最新诊断。
+	"""拉起所选浏览器，再返回最新诊断（v27 保留的入口）。
 
-	这是检测之外唯一允许拉起的面板入口；换浏览器后立即生效，下次
-	拉起就用新的，不用重启 exe。所选浏览器找不到时不静默失败，
-	返回的诊断里 error_kind / message 会说明。
+	v27 起面板上不再有“一键启动浏览器”按钮，拉起统一走各平台
+	的“去登录”（POST /api/browser/open → new_tab → ensure_runtime）。
+	这个接口留着：换浏览器后立即生效，下次拉起就用新的，不用重启
+	exe；所选浏览器找不到时不静默失败，返回的诊断里 error_kind /
+	message 会说明。
 	"""
 	try:
 		config = load_config(CONFIG_PATH)
@@ -2258,6 +2260,9 @@ def api_browser_open():
 	登录页必须开在程序拉起的那个浏览器窗口里（专用配置目录），
 	不能用 window.open 开在面板自己的浏览器里，否则登录态落在
 	另一个配置目录，运行组件永远检测不到。只认 http(s) 网址。
+	v27：复用已打开的对应标签页（切过去，不新开），并返回
+	browser_started / reused_tab / message，前端据此给明确的
+	启动/跳转状态反馈，不再静默回退到 window.open。
 	"""
 	try:
 		try:
@@ -2268,12 +2273,18 @@ def api_browser_open():
 		url = str(body.get("url") or "").strip()
 		if not url.startswith(("http://", "https://")):
 			return _json_response({"error": "这个网址打不开，请重新点一次。"}, 400)
-		from bosshunter.browser import new_tab
+		from bosshunter.browser import open_platform_tab
 
-		target_id = new_tab(url)
-		if not target_id:
-			return _json_response({"error": "浏览器还没连上，点“一键启动浏览器”后再试一次。"}, 503)
-		return _json_response({"ok": True, "target_id": target_id})
+		result = open_platform_tab(url)
+		if not result.get("target_id"):
+			return _json_response({"error": result.get("message") or "浏览器还没连上，再点一次试试。"}, 503)
+		return _json_response({
+			"ok": True,
+			"target_id": result["target_id"],
+			"browser_started": bool(result.get("browser_started")),
+			"reused_tab": bool(result.get("reused_tab")),
+			"message": result.get("message") or "",
+		})
 	except Exception as e:
 		return _json_response({"error": str(e)}, 500)
 
@@ -2829,6 +2840,21 @@ def api_workbench_task_stop(task_id):
 		return _json_response(task_runner.stop(task_id))
 	except KeyError:
 		return _json_response({"error": "任务不存在"}, 404)
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/safety/clear-risk-lock", method="POST")
+def api_safety_clear_risk_lock():
+	"""Clear the account-safety lock early (v27: the user chose 立即重试
+	after a risk stop instead of waiting out the cooldown)."""
+	try:
+		db = _get_web_db()
+		try:
+			cleared = clear_platform_safety_lock(db)
+		finally:
+			db.close()
+		return _json_response({"ok": True, "cleared": cleared})
 	except Exception as e:
 		return _json_response({"error": str(e)}, 500)
 

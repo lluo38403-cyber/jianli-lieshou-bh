@@ -14,7 +14,7 @@ import { ResumeUploadSection } from '@/components/config/ResumeUploadSection'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Save, RotateCcw } from 'lucide-react'
 import { useState, useEffect } from 'react'
-import { PLATFORM_LABELS, PLATFORM_SHORT_LABELS } from '@/lib/platforms'
+import { PLATFORM_LABELS, PLATFORM_SHORT_LABELS, PLATFORM_IDS, MONITOR_CHAT_URL_DEFAULTS, type PlatformId as SharedPlatformId } from '@/lib/platforms'
 
 type PlatformId = 'boss' | 'zhilian' | '51job' | 'liepin'
 
@@ -665,9 +665,26 @@ export default function ConfigPage() {
               <Input type="number" value={config.monitor?.initial_cooldown_minutes ?? 10} onChange={e => updateConfig('monitor.initial_cooldown_minutes', Number(e.target.value))} min={0} max={120} />
               <p className="mt-1 text-xs text-muted">只有自动找工作投完才等这一会儿；只看回复是马上就查，停下任务就不等了。</p>
             </Field>
-            <Field label="聊天页面地址">
-              <Input value={config.monitor?.chat_url || ''} onChange={e => updateConfig('monitor.chat_url', e.target.value)} />
-            </Field>
+            {/* v27：聊天页按平台分开配。显示的是实际生效的地址：
+                chat_urls 里填了就用填的；没填时 BOSS 沿用老的 chat_url，
+                其余平台用内置默认（消息中心入口）。改了要记得点保存。 */}
+            <div className="space-y-3">
+              <p className="text-xs font-bold text-foreground">各平台聊天页面地址</p>
+              {PLATFORM_IDS.map(platform => {
+                const configured = config.monitor?.chat_urls?.[platform as SharedPlatformId]
+                const legacyBoss = platform === 'boss' ? config.monitor?.chat_url : ''
+                const effective = configured || legacyBoss || MONITOR_CHAT_URL_DEFAULTS[platform as SharedPlatformId]
+                return (
+                  <Field key={platform} label={`${PLATFORM_LABELS[platform]}聊天页面地址`}>
+                    <Input
+                      value={effective}
+                      onChange={e => updateConfig(`monitor.chat_urls.${platform}`, e.target.value)}
+                    />
+                  </Field>
+                )
+              })}
+              <p className="text-xs text-muted">BOSS 是已验证的沟通页；其余三家默认是各平台消息中心入口，核实到专用聊天页后可改成直链。查 HR 回复时各平台只读自己这一行，不会混用。</p>
+            </div>
             <Field label="一次最多处理几段对话">
               <Input type="number" value={config.monitor?.max_conversations_per_cycle ?? 5} onChange={e => updateConfig('monitor.max_conversations_per_cycle', Number(e.target.value))} min={1} max={20} />
             </Field>

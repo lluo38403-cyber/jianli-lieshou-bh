@@ -18,6 +18,9 @@ const login = {
 
 it('shows all three states and highlights the logged-out platform with a relogin button', async () => {
   const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    ok: true, target_id: 't-1', browser_started: false, reused_tab: false, message: '已在工作浏览器打开。',
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
   render(<PlatformStatusCard platformLogin={login} />)
   expect(screen.getByRole('region', { name: '各平台登录状态' })).toBeTruthy()
   expect(screen.getAllByText('已登录')).toHaveLength(2)
@@ -28,13 +31,14 @@ it('shows all three states and highlights the logged-out platform with a relogin
   const relogin = screen.getByRole('button', { name: '重新登录智联招聘' })
   expect(relogin.closest('div')?.className).toContain('bg-danger-soft')
   fireEvent.click(relogin)
-  // openPlatformLogin 先走后端 /api/browser/open：这里没 mock fetch，
-  // 相对地址的请求会被拒，再异步回退到 window.open。
-  await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://www.zhaopin.com/', '_blank', 'noopener,noreferrer'))
+  // v27：走后端 /api/browser/open 在工作浏览器里打开，成功后卡片上给反馈，
+  // 不再回退到 window.open。
+  await waitFor(() => expect(screen.getByText('已在工作浏览器打开智联招聘登录页。')).toBeTruthy())
+  expect(openSpy).not.toHaveBeenCalled()
 })
 
 it('shows one shared detail once instead of repeating it on all four platforms', () => {
-  const shared = '浏览器还没连上，先点“一键启动浏览器”。'
+  const shared = '浏览器还没连上，先点任意一个平台的“去登录”。'
   render(<PlatformStatusCard platformLogin={{
     boss: { status: 'unknown' as const, checked_at: freshAt(), detail: shared },
     zhilian: { status: 'unknown' as const, checked_at: freshAt(), detail: shared },
@@ -96,10 +100,12 @@ it('shows “checking” for stale rows while a check is running, fresh verdicts
   expect(screen.getByText('1 个平台掉线了，先重新登录再跑')).toBeTruthy()
 })
 
-it('tells the user to refresh again when the login page opened in the wrong browser', async () => {
+it('shows the failure reason in the card when the login open fails', async () => {
+  // v27：后端没接通不再回退到 window.open——失败原因直接显示在卡片上。
   const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+  vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
   render(<PlatformStatusCard platformLogin={login} />)
   fireEvent.click(screen.getByRole('button', { name: '重新登录智联招聘' }))
-  await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://www.zhaopin.com/', '_blank', 'noopener,noreferrer'))
-  expect(screen.getByText(/登录页在当前浏览器里打开了/)).toBeTruthy()
+  await waitFor(() => expect(screen.getByText('没连上程序的浏览器，请确认简历猎手还在运行，再点一次。')).toBeTruthy())
+  expect(openSpy).not.toHaveBeenCalled()
 })

@@ -358,6 +358,117 @@ class WatchAppWindowCloseTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(fired, [])
 
+    def test_panel_tab_disappearing_while_proc_lingers_triggers_on_close(self):
+        # v27：带调试端口的 Chrome 关掉最后一个窗口后进程可能还留着，
+        # 只看句柄看不到关窗；面板标签页出现过、后来没了，就是关窗。
+        import bosshunter.app_window as app_window
+
+        proc = Mock()
+        proc.poll.return_value = None  # 进程一直活着（ lingering 实例）
+        fired = []
+        tab_lists = iter([
+            ["http://127.0.0.1:8686/"],
+            ["http://127.0.0.1:8686/", "https://www.zhipin.com/web/geek/job"],
+            ["https://www.zhipin.com/web/geek/job"],
+        ])
+        result = app_window.watch_app_window_close(
+            lambda: fired.append(True),
+            grace_seconds=5.0,
+            poll_interval=0.01,
+            wait_for_proc_seconds=30.0,
+            _get_proc=lambda: proc,
+            _started_at=100.0,
+            _is_update_applying=lambda: False,
+            _clock=self._fake_clock([100.0, 100.0, 100.0, 100.0, 100.0]),
+            _sleep=lambda _: None,
+            _panel_url="http://127.0.0.1:8686",
+            _list_tabs=lambda: next(tab_lists),
+        )
+        self.assertTrue(result)
+        self.assertEqual(fired, [True])
+
+    def test_handoff_fake_exit_switches_to_tab_watch(self):
+        # v27：句柄在 grace 内就退出（交接给已在跑实例），不再直接
+        # 返回 False——改看标签页；面板标签页后来没了，照样触发。
+        import bosshunter.app_window as app_window
+
+        proc = Mock()
+        proc.poll.return_value = 0  # 交接，立刻就退了
+        fired = []
+        tab_lists = iter([
+            ["http://127.0.0.1:8686/"],
+            [],
+        ])
+        result = app_window.watch_app_window_close(
+            lambda: fired.append(True),
+            grace_seconds=5.0,
+            poll_interval=0.01,
+            wait_for_proc_seconds=30.0,
+            _get_proc=lambda: proc,
+            _started_at=100.0,
+            _is_update_applying=lambda: False,
+            _clock=self._fake_clock([100.0, 101.0, 101.0, 101.0, 101.0]),
+            _sleep=lambda _: None,
+            _panel_url="http://127.0.0.1:8686",
+            _list_tabs=lambda: next(tab_lists),
+        )
+        self.assertTrue(result)
+        self.assertEqual(fired, [True])
+
+    def test_tab_watch_gives_up_when_panel_never_appears(self):
+        # v27：交接后 60 秒一直没看到面板标签页（看的不是我们的
+        # 实例），放弃监视，不是一直轮询下去。
+        import bosshunter.app_window as app_window
+
+        proc = Mock()
+        proc.poll.return_value = 0
+        fired = []
+        result = app_window.watch_app_window_close(
+            lambda: fired.append(True),
+            grace_seconds=5.0,
+            poll_interval=0.01,
+            wait_for_proc_seconds=30.0,
+            _get_proc=lambda: proc,
+            _started_at=100.0,
+            _is_update_applying=lambda: False,
+            _clock=self._fake_clock([100.0, 101.0, 101.0, 200.0, 300.0]),
+            _sleep=lambda _: None,
+            _panel_url="http://127.0.0.1:8686",
+            _list_tabs=lambda: ["https://www.zhipin.com/web/geek/job"],
+            _tab_watch_seconds=60.0,
+        )
+        self.assertFalse(result)
+        self.assertEqual(fired, [])
+
+    def test_unreachable_debug_port_is_not_a_close(self):
+        # v27：端口没应答（问不到标签页）不能读成“面板关了”——
+        # 否则浏览器一卡就把程序退了。
+        import bosshunter.app_window as app_window
+
+        proc = Mock()
+        proc.poll.side_effect = [None, None, 0]
+        fired = []
+        tab_lists = iter([
+            ["http://127.0.0.1:8686/"],
+            None,
+            None,
+        ])
+        result = app_window.watch_app_window_close(
+            lambda: fired.append(True),
+            grace_seconds=5.0,
+            poll_interval=0.01,
+            wait_for_proc_seconds=30.0,
+            _get_proc=lambda: proc,
+            _started_at=100.0,
+            _is_update_applying=lambda: False,
+            _clock=self._fake_clock([100.0, 103.0, 106.0, 106.0]),
+            _sleep=lambda _: None,
+            _panel_url="http://127.0.0.1:8686",
+            _list_tabs=lambda: next(tab_lists),
+        )
+        self.assertTrue(result)
+        self.assertEqual(fired, [True])
+
 
 class ApiExitTests(unittest.TestCase):
     def test_exit_stops_task_then_cleans_up_then_exits(self):

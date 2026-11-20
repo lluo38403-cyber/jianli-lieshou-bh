@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { PLATFORM_IDS, PLATFORM_LABELS, openPlatformLogin, type PlatformId } from '@/lib/platforms'
 import { getPlatformLoginStatusLabel } from '@/lib/status'
@@ -28,11 +28,12 @@ export function PlatformStatusCard({ platformLogin, browserName = '浏览器', o
    * 行先显示“正在确认”，新鲜结论不动，不来回闪。 */
   checking?: boolean
 }) {
-  // “重新登录”点开的登录页落在了当前浏览器（后端 /api/browser/open
-  // 没接通才回退到这一步）：登录态在程序的浏览器里检测不到，登好
-  // 后要点右上角“刷新”再查一次；提示在下次刷新成功后消失。
-  const [loginOpenedElsewhere, setLoginOpenedElsewhere] = useState(false)
-  useEffect(() => { if (refreshedAt) setLoginOpenedElsewhere(false) }, [refreshedAt])
+  // v27：登录按钮点一次就给明确反馈（正在打开 / 已打开 / 已切到打开的
+  // 标签页 / 失败原因）。以前后端没接通会回退到 window.open，登录页
+  // 落在面板自己的浏览器里、程序检测不到，还要用户手动点“刷新”；
+  // 现在不回退了，失败就直接显示原因、让用户再点一次。
+  const [loginBusy, setLoginBusy] = useState<PlatformId | null>(null)
+  const [loginFeedback, setLoginFeedback] = useState<{ platform: PlatformId; message: string; ok: boolean } | null>(null)
 
   const nowMs = Date.now()
   const tiles = PLATFORM_IDS.map(platform => {
@@ -49,8 +50,26 @@ export function PlatformStatusCard({ platformLogin, browserName = '浏览器', o
   const allUnknown = tiles.every(tile => tile.status === 'unknown' || tile.status === 'checking')
   const refreshDisabled = refreshing || checking || !onRefresh
 
-  const handleOpenLogin = (platform: PlatformId) => {
-    void openPlatformLogin(platform).then(opened => { if (!opened) setLoginOpenedElsewhere(true) })
+  const handleOpenLogin = async (platform: PlatformId) => {
+    if (loginBusy) return
+    setLoginBusy(platform)
+    setLoginFeedback({ platform, message: `正在打开工作浏览器，准备去${PLATFORM_LABELS[platform]}登录…`, ok: true })
+    try {
+      const result = await openPlatformLogin(platform)
+      setLoginFeedback({
+        platform,
+        message: result.ok
+          ? result.reusedTab
+            ? `已经打开了${PLATFORM_LABELS[platform]}的标签页，直接切过去了。`
+            : result.browserStarted
+              ? `工作浏览器已启动，正在打开${PLATFORM_LABELS[platform]}登录页。`
+              : `已在工作浏览器打开${PLATFORM_LABELS[platform]}登录页。`
+          : result.message || '浏览器没连上，再点一次试试。',
+        ok: result.ok,
+      })
+    } finally {
+      setLoginBusy(null)
+    }
   }
 
   return (
@@ -87,12 +106,13 @@ export function PlatformStatusCard({ platformLogin, browserName = '浏览器', o
                 : null}
         </p>
       )}
-      {loginOpenedElsewhere && (
-        <p className="mt-1 text-[11px] leading-4 text-muted">
-          登录页在当前浏览器里打开了（程序的浏览器没连上），登好后点右上角“刷新”再查一次。
+      {loginFeedback && (
+        <p role="status" className={cn('mt-1 text-[11px] leading-4', loginFeedback.ok ? 'text-muted' : 'text-danger')}>
+          {loginFeedback.message}
         </p>
       )}
       {sharedDetail && <p className="mt-2 text-[11px] leading-4 text-muted">{sharedDetail}</p>}
+      <p className="mt-2 text-[11px] leading-4 text-muted">点击下面任意一个“去登录”，会打开工作浏览器并跳转到对应招聘网站登录页。</p>
       <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
         {tiles.map(({ platform, freshInfo, status }) => {
           const isOut = status === 'logged_out'
@@ -125,19 +145,21 @@ export function PlatformStatusCard({ platformLogin, browserName = '浏览器', o
               {isOut && (
                 <button
                   type="button"
-                  onClick={() => handleOpenLogin(platform as PlatformId)}
-                  className="mt-2 w-full rounded-lg bg-danger px-2 py-1.5 text-xs font-bold text-white hover:opacity-90"
+                  onClick={() => { void handleOpenLogin(platform as PlatformId) }}
+                  disabled={loginBusy !== null}
+                  className="mt-2 w-full rounded-lg bg-danger px-2 py-1.5 text-xs font-bold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  重新登录{PLATFORM_LABELS[platform]}
+                  {loginBusy === platform ? '正在打开…' : `重新登录${PLATFORM_LABELS[platform]}`}
                 </button>
               )}
               {(status === 'unknown' || isChecking) && (
                 <button
                   type="button"
-                  onClick={() => handleOpenLogin(platform as PlatformId)}
-                  className="mt-2 w-full rounded-lg border border-card-border bg-card px-2 py-1.5 text-xs font-bold text-primary hover:border-primary/40"
+                  onClick={() => { void handleOpenLogin(platform as PlatformId) }}
+                  disabled={loginBusy !== null}
+                  className="mt-2 w-full rounded-lg border border-card-border bg-card px-2 py-1.5 text-xs font-bold text-primary hover:border-primary/40 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  去{PLATFORM_LABELS[platform]}登录
+                  {loginBusy === platform ? '正在打开…' : `去${PLATFORM_LABELS[platform]}登录`}
                 </button>
               )}
             </div>

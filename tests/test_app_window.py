@@ -24,29 +24,53 @@ def _config(**overrides):
 class LaunchAppWindowTests(unittest.TestCase):
     def setUp(self):
         app_window._APP_WINDOW_PROC = None
+        app_window._APP_WINDOW_STARTED_AT = None
+        app_window._APP_WINDOW_DEBUG_PORT = None
+        app_window._APP_WINDOW_URL = None
 
     def tearDown(self):
         app_window._APP_WINDOW_PROC = None
+        app_window._APP_WINDOW_STARTED_AT = None
+        app_window._APP_WINDOW_DEBUG_PORT = None
+        app_window._APP_WINDOW_URL = None
 
     @patch("os.name", "nt")
     @patch("bosshunter.app_window.find_app_browser", return_value="C:/Chrome/chrome.exe")
     @patch("bosshunter.app_window.subprocess.Popen")
-    def test_launches_chrome_app_mode_without_console_window(self, popen, _find):
+    @patch("bosshunter.browser.runtime.pick_chrome_debug_port", return_value=9222)
+    @patch("bosshunter.browser.runtime._chrome_debug_version", return_value=None)
+    @patch("bosshunter.browser.runtime._record_launched_browser")
+    def test_launches_chrome_app_mode_without_console_window(self, record, _debug_version, _pick, popen, _find):
         proc = Mock()
         popen.return_value = proc
+        profile_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(profile_tmp.cleanup)
+        # os.name 在这里被扮成 nt：pathlib.Path 会变成 WindowsPath，
+        # 在 Linux 上建不出来；直接用 PosixPath。
+        from pathlib import PosixPath
 
-        result = app_window.launch_app_window("http://127.0.0.1:8686")
+        profile = PosixPath(profile_tmp.name) / "profile"
+
+        with patch("bosshunter.browser.runtime.get_browser_profile_dir", return_value=profile):
+            result = app_window.launch_app_window("http://127.0.0.1:8686")
 
         self.assertIs(result, proc)
         popen.assert_called_once()
         argv = popen.call_args.args[0]
-        self.assertEqual(argv, ["C:/Chrome/chrome.exe", "--app=http://127.0.0.1:8686"])
-        # --app 窗口不用登录浏览器的专用 profile，也不要调试端口。
-        self.assertFalse(any("user-data-dir" in arg for arg in argv))
-        self.assertFalse(any("remote-debugging-port" in arg for arg in argv))
+        # v27：--app 窗口与工作浏览器同一个实例——专用 profile + 调试端口。
+        self.assertEqual(argv, [
+            "C:/Chrome/chrome.exe",
+            f"--user-data-dir={profile}",
+            "--remote-debugging-port=9222",
+            "--app=http://127.0.0.1:8686",
+        ])
         flags = popen.call_args.kwargs.get("creationflags", 0)
         self.assertTrue(flags & 0x08000000, "CREATE_NO_WINDOW 必须在启动标志里")
         self.assertIs(app_window.get_app_window_process(), proc)
+        self.assertEqual(app_window.get_app_window_debug_port(), 9222)
+        self.assertEqual(app_window.get_app_window_url(), "http://127.0.0.1:8686")
+        # 这次新拉的实例：记进 launched-browser state，退出清理按它停 Chrome。
+        record.assert_called_once_with(proc, profile, 9222, "C:/Chrome/chrome.exe")
 
     @patch("bosshunter.app_window.find_app_browser", return_value=None)
     @patch("webbrowser.open")
@@ -58,8 +82,9 @@ class LaunchAppWindowTests(unittest.TestCase):
 
     @patch("bosshunter.app_window.find_app_browser", return_value="C:/Chrome/chrome.exe")
     @patch("bosshunter.app_window.subprocess.Popen", side_effect=OSError("chrome 炸了"))
+    @patch("bosshunter.browser.runtime.pick_chrome_debug_port", return_value=None)
     @patch("webbrowser.open")
-    def test_falls_back_to_default_browser_when_app_launch_fails(self, open_browser, _popen, _find):
+    def test_falls_back_to_default_browser_when_app_launch_fails(self, open_browser, _pick, _popen, _find):
         result = app_window.launch_app_window("http://127.0.0.1:8686")
 
         self.assertIsNone(result)
@@ -67,7 +92,8 @@ class LaunchAppWindowTests(unittest.TestCase):
 
     @patch("bosshunter.app_window.find_app_browser", return_value="C:/Edge/msedge.exe")
     @patch("bosshunter.app_window.subprocess.Popen")
-    def test_uses_edge_when_chrome_missing(self, popen, _find):
+    @patch("bosshunter.browser.runtime.pick_chrome_debug_port", return_value=None)
+    def test_uses_edge_when_chrome_missing(self, _pick, popen, _find):
         app_window.launch_app_window("http://127.0.0.1:8686")
 
         self.assertEqual(popen.call_args.args[0][0], "C:/Edge/msedge.exe")
@@ -177,14 +203,24 @@ class RunServerReuseTests(unittest.TestCase):
         cleanup.assert_called_once_with()
 
 
-class AppWindowLoginSeparationTests(unittest.TestCase):
+class AppWindowLoginSharingTests(unittest.TestCase):
     def setUp(self):
         app_window._APP_WINDOW_PROC = None
+        app_window._APP_WINDOW_STARTED_AT = None
+        app_window._APP_WINDOW_DEBUG_PORT = None
+        app_window._APP_WINDOW_URL = None
 
     def tearDown(self):
         app_window._APP_WINDOW_PROC = None
+        app_window._APP_WINDOW_STARTED_AT = None
+        app_window._APP_WINDOW_DEBUG_PORT = None
+        app_window._APP_WINDOW_URL = None
 
-    def test_app_window_and_login_browser_are_different_processes_and_profiles(self):
+    def test_app_window_and_login_browser_share_one_instance(self):
+        # v27：主窗口与工作浏览器同一个实例——--app 窗口先拉起专用
+        # profile + 调试端口的实例并记下来，登录浏览器看到端口已在
+        # 监听就直接复用，不再拉第二个 Chrome（任务栏只有一个图标，
+        # 登录态也互通）。旧的“严格分离”契约已废弃。
         profile_tmp = tempfile.TemporaryDirectory()
         self.addCleanup(profile_tmp.cleanup)
         app_proc = Mock()
@@ -197,30 +233,28 @@ class AppWindowLoginSeparationTests(unittest.TestCase):
             patch("subprocess.Popen", side_effect=[app_proc, login_proc]) as popen,
             patch("bosshunter.browser.runtime.time.sleep"),
             patch("bosshunter.browser.runtime._chrome_debug_version",
-                  side_effect=[None, None, None, {"webSocketDebuggerUrl": "ws://x"}]),
+                  side_effect=[None, None, None, None,
+                               {"webSocketDebuggerUrl": "ws://x"},
+                               {"webSocketDebuggerUrl": "ws://x"}]),
             patch("bosshunter.browser.runtime._is_port_available", return_value=True),
             patch("bosshunter.browser.runtime.get_browser_profile_dir",
                   return_value=Path(profile_tmp.name) / "profile"),
-            patch("bosshunter.browser.diagnostics.discover_browsers",
-                  return_value={"chrome": "C:/Chrome/chrome.exe", "edge": None}),
+            patch("bosshunter.browser.runtime._record_launched_browser") as record,
         ):
             from bosshunter.browser.runtime import launch_debuggable_browser
 
             app_window.launch_app_window("http://127.0.0.1:8686")
             self.assertTrue(launch_debuggable_browser(_config()))
 
-        self.assertEqual(popen.call_count, 2)
+        # 登录浏览器没再拉进程：只拉了一次，就是 --app 窗口那个实例。
+        self.assertEqual(popen.call_count, 1)
         app_argv = popen.call_args_list[0].args[0]
-        login_argv = popen.call_args_list[1].args[0]
-        # 主窗口：--app 模式，不用专用 profile、不用调试端口。
         self.assertIn("--app=http://127.0.0.1:8686", app_argv)
-        self.assertFalse(any("user-data-dir" in arg for arg in app_argv))
-        self.assertFalse(any("remote-debugging-port" in arg for arg in app_argv))
-        # 登录浏览器：专用 profile + 调试端口，和主窗口严格分离。
-        self.assertIn("--remote-debugging-port=9222", login_argv)
-        self.assertIn(f"--user-data-dir={Path(profile_tmp.name) / 'profile'}", login_argv)
-        # 两个是不同的 Popen 句柄：关主窗口只会 terminate app_proc。
-        self.assertIsNot(app_proc, login_proc)
+        self.assertIn("--remote-debugging-port=9222", app_argv)
+        self.assertIn(f"--user-data-dir={Path(profile_tmp.name) / 'profile'}", app_argv)
+        record.assert_called_once_with(
+            app_proc, Path(profile_tmp.name) / "profile", 9222, "C:/Chrome/chrome.exe")
+        # 关主窗口只 terminate 那个实例的句柄。
         self.assertIs(app_window.get_app_window_process(), app_proc)
         app_window.close_app_window()
         app_proc.terminate.assert_called_once()

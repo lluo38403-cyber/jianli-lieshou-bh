@@ -1499,6 +1499,15 @@ def set_platform_safety_lock(
     conn.commit()
 
 
+def clear_platform_safety_lock(conn: sqlite3.Connection) -> bool:
+    """Clear the account-safety lock early (v27: user chose 立即重试 after a
+    risk stop instead of waiting out the cooldown). Returns True if a lock
+    row was actually removed."""
+    cur = conn.execute("DELETE FROM platform_safety_state WHERE id = 1")
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def get_active_platform_safety_lock(conn: sqlite3.Connection) -> dict[str, str] | None:
     """Return the active safety lock, clearing it after its cooldown expires."""
     row = conn.execute(

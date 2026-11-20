@@ -33,6 +33,9 @@ class RuntimeClient:
     def close_tab(self, target_id: str) -> bool:
         return self._get_ok("/close", params={"target": target_id}, timeout=5)
 
+    def activate(self, target_id: str) -> bool:
+        return self._get_ok("/activate", params={"target": target_id}, timeout=5)
+
     def navigate(self, target_id: str, url: str) -> bool:
         # The server-side navigate waits for page load (up to 15s) on top of
         # Page.navigate; a 15s client timeout races that and turns slow loads
