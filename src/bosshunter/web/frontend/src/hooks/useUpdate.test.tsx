@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
-import { classifyUpdateError, formatUpdateNotes, getUpdateErrorCopy, UpdateProvider, useUpdate, useUpdateContext } from './useUpdate'
+import { classifyUpdateError, formatUpdateNotes, getUpdateErrorCopy, BACKEND_CHECK_TIMEOUT_MS, UPDATE_CHECK_JSON_TIMEOUT_MS, UPDATE_CHECK_RETRIES, UPDATE_CHECK_TIMEOUT_MS, UpdateProvider, useUpdate, useUpdateContext } from './useUpdate'
 
 function jsonResponse(body: unknown, ok = true) {
   return new Response(JSON.stringify(body), {
@@ -531,4 +531,262 @@ describe('UpdateProvider keeps one download state across pages', () => {
     const calls = statusCallCount()
     await waitFor(() => expect(statusCallCount()).toBeGreaterThan(calls), { timeout: 5000 })
   })
+})
+
+describe('useUpdate check race / timeout / failure (v29)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let originalLocation: Location | undefined
+
+  /** 响应体迟迟不回来的 Response：json() 返回一个能手动放行的 promise。 */
+  function pendingJsonResponse<T>(body: T) {
+    let resolveJson!: (value: T) => void
+    const jsonPromise = new Promise<T>((resolve) => {
+      resolveJson = resolve
+    })
+    const res = { status: 200, json: () => jsonPromise } as unknown as Response
+    return { res, resolveJson: () => resolveJson(body) }
+  }
+
+  const LATEST = { update_available: false, current_version: '1.0.1', status: 'idle' }
+  const CHECK_FAILED = {
+    status: 'error',
+    reason_code: 'check_failed',
+    error: '查新版本超时了，网络可能比较慢，稍后再点一次。',
+    update_available: false,
+    current_version: '1.0.1',
+  }
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) return jsonResponse(NEW_VERSION)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      if (url === '/api/auth/config') return jsonResponse({})
+      if (url === '/api/update/status') return jsonResponse({ status: 'idle', progress: 0 })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    if (originalLocation === undefined) originalLocation = window.location
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { href: originalLocation.href, reload: vi.fn() },
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+    if (originalLocation !== undefined) {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    }
+    vi.restoreAllMocks()
+    cleanup()
+  })
+
+  it('过期的自动检查响应清不掉手动检查置上的新版，转圈等两路都完才停', async () => {
+    // 回归：录屏终态——手动先查到 1.1.14，自动检查随后回“无新版”，
+    // 旧实现把 info 置 null，弹窗与横幅瞬间消失且无任何文字残留。
+    let autoPending: ReturnType<typeof pendingJsonResponse> | null = null
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/update/check') {
+        autoPending = pendingJsonResponse(LATEST)
+        return autoPending.res
+      }
+      if (url === '/api/update/check?force=1') return jsonResponse(NEW_VERSION)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      return jsonResponse({})
+    })
+    const { result } = renderHook(() => useUpdate())
+    // 挂载的自动检查卡在读响应体上，还没回来。
+    await waitFor(() => expect(result.current.checking).toBe(true))
+    // 手动检查后启动、先回来，置上新版。
+    let found: boolean | null | undefined
+    await act(async () => {
+      found = await result.current.check(true)
+    })
+    expect(found).toBe(true)
+    expect(result.current.info?.version).toBe('1.0.2')
+    // 手动那路完了，自动那路还在等：转圈不能停。
+    expect(result.current.checking).toBe(true)
+    // 自动检查的过期响应现在才回来：说“已是最新”，不许清 info。
+    expect(autoPending).not.toBeNull()
+    await act(async () => {
+      autoPending!.resolveJson()
+    })
+    await waitFor(() => expect(result.current.checking).toBe(false))
+    expect(result.current.info?.version).toBe('1.0.2')
+    expect(result.current.phase).toBe('idle')
+  })
+
+  it('过期的检查直接采用最新一次检查的结果，不自己下结论', async () => {
+    const { result } = renderHook(() => useUpdate())
+    await waitFor(() => expect(result.current.info?.version).toBe('1.0.2'))
+    let autoPending: ReturnType<typeof pendingJsonResponse> | null = null
+    let manualPending: ReturnType<typeof pendingJsonResponse> | null = null
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/update/check') {
+        autoPending = pendingJsonResponse(LATEST)
+        return autoPending.res
+      }
+      if (url === '/api/update/check?force=1') {
+        manualPending = pendingJsonResponse(NEW_VERSION)
+        return manualPending.res
+      }
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      return jsonResponse({})
+    })
+    let pAuto: Promise<boolean | null> | undefined
+    let pManual: Promise<boolean | null> | undefined
+    let autoValue: boolean | null | undefined
+    let autoDone = false
+    act(() => {
+      pAuto = result.current.check(false)
+      pManual = result.current.check(true)
+    })
+    void pAuto!.then((value) => {
+      autoDone = true
+      autoValue = value
+    })
+    expect(autoPending).not.toBeNull()
+    expect(manualPending).not.toBeNull()
+    // 自动检查的过期响应先回来：它已经过时了，不许自己下结论，
+    // 必须等手动检查的结果。
+    await act(async () => {
+      autoPending!.resolveJson()
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(autoDone).toBe(false)
+    // 手动检查回来：两路都拿到同一个“有新版”。
+    await act(async () => {
+      manualPending!.resolveJson()
+    })
+    await expect(pManual!).resolves.toBe(true)
+    await expect(pAuto!).resolves.toBe(true)
+    expect(autoValue).toBe(true)
+    expect(result.current.info?.version).toBe('1.0.2')
+  })
+
+  it('同一路检查连点两次只发一次请求，两次拿同一个结果', async () => {
+    const { result } = renderHook(() => useUpdate())
+    await waitFor(() => expect(result.current.info?.version).toBe('1.0.2'))
+    const countForceChecks = () =>
+      fetchMock.mock.calls.filter(([input]) => String(input) === '/api/update/check?force=1').length
+    const before = countForceChecks()
+    let p1: Promise<boolean | null> | undefined
+    let p2: Promise<boolean | null> | undefined
+    act(() => {
+      p1 = result.current.check(true)
+      p2 = result.current.check(true)
+    })
+    // async 函数会把 return 的 promise 再包一层，对象恒等断言不成立：
+    // 用“两次拿同一个结果 + 只发一次请求”来断言去重。
+    await act(async () => {
+      expect(await p1!).toBe(true)
+      expect(await p2!).toBe(true)
+    })
+    expect(countForceChecks() - before).toBe(1)
+  })
+
+  it('前端单次检查超时 12 秒，大于后端 10 秒；重试 1 次，最坏约 25 秒', () => {
+    // 后端超时见 updater.py CHECK_TIMEOUT = 10.0；前端 8 秒会把
+    // 8–10 秒的正常慢响应每次都在后端返回前掐断。
+    expect(BACKEND_CHECK_TIMEOUT_MS).toBe(10000)
+    expect(UPDATE_CHECK_TIMEOUT_MS).toBe(12000)
+    expect(UPDATE_CHECK_TIMEOUT_MS).toBeGreaterThan(BACKEND_CHECK_TIMEOUT_MS)
+    expect(UPDATE_CHECK_RETRIES).toBe(1)
+    expect((UPDATE_CHECK_RETRIES + 1) * UPDATE_CHECK_TIMEOUT_MS).toBeLessThanOrEqual(25000)
+    expect(UPDATE_CHECK_JSON_TIMEOUT_MS).toBe(5000)
+  })
+
+  it('手动检查没查到进 error 态、留“再试一次”的话；自动检查失败静默', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) throw new Error('offline')
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      return jsonResponse({})
+    })
+    const { result } = renderHook(() => useUpdate())
+    await waitFor(() => expect(result.current.currentVersion).toBe('1.0.1'))
+    // 挂载的自动检查失败了：静默，不弹、不改 phase。
+    expect(result.current.phase).toBe('idle')
+    expect(result.current.info).toBeNull()
+    let found: boolean | null | undefined
+    await act(async () => {
+      found = await result.current.check(true)
+    })
+    expect(found).toBeNull()
+    expect(result.current.phase).toBe('error')
+    expect(result.current.error).toContain('没查到')
+    expect(result.current.error).toContain('再试一次')
+  })
+
+  it('后端报 check_failed 时手动检查进 error 态，自动检查不弹', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) return jsonResponse(CHECK_FAILED)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      return jsonResponse({})
+    })
+    const { result } = renderHook(() => useUpdate())
+    await waitFor(() => expect(result.current.currentVersion).toBe('1.0.1'))
+    // 自动检查拿到 check_failed：静默。
+    expect(result.current.phase).toBe('idle')
+    expect(result.current.info).toBeNull()
+    let found: boolean | null | undefined
+    await act(async () => {
+      found = await result.current.check(true)
+    })
+    expect(found).toBeNull()
+    expect(result.current.phase).toBe('error')
+    expect(result.current.error).toContain('超时')
+  })
+
+  it('上次更新换失败的报错仍按老样子进 error 态，不被当成检查失败', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) {
+        return jsonResponse({
+          status: 'error',
+          reason_code: 'copy',
+          error: '换文件的时候出问题了，已经换回旧版本。请重新点一次更新。',
+          version: '1.0.2',
+          size: 66_549_810,
+          sha256: 'a'.repeat(64),
+          notes: '更快更稳',
+          current_version: '1.0.1',
+        })
+      }
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      return jsonResponse({})
+    })
+    const { result } = renderHook(() => useUpdate())
+    await waitFor(() => expect(result.current.phase).toBe('error'))
+    expect(result.current.info?.version).toBe('1.0.2')
+    expect(result.current.error).toContain('换回旧版本')
+  })
+
+  it('响应体一直不回来：读超时后手动检查进 error 态，已知的新版不被清掉', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/update/check') return jsonResponse(NEW_VERSION)
+      if (url === '/api/update/check?force=1') {
+        return { status: 200, json: () => new Promise(() => {}) } as unknown as Response
+      }
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      return jsonResponse({})
+    })
+    const { result } = renderHook(() => useUpdate())
+    await waitFor(() => expect(result.current.info?.version).toBe('1.0.2'))
+    let found: boolean | null | undefined
+    await act(async () => {
+      found = await result.current.check(true)
+    })
+    expect(found).toBeNull()
+    expect(result.current.phase).toBe('error')
+    expect(result.current.error).toContain('没查到')
+    // 读超时只是这次没查到，之前查到的新版还在。
+    expect(result.current.info?.version).toBe('1.0.2')
+  }, 20000)
 })

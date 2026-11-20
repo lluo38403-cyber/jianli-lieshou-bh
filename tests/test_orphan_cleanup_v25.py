@@ -316,6 +316,10 @@ class WatchAppWindowCloseTests(unittest.TestCase):
             _is_update_applying=lambda: False,
             _clock=self._fake_clock([100.0, 103.0, 106.0, 106.0]),
             _sleep=lambda _: None,
+            # v29：句柄活过 grace 才退出，也要求服务应答过 /api/health，
+            # 否则启动中途死掉的进程会被一个关窗信号退掉。
+            _panel_url="http://127.0.0.1:8686",
+            _service_alive=lambda: True,
         )
         self.assertTrue(result)
         self.assertEqual(fired, [True])
@@ -383,6 +387,8 @@ class WatchAppWindowCloseTests(unittest.TestCase):
             _sleep=lambda _: None,
             _panel_url="http://127.0.0.1:8686",
             _list_tabs=lambda: next(tab_lists),
+            # v29：标签页出现又消失，还要求服务应答过 /api/health 才算真关窗。
+            _service_alive=lambda: True,
         )
         self.assertTrue(result)
         self.assertEqual(fired, [True])
@@ -411,6 +417,8 @@ class WatchAppWindowCloseTests(unittest.TestCase):
             _sleep=lambda _: None,
             _panel_url="http://127.0.0.1:8686",
             _list_tabs=lambda: next(tab_lists),
+            # v29：同上，补服务已应答的前提。
+            _service_alive=lambda: True,
         )
         self.assertTrue(result)
         self.assertEqual(fired, [True])
@@ -465,6 +473,9 @@ class WatchAppWindowCloseTests(unittest.TestCase):
             _sleep=lambda _: None,
             _panel_url="http://127.0.0.1:8686",
             _list_tabs=lambda: next(tab_lists),
+            # v29：端口问不到不能读成“标签页没了”，但这里标签页出现过、
+            # 句柄活过 grace 才退出、且服务应答过，仍是真关窗。
+            _service_alive=lambda: True,
         )
         self.assertTrue(result)
         self.assertEqual(fired, [True])
@@ -529,7 +540,7 @@ class RunServerFreshStartTests(unittest.TestCase):
             patch("bosshunter.updater.cleanup_stale_update_processes"),
             patch("bosshunter.updater.ensure_desktop_shortcut"),
             patch("bosshunter.app_window.is_our_service_alive", return_value=False),
-            patch("bosshunter.app_window.launch_splash_window") as splash,
+            patch("bosshunter.app_window.launch_splash_window", return_value=(Mock(), None)) as splash,
             patch("bosshunter.collection_session_store.list_sessions", return_value=[]),
             patch("bosshunter.browser.runtime.set_data_dir") as set_data,
             patch("bosshunter.browser.runtime.cleanup_stale_browser_resources") as stale,

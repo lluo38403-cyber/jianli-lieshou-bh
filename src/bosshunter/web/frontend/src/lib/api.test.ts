@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchWithRetry, isRetryableStatus, isServiceNotReadyError } from './api'
+import { fetchWithRetry, isRetryableStatus, isServiceNotReadyError, readJsonWithTimeout } from './api'
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -122,5 +122,18 @@ describe('fetchWithRetry', () => {
     await vi.advanceTimersByTimeAsync(5000)
     await assertion
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('readJsonWithTimeout (v29)', () => {
+  it('res.json() 卡住时按超时失败，不一直等', async () => {
+    // 回归：fetch 只管到响应头，body 卡住时 res.json() 会一直等，
+    // 请求层的超时管不到它——检查更新就一直转圈、没有任何反馈。
+    const res = { json: () => new Promise(() => {}) } as unknown as Response
+    await expect(readJsonWithTimeout(res, 50)).rejects.toThrow('读取数据超时')
+  })
+
+  it('正常响应按时返回解析结果', async () => {
+    await expect(readJsonWithTimeout(jsonResponse({ ok: true }), 1000)).resolves.toEqual({ ok: true })
   })
 })

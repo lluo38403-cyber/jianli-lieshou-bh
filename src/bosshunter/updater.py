@@ -10,7 +10,9 @@ writes update-pending.json (expected version) and update.bat next to
 the exe, then exits; the batch file waits for the process (and any
 other copy of the exe, plus its child processes) to exit, copies
 staging over the install directory, purges files the new version
-removed from _internal, verifies the new exe exists, relaunches it
+removed from _internal, verifies the new exe exists, relaunches it,
+polls its /api/health until the expected version answers (up to ~90s;
+no answer means failed/nostart, staging kept, one more relaunch try),
 and cleans up. On any failure the batch file restores the backup,
 writes update-result.json and relaunches the old exe; the restarted
 process consumes update-pending.json, compares its own version with
@@ -29,6 +31,12 @@ Safety rules (do not weaken them):
   /XF config.yaml); keep the two in sync.
 - Every failure is reported in plain language and never blocks the
   normal job-hunting flow; update checks fail silent.
+- A failed version check is logged with a reason code (timeout /
+  unauthorized / no_release / bad_sha / network / ...) and reported
+  to the panel as a check error (reason_code "check_failed") instead
+  of being mistaken for "already latest": run_check keeps the
+  previously known release info, does not cache the failure, and
+  the panel's manual check can show "没查到，点再试一次".
 - The file swap itself is a Windows batch file and can only be proven
   on a real Windows machine: tests cover everything up to the batch
   file's contents, not its execution.
@@ -38,6 +46,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -54,6 +63,8 @@ import httpx
 
 from bosshunter import __version__
 from bosshunter.ai.credentials import get_relay_token, get_relay_url
+
+_logger = logging.getLogger(__name__)
 
 CHECK_TIMEOUT = 10.0
 DOWNLOAD_TIMEOUT = 300.0
@@ -73,6 +84,7 @@ UPDATE_FAILURE_MESSAGES = {
     "nopkg": "安装包里找不到新版本，更新没换成。请重新点一次更新。",
     "copy": "换文件的时候出问题了，已经换回旧版本。请重新点一次更新。",
     "mismatch": "新版本换上去了，但打开还是旧版本，可能是旧文件没换掉。请重新点一次更新。",
+    "nostart": "新版本换好了，但程序没重新打开。请重新点一次更新；如果一直这样，请把 update.log 发给客服。",
     "unknown": "上次更新没换完，请重新点一次更新。",
 }
 
@@ -155,17 +167,62 @@ def _coerce_timeout(timeout: float, default: float) -> float:
 
 # ─── Check for a newer release ──────────────────────────────
 
-def check_for_update(config: dict, timeout: float = CHECK_TIMEOUT) -> dict | None:
-    """Ask the relay for the newest published version.
+# 检查失败的原因码（v29）：以前任何异常都 return None，前端分不清
+# “已是最新”和“没查到”，run_check 还把 info 清掉、checked_at 写成
+# 现在——中转一慢，手动查到的新版就被随后返回的自动检查盖没了。
+# 现在每次失败都按原因分类，记一条日志，run_check 把失败原样报给
+# 前端，手动检查才能显示“没查到，点再试一次”。
+CHECK_FAILURE_MESSAGES = {
+    "timeout": "查新版本超时了，网络可能比较慢，稍后再点一次。",
+    "unauthorized": "中转那边不认这个账号，更新查不到，先用现在的版本。",
+    "no_release": "服务器上还没有发布新版本。",
+    "relay_error": "服务器那边出了点问题，稍后再点一次。",
+    "bad_payload": "服务器返回的新版本信息对不上，稍后再点一次。",
+    "bad_sha": "服务器上的新版本信息对不上（校验值不对），稍后再点一次。",
+    "network": "没连上服务器，检查一下网络后，再点一次。",
+    "unknown": "查新版本时出了点问题，稍后再点一次。",
+}
 
-    Returns the release info (version/size/sha256/notes) when a newer
-    version exists, else None. Never raises: relay down, timeout,
-    unexpected status or a bad payload all mean "no update".
+
+def _log_check_failure(reason_code: str, detail: str = "") -> None:
+    """记一条检查失败日志：logger 一行 + 安装目录日志文件一行。
+
+    frozen 的无窗口 exe 里 logger 没有 handler、写了也看不见（见
+    server.py 的 _startup_log），所以同时追加写安装目录下的
+    data/logs/jianli-lieshou.log——和启动日志同一个文件，买家侧定位
+    就看这个文件。开发环境没有安装目录，只有 logger 那一行。
+    写失败不挡检查。
+    """
+    line = f"update check failed: reason={reason_code}" + (f" {detail}" if detail else "")
+    try:
+        _logger.warning("%s", line)
+    except Exception:
+        pass
+    try:
+        install = get_install_dir()
+        if install is None:
+            return
+        log_dir = install / "data" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        with open(log_dir / "jianli-lieshou.log", "a", encoding="utf-8") as fh:
+            fh.write(f"[{stamp}] 更新检查失败：原因={reason_code}" + (f" {detail}" if detail else "") + "\n")
+    except OSError:
+        pass
+
+
+def _check_for_update_detailed(config: dict, timeout: float = CHECK_TIMEOUT) -> tuple[dict | None, dict | None]:
+    """查新版并区分失败原因。
+
+    返回 (info, failure)：info 非空 = 有新版；两个都空 = 查成功了、
+    已经是最新（或没配好 token，根本没查）；failure 非空 = 没查到，
+    {"reason_code": ..., "message": ...} 是白话原因。失败都记一条
+    日志（原因码 + 底层错误，不含 token）。
     """
     url = get_relay_url(config).rstrip("/")
     token = get_relay_token(config)
     if not token:
-        return None
+        return None, {"reason_code": "no_token", "message": ""}
     try:
         resp = httpx.get(
             f"{url}/api/version",
@@ -173,23 +230,40 @@ def check_for_update(config: dict, timeout: float = CHECK_TIMEOUT) -> dict | Non
             timeout=_coerce_timeout(timeout, CHECK_TIMEOUT),
             trust_env=False,
         )
-    except Exception:
-        return None
+    except httpx.TimeoutException as exc:
+        # TimeoutException 是 RequestError 的子类，必须先判。
+        _log_check_failure("timeout", str(exc))
+        return None, {"reason_code": "timeout", "message": CHECK_FAILURE_MESSAGES["timeout"]}
+    except httpx.RequestError as exc:
+        _log_check_failure("network", str(exc))
+        return None, {"reason_code": "network", "message": CHECK_FAILURE_MESSAGES["network"]}
+    except Exception as exc:
+        _log_check_failure("unknown", str(exc))
+        return None, {"reason_code": "unknown", "message": CHECK_FAILURE_MESSAGES["unknown"]}
     if resp.status_code == 404:
-        return None
+        _log_check_failure("no_release", f"HTTP 404 {url}/api/version")
+        return None, {"reason_code": "no_release", "message": CHECK_FAILURE_MESSAGES["no_release"]}
     try:
         resp.raise_for_status()
         payload = resp.json()
-    except Exception:
-        return None
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else 0
+        code = "unauthorized" if status in (401, 403) else "relay_error"
+        _log_check_failure(code, f"HTTP {status} {url}/api/version")
+        return None, {"reason_code": code, "message": CHECK_FAILURE_MESSAGES[code]}
+    except Exception as exc:
+        _log_check_failure("bad_payload", f"bad response: {exc}")
+        return None, {"reason_code": "bad_payload", "message": CHECK_FAILURE_MESSAGES["bad_payload"]}
     if not isinstance(payload, dict):
-        return None
+        _log_check_failure("bad_payload", f"payload is {type(payload).__name__}, not a dict")
+        return None, {"reason_code": "bad_payload", "message": CHECK_FAILURE_MESSAGES["bad_payload"]}
     version = payload.get("version")
     sha256 = payload.get("sha256")
     if not isinstance(version, str) or not is_newer(__version__, version):
-        return None
+        return None, None
     if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
-        return None
+        _log_check_failure("bad_sha", f"version={version} sha256={sha256!r}")
+        return None, {"reason_code": "bad_sha", "message": CHECK_FAILURE_MESSAGES["bad_sha"]}
     size = payload.get("size")
     notes = payload.get("notes")
     return {
@@ -199,7 +273,24 @@ def check_for_update(config: dict, timeout: float = CHECK_TIMEOUT) -> dict | Non
         "sha256": sha256.lower(),
         "notes": notes if isinstance(notes, str) else "",
         "update_available": True,
-    }
+    }, None
+
+
+def check_for_update(config: dict, timeout: float = CHECK_TIMEOUT) -> dict | None:
+    """Ask the relay for the newest published version.
+
+    Returns the release info (version/size/sha256/notes) when a newer
+    version exists, else None. Never raises: relay down, timeout,
+    unexpected status or a bad payload all mean "no update" to the
+    caller — but the reason is now logged and available to run_check
+    (see _check_for_update_detailed), so a failed check is no longer
+    mistaken for "already latest".
+    """
+    try:
+        info, _failure = _check_for_update_detailed(config, timeout=timeout)
+    except Exception:
+        return None
+    return info
 
 
 # ─── Download + verify + stage ──────────────────────────────
@@ -452,6 +543,18 @@ def build_update_script() -> str:
     when nothing is running, and deletes itself — it never leaves a
     half-swapped install behind, and never exits silently.
 
+    Relaunching is not the end of it: after the copy the batch starts
+    the new exe and polls http://127.0.0.1:8686/api/health until it
+    reports the expected version (up to ~90s, hidden PowerShell loop).
+    Only then is the update recorded as applied and staging deleted.
+    If the new exe never reports in, the batch records failed/nostart,
+    keeps staging (a retry must not have to re-download), starts the
+    new exe once more as a last chance, and only then deletes itself —
+    the verdict is always written before self-delete. (run 44758466045:
+    both robocopies exited 3, the log said "换好了", update-result.json
+    said applied, but no exe was running and 8686 never reported
+    v1.1.14 — the bare `start` swallowed the failed relaunch silently.)
+
     The wait checks use a PowerShell Get-Process probe (PID + process
     name, no pipes): an earlier `tasklist | findstr` pipe hung three
     times in the CI update-flow test (runs 44590350853, 44612674852,
@@ -555,6 +658,13 @@ def build_update_script() -> str:
         "rem :waitloop 等旧 exe PID 死透，:precopy 里任何 robocopy 之前\r\n"
         "rem 再查一次 PID，活着就走失败流程（用户可能在等待那几秒里\r\n"
         "rem 又双击打开了旧版）。\r\n"
+        "rem 换完重开要核实：新 exe 拉起来不等于起来了（run 44758466045：\r\n"
+        "rem robocopy 两次退出码都是 3、log 说“换好了”、结果写 applied，\r\n"
+        "rem 但 8686 上 180 秒都没报新版、也没有 exe 在跑——裸 start 把\r\n"
+        "rem 拉起失败静默吞掉了）。所以拉起后轮询 8686 /api/health 等\r\n"
+        "rem 期望版本（最多约 90 秒），等到了才写 applied、删 staging；\r\n"
+        "rem 等不到写 failed/nostart、staging 保留（重试不用重新下载）、\r\n"
+        "rem 再拉一次新 exe，verdict 一定在 bat 自删之前写好。\r\n"
         "setlocal\r\n"
         'set "STAGING=%~1"\r\n'
         'if "%STAGING:~-1%"=="\\" set "STAGING=%STAGING:~0,-1%"\r\n'
@@ -616,8 +726,19 @@ def build_update_script() -> str:
         'if %RC% geq 8 goto :rollback\r\n'
         'if not exist "%INSTALL_DIR%\\%EXE_NAME%" goto :rollback\r\n'
         'echo [%date% %time%] 换好了，正在重新打开... >> "%LOG%"\r\n'
+        'start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
+        'echo [%date% %time%] 新版本已拉起，正在等它在 8686 上报到期望版本（最多等 90 秒）... >> "%LOG%"\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$deadline = (Get-Date).AddSeconds(90); $ok = $false; $seen = ''; while ((Get-Date) -lt $deadline) { try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:8686/api/health' -TimeoutSec 5; $seen = $h.version; if ($seen -eq '%EXPECTED%') { $ok = $true; break } } catch { $seen = '' }; Start-Sleep -Seconds 3 }; Write-Output ('health poll: ok=' + $ok + ' last_seen_version=' + $seen); if ($ok) { exit 0 } else { exit 1 }\" >> \"%LOG%\" 2>&1\r\n"
+        'set "HEALTH_RC=%errorlevel%"\r\n'
+        'if %HEALTH_RC% neq 0 goto :fail_nostart\r\n'
+        'echo [%date% %time%] 新版本已起来，版本对上了。 >> "%LOG%"\r\n'
         '> "%RESULT%" echo {"status": "applied", "expected_version": "%EXPECTED%", "reason_code": ""}\r\n'
         'rmdir /s /q "%STAGING%"\r\n'
+        '(goto) 2>nul & del "%~f0"\r\n'
+        ":fail_nostart\r\n"
+        'echo [%date% %time%] 90 秒内新版本没在 8686 上起来，更新没换完。 >> "%LOG%"\r\n'
+        '> "%RESULT%" echo {"status": "failed", "expected_version": "%EXPECTED%", "reason_code": "nostart"}\r\n'
+        'echo [%date% %time%] 再拉一次新版本（最后一次重试机会），安装包留着、不用重新下载。 >> "%LOG%"\r\n'
         'start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
         '(goto) 2>nul & del "%~f0"\r\n'
         ":rollback\r\n"
@@ -730,6 +851,7 @@ def get_last_update_failure(install_dir: str | Path) -> dict | None:
         "expected_version": expected,
         "actual_version": __version__,
         "reason": reason,
+        "reason_code": reason_code if isinstance(reason_code, str) else "",
     }
 
 
@@ -761,6 +883,7 @@ def consume_pending_update(install_dir: str | Path) -> dict | None:
             "expected_version": expected,
             "actual_version": __version__,
             "reason": "",
+            "reason_code": "",
         }
         # 换版成功：缓存的包已经用完，清掉，免得下次更新误认旧包。
         clear_cached_update(install_dir)
@@ -769,14 +892,17 @@ def consume_pending_update(install_dir: str | Path) -> dict | None:
             code = bat_code if isinstance(bat_code, str) else "unknown"
             reason = UPDATE_FAILURE_MESSAGES.get(code, UPDATE_FAILURE_MESSAGES["unknown"])
         elif bat_status == "applied":
+            code = "mismatch"
             reason = UPDATE_FAILURE_MESSAGES["mismatch"]
         else:
+            code = "unknown"
             reason = UPDATE_FAILURE_MESSAGES["unknown"]
         verdict = {
             "status": "failed",
             "expected_version": expected,
             "actual_version": __version__,
             "reason": reason,
+            "reason_code": code,
         }
     else:
         verdict = {
@@ -784,6 +910,7 @@ def consume_pending_update(install_dir: str | Path) -> dict | None:
             "expected_version": expected if isinstance(expected, str) else "",
             "actual_version": __version__,
             "reason": UPDATE_FAILURE_MESSAGES["unknown"],
+            "reason_code": "unknown",
         }
     write_update_result(install_dir, verdict)
     return verdict
@@ -808,6 +935,7 @@ def reconcile_pending_update(install_dir: str | Path) -> bool:
             info=None,
             message="",
             error=pending["reason"],
+            reason_code=pending.get("reason_code", ""),
         )
         return True
     last = get_last_update_failure(install_dir)
@@ -818,6 +946,7 @@ def reconcile_pending_update(install_dir: str | Path) -> bool:
             info=None,
             message="",
             error=last["reason"],
+            reason_code=last.get("reason_code", ""),
         )
         return True
     return False
@@ -865,6 +994,11 @@ _STATE: dict[str, Any] = {
     "checked_at": None,
     "staging_dir": None,
     "zip_path": None,
+    # 上次检查失败的原因码（timeout / unauthorized / no_release /
+    # bad_sha / network / ...）：status="error" + reason_code=
+    # "check_failed" 时才有值，下游靠它区分“查失败了”和“上次更新
+    # 换失败了”。成功检查会清掉。
+    "check_reason": "",
 }
 
 
@@ -894,11 +1028,18 @@ def run_check(config: dict, timeout: float = CHECK_TIMEOUT, force: bool = False,
     """Synchronous version check with a freshness cache. Never raises.
 
     A check done less than CHECK_CACHE_SECONDS ago is reused unless
-    `force` is set. Check failures are silent: they leave the state
-    as "no update known" instead of erroring. When a newer version is
-    found and the release zip is already cached on disk (see
-    load_cached_update), the state goes straight to "ready" without
-    downloading again.
+    `force` is set. A failed check is now distinguishable from
+    "already latest": it keeps the previously known info (a slow auto
+    check must never wipe out a newer version a manual check just
+    found), leaves checked_at alone (failures are not cached for
+    600s — the next check retries promptly), and reports
+    status="error" with reason_code="check_failed" plus the plain
+    reason in `error`, so a manual check can show "没查到，点再试一次"
+    instead of going silent. No token means the check never ran:
+    that stays idle with no error, only clearing a stale reason code.
+    When a newer version is found and the release zip is already cached
+    on disk (see load_cached_update), the state goes straight to "ready"
+    without downloading again.
     """
     now = time.monotonic()
     with _STATE_LOCK:
@@ -907,11 +1048,31 @@ def run_check(config: dict, timeout: float = CHECK_TIMEOUT, force: bool = False,
         cached = dict(_STATE)
     if fresh and not force:
         return cached
-    _set_status(status="checking", error="")
+    _set_status(status="checking", error="", reason_code="", check_reason="")
     try:
-        info = check_for_update(config, timeout=timeout)
-    except Exception:
-        info = None
+        info, failure = _check_for_update_detailed(config, timeout=timeout)
+    except Exception as exc:
+        _log_check_failure("unknown", str(exc))
+        info, failure = None, {"reason_code": "unknown", "message": CHECK_FAILURE_MESSAGES["unknown"]}
+    if failure is not None:
+        if failure.get("reason_code") == "no_token":
+            # 没配好 token：这轮根本没查，不算查失败——不留 error、
+            # 不清已有 info、不写 checked_at，只把旧原因码清掉。
+            _set_status(status="idle", error="", reason_code="", check_reason="")
+            return get_status()
+        with _STATE_LOCK:
+            prev_info = _STATE.get("info")
+            prev_available = bool(_STATE.get("update_available"))
+        _set_status(
+            status="error",
+            update_available=prev_available,
+            info=prev_info,
+            error=failure.get("message") or CHECK_FAILURE_MESSAGES["unknown"],
+            reason_code="check_failed",
+            check_reason=failure.get("reason_code") or "unknown",
+            message="",
+        )
+        return get_status()
     if info:
         target = Path(install_dir) if install_dir is not None else get_install_dir()
         if target is not None and _restore_from_cache(target, info):
@@ -921,6 +1082,9 @@ def run_check(config: dict, timeout: float = CHECK_TIMEOUT, force: bool = False,
                 info=info,
                 checked_at=time.monotonic(),
                 message="新版本下好了",
+                error="",
+                reason_code="",
+                check_reason="",
             )
             return get_status()
     _set_status(
@@ -929,6 +1093,9 @@ def run_check(config: dict, timeout: float = CHECK_TIMEOUT, force: bool = False,
         info=info,
         checked_at=time.monotonic(),
         message="有新版本了" if info else "",
+        error="",
+        reason_code="",
+        check_reason="",
     )
     return get_status()
 
@@ -953,7 +1120,7 @@ def start_download(config: dict, install_dir: str | Path | None = None) -> dict[
     target = Path(install_dir) if install_dir is not None else get_install_dir()
     if target is not None and _restore_from_cache(target, info):
         return get_status()
-    _set_status(status="downloading", progress=0, message="正在下载新版本…", error="")
+    _set_status(status="downloading", progress=0, message="正在下载新版本…", error="", reason_code="")
     thread = threading.Thread(target=_download_worker, args=(config, dict(info), target), daemon=True)
     thread.start()
     return get_status()
@@ -980,10 +1147,10 @@ def _download_worker(config: dict, info: dict, install_dir: str | Path | None = 
         )
     except UpdateError as exc:
         _remove_quietly(Path(tmpdir))
-        _set_status(status="error", progress=0, message="", error=exc.user_message, zip_path=None, staging_dir=None)
+        _set_status(status="error", progress=0, message="", error=exc.user_message, zip_path=None, staging_dir=None, reason_code="", check_reason="")
     except Exception:
         _remove_quietly(Path(tmpdir))
-        _set_status(status="error", progress=0, message="", error="下载出问题了，稍后再试。", zip_path=None, staging_dir=None)
+        _set_status(status="error", progress=0, message="", error="下载出问题了，稍后再试。", zip_path=None, staging_dir=None, reason_code="", check_reason="")
 
 
 # ─── 已下载包的落盘缓存 ─────────────────────────────────────

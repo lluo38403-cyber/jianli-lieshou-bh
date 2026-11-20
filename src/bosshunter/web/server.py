@@ -8,11 +8,15 @@ Serves:
 from bosshunter.employment import classify_employment, internship_rejection
 
 import atexit
+import ctypes
 import hashlib
 import json
+import logging
 import re
 import shutil
 import signal
+import socket
+import subprocess
 import tempfile
 from ipaddress import ip_address
 from urllib.parse import urlsplit
@@ -4521,7 +4525,249 @@ def error500(error):
 
 # ─── Run ─────────────────────────────────────────────────
 
+_logger = logging.getLogger(__name__)
+
 _SHUTDOWN_HOOKS_INSTALLED = False
+
+
+def _startup_log(message: str) -> None:
+    """启动各阶段记一行日志：logger + data/logs/jianli-lieshou.log 文件（v29）。
+
+    frozen 的无窗口 exe 里 logger 没有 handler、写了也看不见，
+    所以同时直接追加写日志文件——下次启动失败定位就看这个文件。
+    写失败不挡启动。
+    """
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] 启动：{message}"
+    try:
+        _logger.info("启动：%s", message)
+    except Exception:
+        pass
+    try:
+        log_dir = DATA_DIR / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(log_dir / "jianli-lieshou.log", "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _startup_failure_marker_path() -> Path:
+    """启动失败标记文件 data/.startup-failed.json（v29，启动页读它报 failed）。"""
+    from bosshunter.app_window import STARTUP_FAILURE_FILENAME
+
+    return DATA_DIR / STARTUP_FAILURE_FILENAME
+
+
+def _write_startup_failure_marker(message: str, reason_code: str | None = None) -> None:
+    """写启动失败标记文件（原因 + 时间），供启动页和下次启动参考。写失败不挡退出。"""
+    try:
+        path = _startup_failure_marker_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "message": message,
+            "reason_code": reason_code,
+            "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _clear_startup_failure_marker() -> None:
+    """清掉上次启动的失败标记（本次启动一开始就清，免得旧标记毒化新启动页）。"""
+    try:
+        _startup_failure_marker_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _should_show_startup_dialog() -> bool:
+    """只在 Windows 打包 exe 里弹启动失败框；开发环境/测试里不弹真框。"""
+    return os.name == "nt" and getattr(sys, "frozen", False)
+
+
+def _show_startup_error_box(message: str) -> bool:
+    """弹可见的启动失败框（ctypes MessageBoxW，中文写清原因）。返回 True 表示弹出来了。"""
+    if not _should_show_startup_dialog():
+        return False
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            f"简历猎手启动失败：\n{message}\n\n详情见 data\\logs\\jianli-lieshou.log",
+            "简历猎手启动失败",
+            0x10,  # MB_ICONERROR
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _report_startup_failure(message: str, reason_code: str | None = None) -> None:
+    """启动失败可见化：记日志 + 写失败标记文件 + 弹框。永不抛异常。"""
+    try:
+        _startup_log(f"启动失败[{reason_code or '-'}]：{message}")
+    except Exception:
+        pass
+    try:
+        _write_startup_failure_marker(message, reason_code)
+    except Exception:
+        pass
+    try:
+        _show_startup_error_box(message)
+    except Exception:
+        pass
+
+
+def _fail_startup_visible(message: str, reason_code: str | None = None):
+    """报一次可见启动失败，然后以 SystemExit 退出。
+
+    抛出的 SystemExit 带 _startup_reported 标记，外层 run_server
+    与 launcher 看到它就不再重复弹框。
+    """
+    _report_startup_failure(message, reason_code)
+    exc = SystemExit(message)
+    exc._startup_reported = True  # type: ignore[attr-defined]
+    raise exc
+
+
+def _terminate_process_gracefully(pid: int, timeout: float = 5.0) -> bool:
+    """先优雅停一个进程（Windows：taskkill 不带 /F；POSIX：SIGTERM），等它自己退出。"""
+    try:
+        from bosshunter.browser.runtime import _pid_alive
+    except Exception:
+        return False
+    if not _pid_alive(pid):
+        return True
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid)],
+                capture_output=True,
+                timeout=15,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+            )
+        else:
+            os.kill(pid, signal.SIGTERM)
+    except Exception:
+        pass
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.2)
+    return not _pid_alive(pid)
+
+
+def _stop_stale_our_service(data_dir, port: int) -> bool:
+    """停掉一个残留的旧服务进程，只认 data/.instance.json 的 PID + exe 核对（v29）。
+
+    绝不按映像名杀进程：instance 文件没有/读不到，就不知道残留
+    服务是哪个进程，直接返回 False、不动手；PID 不是我们的 exe
+    （ExecutablePath/命令行核对）也绝不动。先优雅停，等 5 秒，
+    还在再强制结束整棵进程树。返回 True 表示那个进程已经不在了。
+    """
+    try:
+        from bosshunter.browser.runtime import (
+            _is_pid_our_exe,
+            _kill_process_tree,
+            _pid_alive,
+            _read_instance_file,
+            clear_instance_file,
+        )
+    except Exception:
+        return False
+    instance = _read_instance_file(data_dir)
+    if instance is None:
+        _startup_log("停残留旧服务：instance 文件没有/读不到，认不出进程，不动手")
+        return False
+    pid = instance.get("pid")
+    if not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
+        _startup_log(f"停残留旧服务：instance 里的 pid 无效（{pid!r}），不动手")
+        return False
+    if not _is_pid_our_exe(pid):
+        _startup_log(f"停残留旧服务：pid={pid} 不是我们的 exe，不动手")
+        return False
+    _startup_log(f"残留旧服务 pid={pid}，先优雅停")
+    if not _terminate_process_gracefully(pid, timeout=5.0):
+        _startup_log(f"残留旧服务 pid={pid} 优雅停没停掉，强制结束")
+        _kill_process_tree(pid)
+    if _pid_alive(pid):
+        _startup_log(f"残留旧服务 pid={pid} 还是停不掉，放弃")
+        return False
+    try:
+        clear_instance_file(data_dir)
+    except Exception:
+        pass
+    _startup_log(f"残留旧服务 pid={pid} 已停掉")
+    return True
+
+
+def _verify_reused_service_window(panel_url: str, timeout: float = 10.0) -> bool:
+    """核实复用已有服务时窗口/标签页真的出现了（v29）。
+
+    True：看到了面板标签页，或无法核实（没有调试端口，走默认
+    浏览器开的窗口看不到标签页）时按旧行为放行。False：调试端口
+    应答、10 秒都没看到面板标签页——无窗口残留旧服务。
+    """
+    from bosshunter import app_window as _app_window
+
+    result = _app_window.wait_for_panel_tab(
+        panel_url,
+        _app_window.get_app_window_debug_port(),
+        timeout=timeout,
+        splash_url=_app_window.get_app_window_splash_url(),
+    )
+    return result is not False
+
+
+def _is_address_in_use(exc: BaseException) -> bool:
+    """True when an OSError is a bind EADDRINUSE (port already in use)."""
+    errno = getattr(exc, "errno", None)
+    if errno in (48, 98, 10048):
+        return True
+    return "address already in use" in str(exc).lower()
+
+
+def _wait_for_port_free(host: str, port: int, timeout: float = 5.0) -> bool:
+    """Wait until nothing accepts TCP connections on host:port any more."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=0.5):
+                pass
+        except OSError:
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = True):
+    """Start the web server.
+
+    启动失败一律可见（v29）：前端缺失、端口被占等已在内层报过
+    可见错误（_fail_startup_visible）的直接透传；其他没预料到的
+    异常也在这里补报一次（记日志 + 写标记 + 弹框），再以
+    SystemExit 退出，绝不静默死掉。正常退出（SystemExit(0)/None）
+    与 KeyboardInterrupt 不弹框。
+    """
+    try:
+        _run_server_impl(host, port, open_browser)
+    except SystemExit as exc:
+        if getattr(exc, "_startup_reported", False) or exc.code in (None, 0):
+            raise
+        _report_startup_failure(
+            str(exc.code) if isinstance(exc.code, str) else f"启动失败（退出码 {exc.code}）",
+            reason_code="startup_failed",
+        )
+        exc._startup_reported = True  # type: ignore[attr-defined]
+        raise
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        _report_startup_failure(f"程序没起来：启动本地服务失败（{exc}）。", reason_code="startup_error")
+        new_exc = SystemExit(f"简历猎手启动失败：{exc}")
+        new_exc._startup_reported = True  # type: ignore[attr-defined]
+        raise new_exc from exc
 
 
 def _install_shutdown_hooks(data_dir: Path, port: int) -> None:
@@ -4563,12 +4809,15 @@ def _install_shutdown_hooks(data_dir: Path, port: int) -> None:
 		pass
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = True):
+def _run_server_impl(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = True):
 	"""Start the web server."""
+	_clear_startup_failure_marker()
+	_startup_log(f"启动开始：{host}:{port}")
 	if not (FRONTEND_DIR / "index.html").is_file():
-		raise SystemExit(
+		_fail_startup_visible(
 			"前端资源未构建：请在 src/bosshunter/web/frontend 下执行 "
-			"`npm ci && npm run build`（或安装官方发布的 wheel）后重试。"
+			"`npm ci && npm run build`（或安装官方发布的 wheel）后重试。",
+			reason_code="frontend_missing",
 		)
 	# 启动时清掉旧版挂起的更新进程：v1.0.8 及更早的 bat 里 findstr 会
 	# 卡住，黑框一直挂在面板前面。清不掉也不挡启动（函数里全吞掉）。
@@ -4592,19 +4841,44 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 	# 端口已被上一次的服务占着：不再起新服务，只开窗口复用现有服务，
 	# 不报错（之前挂起的“端口被占处理”：直接起服务会报地址已被占用）。
 	# 只有认得出是自家服务的才复用——别的程序占着端口不算。
-	from bosshunter.app_window import is_our_service_alive, launch_app_window
+	# v29：开窗后必须核实窗口/标签页真的出现了——只开窗就 return
+	# 会把“无窗口残留旧服务”当成正常复用，用户面前什么都没有、
+	# 服务还在后台占着端口（run 44758466045 的 Retry 就是这么死的）。
+	from bosshunter import app_window as _app_window
 
 	panel_url = f"http://{host}:{port}"
-	if is_our_service_alive(host, port):
-		if open_browser:
-			launch_app_window(panel_url)
-		return
+	if _app_window.is_our_service_alive(host, port):
+		if not open_browser:
+			return
+		_startup_log("已有服务在跑，开窗复用")
+		_app_window.launch_app_window(panel_url)
+		if _verify_reused_service_window(panel_url):
+			_startup_log("面板标签页已出现（或无法核实），复用已有服务")
+			return
+		_startup_log("复用开窗后 10 秒没看到面板标签页，判定为无窗口残留旧服务")
+		if _stop_stale_our_service(DATA_DIR, port):
+			_startup_log("残留旧服务已停掉，自己起新服务")
+			# 落到下面分支 B，自己起服务。
+		else:
+			_startup_log("残留旧服务认不出/停不掉，保持复用、不自己起新服务")
+			return
 	# v28：先拉启动页（立即出窗口、轮询服务就绪后自己跳转面板），
 	# 重型前置检查已在守护线程里跑，不挡首屏。
 	if open_browser:
-		from bosshunter.app_window import launch_splash_window
+		from bosshunter.app_window import launch_splash_window, set_splash_failure_marker_path
 
-		launch_splash_window(panel_url)
+		set_splash_failure_marker_path(_startup_failure_marker_path())
+		_splash_proc, _splash_server = launch_splash_window(panel_url)
+		if _splash_server is not None:
+			_startup_log(f"启动页已拉起：{_splash_server.splash_url}")
+		# v29：启动页回落后仍无窗口（浏览器拉起失败），不要继续
+		# 静默往下走——走可见报错。
+		if _app_window.last_splash_launch_failed():
+			_fail_startup_visible(
+				"面板窗口没有打开（浏览器拉起失败），服务没有启动。"
+				"请检查默认浏览器后重新双击「简历猎手」再试。",
+				reason_code="window_launch_failed",
+			)
 	# v25：起新服务前先做残留清理（上次被任务管理器强杀后留下的
 	# node.exe / 自动化 Chrome），再记下本实例、装好退出钩子。复用
 	# 路径（上面已 return）不做这些：那个进程只是开窗就退出，退出
@@ -4617,8 +4891,11 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 		)
 
 		set_data_dir(DATA_DIR)
-		cleanup_stale_browser_resources(data_dir=DATA_DIR, port=port)
+		_startup_log("开始残留清理")
+		_cleaned = cleanup_stale_browser_resources(data_dir=DATA_DIR, port=port)
+		_startup_log(f"残留清理完成：{'清掉了东西' if _cleaned else '无残留'}")
 		write_instance_file(DATA_DIR, os.getpid(), port)
+		_startup_log(f"实例文件已写：pid={os.getpid()}")
 		_install_shutdown_hooks(DATA_DIR, port)
 	except Exception:
 		pass
@@ -4689,10 +4966,46 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 	# 标签页；浏览器连不上时不写库、不误标掉线。
 	start_login_patrol()
 
-	app.run(
-		host=host,
-		port=port,
-		quiet=False,
-		reloader=False,
-		server_class=ThreadingWSGIServer,
-	)
+	# v29：绑端口失败绝不静默退出。先看占端口的是不是我们自己的
+	# 残留服务（instance 文件 + exe 核对）：是我们自己的就停掉它、
+	# 重试绑定一次；再失败、或是占端口的不是我们、或是别的绑定
+	# 错误，一律弹可见错误框 + 写失败标记 + 记日志再退出。
+	_startup_log(f"开始在 {host}:{port} 上监听")
+	try:
+		app.run(
+			host=host,
+			port=port,
+			quiet=False,
+			reloader=False,
+			server_class=ThreadingWSGIServer,
+		)
+	except OSError as exc:
+		_startup_log(f"绑定端口失败：{exc}")
+		if not _is_address_in_use(exc):
+			_fail_startup_visible(
+				f"程序没起来：启动本地服务失败（{exc}）。",
+				reason_code="server_start_failed",
+			)
+		if _stop_stale_our_service(DATA_DIR, port):
+			_startup_log("占端口的是我们自己的残留服务，已停掉，重试绑定一次")
+			_wait_for_port_free(host, port, timeout=5.0)
+			try:
+				app.run(
+					host=host,
+					port=port,
+					quiet=False,
+					reloader=False,
+					server_class=ThreadingWSGIServer,
+				)
+			except OSError as exc2:
+				_fail_startup_visible(
+					f"程序没起来：端口 {port} 还是被占着（{exc2}）。"
+					"请先关掉占着这个端口的程序，再重新双击「简历猎手」。",
+					reason_code="port_bind_failed",
+				)
+			return
+		_fail_startup_visible(
+			f"程序没起来：端口 {port} 被占着（{exc}）。"
+			"请先关掉占着这个端口的程序，再重新双击「简历猎手」。",
+			reason_code="port_bind_failed",
+		)

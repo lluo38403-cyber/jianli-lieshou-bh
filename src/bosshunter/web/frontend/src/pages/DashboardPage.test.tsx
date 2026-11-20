@@ -846,3 +846,57 @@ describe('DashboardPage survives a hanging browser diagnostics request', () => {
     expect(screen.getByRole('region', { name: '开始使用' })).toBeTruthy()
   })
 })
+
+describe('DashboardPage manual update check (v29)', () => {
+  type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+  let originalImpl: FetchImpl | undefined
+  beforeEach(() => {
+    workbenchPayload = baseWorkbench()
+    originalImpl = fetchMock.getMockImplementation() as FetchImpl | undefined
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) throw new Error('offline')
+      if (url === '/api/workbench' && (!init?.method || init.method === 'GET')) return jsonResponse(workbenchPayload)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => {
+    if (originalImpl) fetchMock.mockImplementation(originalImpl)
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  it('手动检查没查到：留“没查到，点再试一次。”+ 再试一次按钮，点它能再查', async () => {
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
+    const button = await screen.findByRole('button', { name: '检查更新' }, { timeout: 5000 })
+    // 挂载的自动检查先失败（静默），等转圈停了按钮才能点。
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
+    fireEvent.click(button)
+    expect(await screen.findByText('没查到，点再试一次。', {}, { timeout: 5000 })).toBeTruthy()
+    const retry = screen.getByRole('button', { name: '再试一次' })
+    expect(retry).toBeTruthy()
+    // 再点一次：还是没查到，提示还在（不被后返回的过期响应盖掉）。
+    fireEvent.click(retry)
+    expect(await screen.findByText('没查到，点再试一次。', {}, { timeout: 5000 })).toBeTruthy()
+  })
+
+  it('手动检查已是最新：留“已经是最新版，不用换。”，没有再试一次按钮', async () => {
+    render(<UpdateProvider><DashboardPage view="workbench" /></UpdateProvider>)
+    const button = await screen.findByRole('button', { name: '检查更新' }, { timeout: 5000 })
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/update/check?force=1') {
+        return jsonResponse({ update_available: false, current_version: '1.0.1', status: 'idle' })
+      }
+      if (url === '/api/workbench' && (!init?.method || init.method === 'GET')) return jsonResponse(workbenchPayload)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      return jsonResponse({})
+    })
+    fireEvent.click(button)
+    expect(await screen.findByText('已经是最新版，不用换。', {}, { timeout: 5000 })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '再试一次' })).toBeNull()
+  })
+})

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
-import { fetchWithRetry } from '@/lib/api'
+import { fetchWithRetry, isAbortError, readJsonWithTimeout } from '@/lib/api'
 import { skipCloseConfirm } from '@/lib/closeConfirm'
 
 export interface UpdateInfo {
@@ -38,7 +38,26 @@ interface CheckPayload {
   reason?: string
   download_cached?: boolean
   cached_version?: string | null
+  /** 后端 run_check 报的检查失败：status="error" + reason_code="check_failed"。 */
+  check_failed?: boolean
+  /** 后端状态里的原因码：check_failed（只是没查到）或 stuck/nopkg…（上次更新换失败了）。 */
+  reason_code?: string
+  /** 上次检查失败的细分原因（timeout / network / bad_sha …），见 updater.py。 */
+  check_reason?: string
 }
+
+/** 前端单次检查超时必须大于后端 10 秒（updater.py CHECK_TIMEOUT）：
+ * 中转往返 8–10 秒的请求，8 秒超时每次都在后端返回前掐断、再重试，
+ * 永远拿不到成功响应。12 秒留 2 秒余量；重试只剩 1 次兜底瞬断，
+ * 最坏总耗时约 2×12 秒 + 退避 0.5 秒 ≈ 25 秒，不会一直转圈。
+ * （另一条路是后端收紧到 5 秒快失败，没选：后端 10 秒是给中转慢
+ * 往返留的，快失败会把 8–10 秒的正常慢响应也判成失败。） */
+export const BACKEND_CHECK_TIMEOUT_MS = 10000
+export const UPDATE_CHECK_TIMEOUT_MS = 12000
+export const UPDATE_CHECK_RETRIES = 1
+/** 读响应体也加超时：fetch 只管到响应头，body 卡住时 res.json()
+ * 会一直等——请求层的超时管不到它。本地后端、包体很小，5 秒够了。 */
+export const UPDATE_CHECK_JSON_TIMEOUT_MS = 5000
 
 /**
  * 按后端原话（见后端 updater.py 的 UpdateError 文案）加当前阶段，
@@ -147,6 +166,19 @@ export function useUpdate() {
   const healthTimer = useRef<number | null>(null)
   const mountedRef = useRef(true)
   const phaseRef = useRef<UpdatePhase>('idle')
+  /** 检查序号：每次 check() +1，只有最新一次检查的响应能碰状态，
+   * 过期的自动检查回来也不许清 info、改 phase、关转圈。 */
+  const checkSeqRef = useRef(0)
+  /** 正在跑的检查：同一路（force 相同）连点共用同一个请求；另一路
+   * 启动时把这路的请求停掉（AbortController），它已经过时了。 */
+  const checkInFlightRef = useRef<{
+    force: boolean
+    seq: number
+    promise: Promise<boolean | null>
+    controller: AbortController
+  } | null>(null)
+  /** 转圈计数：两路检查并发时先结束的那路不许关转圈，等都完了才停。 */
+  const checkingCountRef = useRef(0)
 
   const setPhaseBoth = useCallback((next: UpdatePhase) => {
     phaseRef.current = next
@@ -185,7 +217,7 @@ export function useUpdate() {
     }
   }, [stopPolling, stopHealthPolling])
 
-  const applyPayload = useCallback((data: CheckPayload) => {
+  const applyPayload = useCallback((data: CheckPayload, options?: { fromFreshCheck?: boolean }) => {
     if (!mountedRef.current) return
     if (typeof data?.current_version === 'string' && data.current_version) {
       setCurrentVersion(data.current_version)
@@ -208,32 +240,84 @@ export function useUpdate() {
     } else if (data?.status === 'error' && typeof data?.version === 'string' && data.version) {
       // 失败也留着版本信息：横幅和弹窗要靠它显示原因和“再试一次”，不能置空。
       setInfo(buildInfo())
-    } else if (phaseRef.current === 'idle') {
+    } else if (
+      options?.fromFreshCheck
+      && phaseRef.current === 'idle'
+      && data?.update_available === false
+      && data?.status !== 'error'
+      && !data?.check_failed
+      && !data?.error
+    ) {
+      // 明确已是最新才清 info：只有最新一次检查亲口说的才算——
+      // 轮询/重试的响应、失败的响应、过期响应都不能清，否则手动
+      // 查到的新版会被随后返回的自动检查盖没（录屏终态就是这样）。
       setInfo(null)
     }
   }, [])
 
-  /** 手动检查：true=有新版，false=已经是最新，null=没查到（网络问题）。 */
+  /** 手动检查：true=有新版，false=已经是最新，null=没查到（网络问题）。
+   * 竞态：自动检查（启动线程 + 挂载检查，无 force）与手动检查
+   * （force=1）会并发——同一路连点共用同一个请求，不同路后启动的
+   * 顶掉先启动的，过期响应只把结果交给最新那次，什么都不碰。 */
   const check = useCallback(async (force = false): Promise<boolean | null> => {
-    setChecking(true)
-    try {
-      const res = await fetchWithRetry(force ? '/api/update/check?force=1' : '/api/update/check', {}, { timeoutMs: 8000, retries: 3 })
-      const data = (await res.json().catch(() => ({}))) as CheckPayload
-      applyPayload(data)
-      if (data?.status === 'error') {
-        // 失败也算“有新版要处理”：横幅和弹窗要显示原因和“再试一次”，
-        // 而不是告诉用户“已经是最新版”。
+    const existing = checkInFlightRef.current
+    if (existing && existing.force === force) return existing.promise
+    const seq = ++checkSeqRef.current
+    const prev = checkInFlightRef.current
+    if (prev) prev.controller.abort()
+    const controller = new AbortController()
+    const promise = (async (): Promise<boolean | null> => {
+      checkingCountRef.current += 1
+      if (mountedRef.current) setChecking(true)
+      try {
+        const res = await fetchWithRetry(force ? '/api/update/check?force=1' : '/api/update/check', {}, { timeoutMs: UPDATE_CHECK_TIMEOUT_MS, retries: UPDATE_CHECK_RETRIES, signal: controller.signal })
+        const data = await readJsonWithTimeout<CheckPayload>(res, UPDATE_CHECK_JSON_TIMEOUT_MS)
+        if (seq !== checkSeqRef.current) {
+          // 过期响应：什么都不碰，只把结果交给最新那次检查。
+          const latest = checkInFlightRef.current
+          if (latest && latest.seq !== seq) return latest.promise
+          return null
+        }
+        applyPayload(data, { fromFreshCheck: true })
+        if (data?.status === 'error') {
+          if (data?.reason_code === 'check_failed' || data?.check_failed) {
+            // 只是没查到（中转慢/断网），不是更新本身失败：自动检查
+            // 静默，手动检查才进 error 态、给“再试一次”。
+            if (!force) return null
+            setPhaseBoth('error')
+            setErrorBoth(String(data?.error || '没查到新版本，点“再试一次”就能再查一次。'))
+            return null
+          }
+          // 上次更新换失败留下的报错（reason_code 是 stuck/nopkg…）：
+          // 保持老行为，横幅和弹窗要显示原因和“再试一次”。
+          setPhaseBoth('error')
+          setErrorBoth(String(data?.error || '这次没换上，稍后再试。'), 'downloading')
+          return Boolean(data?.version)
+        }
+        return Boolean(data?.update_available)
+      } catch (err) {
+        if (seq !== checkSeqRef.current) {
+          const latest = checkInFlightRef.current
+          if (latest && latest.seq !== seq) return latest.promise
+          return null
+        }
+        // 被新检查顶掉的请求（abort）不是失败：最新那次会给结论。
+        if (isAbortError(err)) return null
+        // 真没查到：自动检查静默（不弹、不清 info、不改 phase），
+        // 手动检查进 error 态——横幅有 info 时显示“再试一次”，
+        // 没 info 时页面上的文字提示 + 再试一次按钮接住。
+        if (!force) return null
         setPhaseBoth('error')
-        setErrorBoth(String(data?.error || '这次没换上，稍后再试。'), 'downloading')
-        return Boolean(data?.version)
+        setErrorBoth('没查到新版本，点“再试一次”就能再查一次。')
+        return null
+      } finally {
+        checkingCountRef.current = Math.max(0, checkingCountRef.current - 1)
+        if (checkingCountRef.current === 0 && mountedRef.current) setChecking(false)
+        if (checkInFlightRef.current?.seq === seq) checkInFlightRef.current = null
       }
-      return Boolean(data?.update_available)
-    } catch {
-      // 查不到就当没有新版，不打扰正常用。
-      return null
-    } finally {
-      if (mountedRef.current) setChecking(false)
-    }
+    })()
+    checkInFlightRef.current = { force, seq, promise, controller }
+    return promise
   }, [applyPayload, setPhaseBoth, setErrorBoth])
 
   const fetchHealth = useCallback(async () => {
@@ -284,9 +368,15 @@ export function useUpdate() {
           if (mountedRef.current) setProgress(100)
           stopPolling()
         } else if (status === 'error') {
-          setPhaseBoth('error')
-          setErrorBoth(String(data?.error || '下载失败了，稍后再试。'), phaseRef.current === 'verifying' ? 'verifying' : 'downloading')
-          stopPolling()
+          // 并发检查失败（check_failed）不算下载失败：轮询继续，
+          // 不停、不报错，等下一次轮询再看下载状态。
+          if (data?.reason_code === 'check_failed' || data?.check_failed) {
+            // 忽略这一轮，继续轮询。
+          } else {
+            setPhaseBoth('error')
+            setErrorBoth(String(data?.error || '下载失败了，稍后再试。'), phaseRef.current === 'verifying' ? 'verifying' : 'downloading')
+            stopPolling()
+          }
         }
       } catch {
         consecutiveFailures += 1
@@ -329,8 +419,12 @@ export function useUpdate() {
         setPhaseBoth('ready')
         setProgress(100)
       } else if (status === 'error') {
-        setPhaseBoth('error')
-        setErrorBoth(String(data?.error || '下载失败了，稍后再试。'), 'downloading')
+        // 查新版失败（check_failed）不是下载失败：不进 error 态、
+        // 不弹打扰，info 留着给横幅/弹窗；下载失败才按老样子报错。
+        if (data?.reason_code !== 'check_failed' && !data?.check_failed) {
+          setPhaseBoth('error')
+          setErrorBoth(String(data?.error || '下载失败了，稍后再试。'), 'downloading')
+        }
       }
     } catch {
       // 状态读不到就不管：check() 那边会照常查有没有新版。

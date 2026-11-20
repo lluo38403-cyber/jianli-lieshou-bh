@@ -11,9 +11,12 @@ data/logs/jianli-lieshou.log 里（超过 5MB 自动轮换一个 .old 备份）�
 """
 from __future__ import annotations
 
+import ctypes
+import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 # 单个日志文件超过这个大小就轮换（启动时检查一次）。
@@ -82,6 +85,55 @@ def _redirect_output_to_log(exe_dir: Path) -> object | None:
     return tee_out
 
 
+def _show_fatal_error_box(message: str) -> bool:
+    """弹可见的启动失败框（只在 Windows 打包 exe 里；开发环境不弹真框）。"""
+    if not (getattr(sys, "frozen", False) and os.name == "nt"):
+        return False
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            f"简历猎手启动失败：\n{message}\n\n详情见 data\\logs\\jianli-lieshou.log",
+            "简历猎手启动失败",
+            0x10,  # MB_ICONERROR
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _report_startup_failure(exe_dir: Path, message: str, reason_code: str | None = None) -> None:
+    """启动失败兜底（v29）：写失败标记文件 + 追加日志 + 弹可见错误框。永不抛异常。
+
+    launcher 这一层是最后一道防线：bosshunter 里没预料到的异常
+    （连 run_server 的可见报错都没走到的）到这里也要让用户看得见，
+    不能静默退出。
+    """
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    try:
+        marker = exe_dir / "data" / ".startup-failed.json"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps(
+                {"message": message, "reason_code": reason_code, "time": stamp},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    try:
+        log_dir = exe_dir / "data" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(log_dir / "jianli-lieshou.log", "a", encoding="utf-8") as f:
+            f.write(f"[{stamp}] 启动失败[{reason_code or '-'}]：{message}\n")
+    except OSError:
+        pass
+    try:
+        _show_fatal_error_box(message)
+    except Exception:
+        pass
+
+
 def _exe_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
@@ -140,9 +192,24 @@ def main() -> None:
         print("简历猎手正在启动，请稍等...")
         print("面板地址：http://127.0.0.1:8686/（关掉这个窗口就是停止服务）")
     sys.argv = ["bosshunter", "--config", str(config_path), *args]
-    from bosshunter.main import cli
+    try:
+        from bosshunter.main import cli
 
-    cli()
+        cli()
+    except SystemExit as exc:
+        # v29：启动失败可见化。已在 run_server 里报过可见错误
+        # （带 _startup_reported 标记）的不重复弹框；正常退出
+        # （SystemExit(0)/None，如 --version）也不报。
+        if exc.code not in (None, 0) and not getattr(exc, "_startup_reported", False):
+            _report_startup_failure(
+                exe_dir,
+                str(exc.code) if isinstance(exc.code, str) else f"启动失败（退出码 {exc.code}）",
+                reason_code="startup_failed",
+            )
+        raise
+    except Exception as exc:
+        _report_startup_failure(exe_dir, f"程序启动失败：{exc}", reason_code="startup_error")
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

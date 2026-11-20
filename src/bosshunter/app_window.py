@@ -48,6 +48,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 _logger = logging.getLogger(__name__)
@@ -68,6 +69,48 @@ _APP_WINDOW_URL: str | None = None
 # 启动页地址（v28）：窗口先开启动页时记这里；watch 的标签页检测
 # 要认启动页标签（见 watch_app_window_close）。
 _APP_WINDOW_SPLASH_URL: str | None = None
+# 启动失败标记文件名（v29）：run_server / launcher 在 data/ 下写
+# .startup-failed.json，启动页服务的 /splash-health 读到它就向页面
+# 报 failed，页面不再无限轮询。
+STARTUP_FAILURE_FILENAME = ".startup-failed.json"
+# 启动失败标记文件的路径（v29）：run_server 在拉启动页前经
+# set_splash_failure_marker_path 记在这里，launch_splash_window
+# 再把它传给启动页服务。
+_SPLASH_FAILURE_MARKER_PATH = None
+# launch_splash_window 最近一次是否连窗口都没拉起来（v29）：
+# 只有 launch_app_window 抛异常才置 True；走 webbrowser 回落
+# 也算拉起来了（窗口已经开了，只是没有句柄）。
+_LAST_SPLASH_LAUNCH_FAILED = False
+
+
+def set_splash_failure_marker_path(path) -> None:
+    """Set the startup-failure marker path the splash server should read (v29)."""
+    global _SPLASH_FAILURE_MARKER_PATH
+    _SPLASH_FAILURE_MARKER_PATH = path
+
+
+def last_splash_launch_failed() -> bool:
+    """True when the last launch_splash_window call failed to open any window (v29)."""
+    return _LAST_SPLASH_LAUNCH_FAILED
+
+
+def read_startup_failure(marker_path) -> str | None:
+    """Return the recorded startup-failure message, or None when no failure is recorded.
+
+    只读标记文件里的 message/reason，永不抛异常。标记不存在、
+    读不懂、没有 message 都返回 None——调用方按“没有失败”处理。
+    """
+    if marker_path is None:
+        return None
+    try:
+        data = json.loads(Path(marker_path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    message = data.get("message") or data.get("reason") or ""
+    text = str(message).strip()
+    return text if text else "启动失败"
 
 
 def get_app_window_splash_url() -> str | None:
@@ -150,13 +193,19 @@ def _splash_page_html(panel_url: str) -> bytes:
         "p{font-size:14px;color:#666;margin:0}</style></head><body><main>"
         "<h1>简历猎手正在启动，请稍等&hellip;</h1>"
         "<p id=\"status\">正在等本地服务起来&hellip;</p></main>"
-        "<script>var panelUrl=" + panel_json + ";var tried=0;"
+        "<script>var panelUrl=" + panel_json + ";var tried=0;var fails=0;"
+        "function showError(msg){document.getElementById('status').textContent=msg;}"
         "function tick(){tried++;"
         "fetch('/splash-health').then(function(r){return r.json()}).then(function(d){"
         "if(d.ready){location.replace(panelUrl);return}"
-        "if(tried>60){document.getElementById('status').textContent="
-        "'启动有点慢，还在等本地服务起来，请稍等…';}"
-        "setTimeout(tick,500)}).catch(function(){setTimeout(tick,500)})}"
+        # v29：服务明确死了（启动失败标记）就显示错误、不再无限轮询；
+        # 联系不上启动页服务本身（进程已死）连续失败 10 次也一样，
+        # 显示明确错误而不是一直转圈。
+        "if(d.failed){showError(d.error||'本地服务启动失败，请重新双击「简历猎手」再试一次。');return}"
+        "if(tried>60){showError('启动有点慢，还在等本地服务起来，请稍等…');}"
+        "setTimeout(tick,500)}).catch(function(){fails++;"
+        "if(fails>=10){showError('本地服务没有响应，程序可能没有启动成功。请重新双击「简历猎手」再试一次；如果一直这样，请把 data/logs/jianli-lieshou.log 发给客服。');return}"
+        "setTimeout(tick,500)})}"
         "tick();</script></body></html>"
     )
     return page.encode("utf-8")
@@ -172,6 +221,9 @@ class _SplashRequestHandler(http.server.BaseHTTPRequestHandler):
     """
 
     panel_url = "http://127.0.0.1:8686"
+    # 启动失败标记文件路径（v29）：/splash-health 读到它就向页面报
+    # failed（见 do_GET），由 start_splash_server 填。
+    failure_marker_path = None
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):  # 不往 stderr 刷请求日志
@@ -210,7 +262,27 @@ class _SplashRequestHandler(http.server.BaseHTTPRequestHandler):
                     )
                     timer.daemon = True
                     timer.start()
-                self._send(200, json.dumps({"ready": ready}).encode("utf-8"), "application/json")
+                if ready:
+                    self._send(200, json.dumps({"ready": True}).encode("utf-8"), "application/json")
+                else:
+                    # v29：服务没好、且启动失败标记已写（端口被占、
+                    # 前端缺失等），直接告诉页面“明确死了”，页面
+                    # 显示错误、不再无限轮询。
+                    failed_error = None
+                    marker_path = getattr(self, "failure_marker_path", None)
+                    if marker_path is not None:
+                        failed_error = read_startup_failure(marker_path)
+                    if failed_error is not None:
+                        self._send(
+                            200,
+                            json.dumps(
+                                {"ready": False, "failed": True, "error": failed_error},
+                                ensure_ascii=False,
+                            ).encode("utf-8"),
+                            "application/json",
+                        )
+                    else:
+                        self._send(200, json.dumps({"ready": False}).encode("utf-8"), "application/json")
             else:
                 self._send(404, b"not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):
@@ -219,19 +291,21 @@ class _SplashRequestHandler(http.server.BaseHTTPRequestHandler):
     do_HEAD = do_GET
 
 
-def start_splash_server(panel_url: str, host: str = "127.0.0.1"):
+def start_splash_server(panel_url: str, host: str = "127.0.0.1", failure_marker_path=None):
     """Start the lightweight splash server on a temp localhost port (v28).
 
     只用标准库 http.server，不引新依赖。返回 server（带 .splash_url
     属性），失败返回 None、永不抛异常。线程是 daemon：进程退出时
     不会拖住；正常流程由 run_server 在服务就绪后调 stop_splash_server
     干净停掉（见汇报里的 run_server 改动规格）。
+    failure_marker_path（v29）：启动失败标记文件路径，/splash-health
+    读到它就向页面报 failed。
     """
     try:
         handler = type(
             "SplashHandler",
             (_SplashRequestHandler,),
-            {"panel_url": panel_url},
+            {"panel_url": panel_url, "failure_marker_path": failure_marker_path},
         )
         server = http.server.ThreadingHTTPServer((host, 0), handler)
         server.daemon_threads = True
@@ -396,10 +470,14 @@ def launch_splash_window(
     返回 (proc, splash_server)：启动页服务在面板就绪后 5 秒自停，
     调用方不用抢着停；关窗退出时进程直接退出，服务随之消失。
     启动页服务起不来就直接开面板窗口（旧行为），不挡启动。
-    永不抛异常。
+    永不抛异常。v29：连窗口都没拉起来（launch_app_window 抛异常）
+    时记 last_splash_launch_failed()，调用方（run_server）要走
+    可见报错、不要继续静默往下走。
     """
+    global _LAST_SPLASH_LAUNCH_FAILED
+    _LAST_SPLASH_LAUNCH_FAILED = False
     try:
-        server = start_splash_server(panel_url)
+        server = start_splash_server(panel_url, failure_marker_path=_SPLASH_FAILURE_MARKER_PATH)
     except Exception:
         server = None
     if server is None:
@@ -411,6 +489,7 @@ def launch_splash_window(
     except Exception:
         # 窗口都没拉起来：启动页服务也没人看了，直接停掉。
         stop_splash_server(server)
+        _LAST_SPLASH_LAUNCH_FAILED = True
         return None, None
     return proc, server
 
@@ -475,6 +554,48 @@ def _list_debug_page_urls(port: int, timeout: float = 1.5) -> list[str] | None:
     ]
 
 
+def wait_for_panel_tab(
+    panel_url: str,
+    debug_port: int | None,
+    timeout: float = 10.0,
+    interval: float = 0.5,
+    splash_url: str | None = None,
+    _list_tabs=None,
+    _clock=None,
+    _sleep=None,
+) -> bool | None:
+    """Poll a Chrome debug port until our panel (or splash) tab appears (v29).
+
+    True：看到了面板/启动页标签页。False：调试端口应答、但 timeout
+    内一直没看到我们的标签页——窗口没开出来（无窗口残留旧服务）。
+    None：无法核实（没有调试端口，或端口一直没应答）——调用方
+    绝不能把它读成“没有标签页”，只能按旧行为放行。永不抛异常。
+    """
+    clock = _clock or time.monotonic
+    sleep = _sleep or time.sleep
+    if debug_port is None and _list_tabs is None:
+        return None
+    if _list_tabs is not None:
+        list_tabs = _list_tabs
+    else:
+        list_tabs = lambda: _list_debug_page_urls(debug_port)  # noqa: E731
+    ever_answered = False
+    deadline = clock() + timeout
+    while True:
+        try:
+            urls = list_tabs()
+        except Exception:
+            urls = None
+        if urls is not None:
+            ever_answered = True
+            for url in urls:
+                if url.startswith(panel_url) or (splash_url and url.startswith(splash_url)):
+                    return True
+        if clock() >= deadline:
+            return False if ever_answered else None
+        sleep(interval)
+
+
 def watch_app_window_close(
     on_close,
     grace_seconds: float = 5.0,
@@ -490,10 +611,12 @@ def watch_app_window_close(
     _list_tabs=None,
     _tab_watch_seconds: float = 60.0,
     _splash_url: str | None = None,
+    _service_alive=None,
 ) -> bool:
     """Watch the held --app window; call on_close() once the user closes it.
 
-    run_server 在守护线程里跑这个函数。语义（v25，v27 补了标签页信号）：
+    run_server 在守护线程里跑这个函数。语义（v25，v27 补了标签页信号，
+    v29 收紧了退出条件）：
     - 先等 _APP_WINDOW_PROC 出现（开窗是异步线程做的），等不到就
       返回 False、不做任何事；
     - 句柄在 grace_seconds（默认 5 秒）内就退出，视为 Chrome 把
@@ -501,14 +624,19 @@ def watch_app_window_close(
       False（旧行为）；有检测就改看标签页，面板标签页在已在跑的
       实例里——60 秒内一直没看到面板标签页也放弃，返回 False；
     - 句柄活过 grace 后才退出，视为用户关窗，调一次 on_close()、
-      返回 True；
+      返回 True——但 v29 起还要同时满足：服务应答过 /api/health，
+      且（有标签页观测时）面板标签页确实出现过；启动中途死掉的
+      进程绝不能靠一个关窗信号就把自己退掉；
     - 句柄还活着但面板标签页已经出现过、现在又没了，也视为关窗：
       带调试端口的 Chrome 关掉最后一个窗口后进程可能还留着，只看
       句柄就看不到这次关窗；端口没应答时不判（那不是“标签页没了”，
-      只是暂时问不到）；
+      只是暂时问不到）；v29 起同样要求服务应答过 /api/health，
+      标签页从未出现过时绝不调 on_close；
     - 更新进行中（updater._UPDATE_APPLYING 置位，apply_update 自己
       会关窗、停 runtime、起 bat）绝不抢跑：直接返回 False。
-    on_close 里抛异常只记日志、不让监视线程崩掉。永不抛异常。
+    _service_alive（测试注入）：无参可调用，返回服务是否应答过
+    /api/health；默认按面板地址实时问 /api/health。on_close 里抛
+    异常只记日志、不让监视线程崩掉。永不抛异常。
     """
     clock = _clock or time.monotonic
     sleep = _sleep or time.sleep
@@ -542,7 +670,35 @@ def watch_app_window_close(
             list_tabs = lambda: _list_debug_page_urls(debug_port)  # noqa: E731
         else:
             list_tabs = None
+        # v29：服务是否应答过 /api/health（sticky，一旦见过就一直算见过）。
+        # 默认按面板地址实时问；测试经 _service_alive 注入。
+        if _service_alive is not None:
+            service_alive = _service_alive
+        elif panel_url:
+            _parsed = urllib.parse.urlparse(panel_url)
+            _host = _parsed.hostname or "127.0.0.1"
+            _port = _parsed.port or 8686
+            service_alive = lambda: is_our_service_alive(_host, _port, timeout=1.0)  # noqa: E731
+        else:
+            service_alive = None
         seen_panel = False
+        seen_healthy = False
+
+        def _fire(require_tab: bool) -> bool:
+            # v29 铁律：只在“标签页确实出现过、后来又消失、且服务
+            # 应答过 /api/health”时退出；句柄路径（看不到标签页）
+            # 同样要求服务应答过。任一条件不满足都不是真关窗，
+            # 直接返回 False、不退出进程。
+            if require_tab and not seen_panel:
+                return False
+            if not seen_healthy:
+                return False
+            try:
+                on_close()
+            except Exception as exc:
+                _logger.warning("watch_app_window_close: on_close 失败：%s", exc)
+            return True
+
         tab_only = False
         tab_only_deadline: float | None = None
         while True:
@@ -551,6 +707,12 @@ def watch_app_window_close(
                     return False
             except Exception:
                 pass
+            if service_alive is not None and not seen_healthy:
+                try:
+                    if service_alive():
+                        seen_healthy = True
+                except Exception:
+                    pass
             if not tab_only:
                 try:
                     exited = proc.poll() is not None
@@ -558,11 +720,11 @@ def watch_app_window_close(
                     return False
                 if exited:
                     if clock() - started_at >= grace_seconds:
-                        try:
-                            on_close()
-                        except Exception as exc:
-                            _logger.warning("watch_app_window_close: on_close 失败：%s", exc)
-                        return True
+                        # 句柄活过 grace 才退出：有标签页观测时还要求
+                        # 标签页出现过；无论如何都要求服务应答过。
+                        if _fire(require_tab=list_tabs is not None):
+                            return True
+                        return False
                     # grace 内的假退出：交接给已在跑实例。没检测就返回；
                     # 有检测就改看标签页，60 秒没看到面板标签页也放弃。
                     # 一旦进了 tab-only 就不再回头看句柄——否则同一个
@@ -591,11 +753,12 @@ def watch_app_window_close(
                     if any(_is_our_tab(url) for url in urls):
                         seen_panel = True
                     elif seen_panel:
-                        try:
-                            on_close()
-                        except Exception as exc:
-                            _logger.warning("watch_app_window_close: on_close 失败：%s", exc)
-                        return True
+                        # v29：标签页没了、但服务从未应答过 /api/health
+                        # （启动中途死掉）时不退出——那不是用户关窗，
+                        # 是启动失败的残留信号。
+                        if _fire(require_tab=True):
+                            return True
+                        return False
             sleep(poll_interval)
     except Exception as exc:
         _logger.warning("watch_app_window_close: 监视失败：%s", exc)

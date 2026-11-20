@@ -582,15 +582,21 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const update = useUpdateContext()
   const auth = useAuth()
   const [updateNote, setUpdateNote] = useState('')
+  /** 手动检查没查到时才 true：提示旁边出现“再试一次”按钮。 */
+  const [updateCheckFailed, setUpdateCheckFailed] = useState(false)
   const [manualUpdateSignal, setManualUpdateSignal] = useState(0)
   // 更新弹窗开着时收起顶部横幅：同一件事只出现一块（v1.0.8 上两块
   // 同时出现，用户分不清该点哪个）。
   const [updateModalOpen, setUpdateModalOpen] = useState(false)
   const handleManualUpdateCheck = useCallback(async () => {
     setUpdateNote('')
+    setUpdateCheckFailed(false)
     const found = await update.check(true)
     if (found === null) {
-      setUpdateNote('没查到，网络可能断了，稍后再点一次。')
+      // 没查到（不是“已是最新”）：留文字 + 再试一次按钮。同一路连点
+      // 共用同一个检查请求，后返回的不会把这条提示盖掉。
+      setUpdateNote('没查到，点再试一次。')
+      setUpdateCheckFailed(true)
     } else if (found === false) {
       setUpdateNote('已经是最新版，不用换。')
     } else {
@@ -1297,6 +1303,11 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               {update.checking ? '正在看有没有新版…' : '检查更新'}
             </Button>
             {updateNote ? <span className="text-xs text-muted">{updateNote}</span> : null}
+            {updateCheckFailed ? (
+              <Button variant="ghost" size="sm" className="h-7 px-1" onClick={() => void handleManualUpdateCheck()} disabled={update.checking}>
+                再试一次
+              </Button>
+            ) : null}
           </div>
         </div>
 

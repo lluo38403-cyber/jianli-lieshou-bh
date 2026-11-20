@@ -440,6 +440,82 @@ function Show-LockDiagnostics {
   }
 }
 
+function Show-RestartFailureDiagnostics {
+  # restart/restart2 失败时的深挖诊断（run 44758466045：bat 15:07:24 启动、
+  # 两次 robocopy 退出码都是 3、15:07:33“换好了，正在重新打开...”、
+  # update-result.json 是 applied 无 reason_code，但诊断时没有
+  # 简历猎手.exe 在跑、8686 没报 v1.1.14——新版拉起来又死了，或根本
+  # 没拉起来，分不清）。只在失败时跑，不拖慢正常路径；每项探针都
+  # 只打印、不抛异常；分清四种情况：端口没人听（没起来）、端口有人
+  # 但报旧版（起来的是旧版）、.instance.json 里的 PID 活没活着、
+  # 新 exe 的启动 traceback（在 data\logs\jianli-lieshou.log 里）。
+  try {
+    $listeners = Get-NetTCPConnection -LocalPort $RestartPort -State Listen -ErrorAction SilentlyContinue
+    if ($listeners) {
+      foreach ($c in $listeners) {
+        $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue
+        if ($p) {
+          Write-Host "  restart-diag: 8686 监听者 PID $($c.OwningProcess)，$($p.ProcessName)，$($p.Path)"
+        } else {
+          Write-Host "  restart-diag: 8686 监听者 PID $($c.OwningProcess)（进程已死或查不到）"
+        }
+      }
+    } else {
+      Write-Host '  restart-diag: 8686 上没有监听者（新版没起来，或起来又死了）'
+    }
+  } catch {
+    Write-Host "  restart-diag: 查 8686 监听者失败：$($_.Exception.Message)"
+  }
+  try {
+    $netstatLines = netstat -ano 2>$null | Select-String ":$RestartPort"
+    if ($netstatLines) {
+      foreach ($line in $netstatLines) { Write-Host "  restart-diag: netstat -ano：$($line.Line.Trim())" }
+    } else {
+      Write-Host "  restart-diag: netstat -ano 里没有 :$RestartPort 的行"
+    }
+  } catch {
+    Write-Host "  restart-diag: netstat 失败：$($_.Exception.Message)"
+  }
+  try {
+    $health = Invoke-RestMethod -Uri "$restartBase/api/health" -TimeoutSec 5 -ErrorAction Stop
+    Write-Host "  restart-diag: /api/health 应答了，版本 v$($health.version)（期望 v$ToVersion）"
+    if ($health.version -eq $ToVersion) {
+      Write-Host '  restart-diag: 注意：现在应答的已经是期望版本，失败可能是轮询刚错过，或新版起来得太慢'
+    } else {
+      Write-Host '  restart-diag: 应答的是旧版本——起来的是旧版，不是新版'
+    }
+  } catch {
+    Write-Host "  restart-diag: /api/health 没应答（新版没在 8686 上服务）：$($_.Exception.Message)"
+  }
+  $instancePath = Join-Path $ExeDir 'data\.instance.json'
+  if (Test-Path $instancePath) {
+    $rawInstance = Get-Content $instancePath -Raw -ErrorAction SilentlyContinue
+    Write-Host "  restart-diag: data\.instance.json 内容：$rawInstance"
+    try {
+      $inst = $rawInstance | ConvertFrom-Json -ErrorAction Stop
+      if ($null -ne $inst.pid) {
+        $instProc = Get-Process -Id $inst.pid -ErrorAction SilentlyContinue
+        if ($instProc) {
+          Write-Host "  restart-diag: .instance.json 里的 PID $($inst.pid) 还活着：$($instProc.ProcessName)，$($instProc.Path)"
+        } else {
+          Write-Host "  restart-diag: .instance.json 里的 PID $($inst.pid) 已死（新版起来又退了，或根本没写上新 PID）"
+        }
+      }
+    } catch {
+      Write-Host '  restart-diag: .instance.json 解析失败（不是合法 JSON）'
+    }
+  } else {
+    Write-Host '  restart-diag: data\.instance.json 不存在（新版根本没跑到写实例标记那一步）'
+  }
+  $exeLog = Join-Path $ExeDir 'data\logs\jianli-lieshou.log'
+  if (Test-Path $exeLog) {
+    Write-Host '  restart-diag: data\logs\jianli-lieshou.log 最后 50 行（新 exe 的启动 traceback 就在这里）：'
+    Get-Content $exeLog -Tail 50 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  restart-diag: $_" }
+  } else {
+    Write-Host '  restart-diag: data\logs\jianli-lieshou.log 不存在（新版没跑到写日志那一步）'
+  }
+}
+
 function Assert-SwapOrder {
   # 换文件期间的顺序断言（lucky 2026-11-20 定性：两个窗口冲突——
   # 换版本后应自动关闭当前窗口再重开；旧面板窗口根本没关、整个
@@ -1068,6 +1144,7 @@ try {
         Show-UpdateLogTail
         Show-UpdateResult
         Show-LockDiagnostics
+        Show-RestartFailureDiagnostics
         throw "stage=restart2 第二次换文件后新版没起来：${RestartTimeoutSeconds} 秒内 http://127.0.0.1:$RestartPort/api/health 一直没报 v$ToVersion"
       }
       Write-Host "stage=restart2 OK：重试后新版已在 $RestartPort 上起来，版本 v$($newHealth.version)"

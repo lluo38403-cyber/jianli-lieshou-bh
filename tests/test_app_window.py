@@ -453,6 +453,8 @@ class WatchSplashTabTests(unittest.TestCase):
             _panel_url="http://127.0.0.1:8686",
             _splash_url="http://127.0.0.1:46595/",
             _list_tabs=lambda: next(tab_lists),
+            # v29：标签页出现又消失，还要求服务应答过 /api/health 才算真关窗。
+            _service_alive=lambda: True,
         )
         self.assertTrue(result)
         self.assertEqual(fired, [True])
@@ -482,6 +484,8 @@ class WatchSplashTabTests(unittest.TestCase):
             _panel_url="http://127.0.0.1:8686",
             _splash_url="http://127.0.0.1:46595/",
             _list_tabs=lambda: next(tab_lists),
+            # v29：同上，补服务已应答的前提。
+            _service_alive=lambda: True,
         )
         self.assertTrue(result)
         self.assertEqual(fired, [True])
