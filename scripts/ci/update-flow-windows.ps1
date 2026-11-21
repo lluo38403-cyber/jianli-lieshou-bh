@@ -422,9 +422,11 @@ function Get-DataTreeHash {
   # data/ 的树哈希：排除运行时文件（.db/.log 等，旧版重启、巡检
   # 也会写它们，变化不代表更新动了用户数据；v25 起的 .instance.json
   # 每次启动都重写 pid/started_at、launched-browser.json 随浏览器启停
-  # 改写，同样是运行时文件）；config.yaml、update-cache（manifest+zip）
-  # 都在内——失败的更新绝不能动它们。
-  $files = Get-ChildItem -Path $Dir -Recurse -File -Exclude '*.db', '*.db-journal', '*.db-wal', '*.db-shm', '*.log', '.instance.json', 'launched-browser.json' -ErrorAction SilentlyContinue | Sort-Object FullName
+  # 改写，同样是运行时文件；v32 起的 window-geometry.json 在窗口
+  # 首次被问到外框时落盘（失败更新重拉旧版会开窗，于是快照后出现）、
+  # desktop_shortcut_created 是桌面快捷方式标记，同属运行时文件）；
+  # config.yaml、update-cache（manifest+zip）都在内——失败的更新绝不能动它们。
+  $files = Get-ChildItem -Path $Dir -Recurse -File -Exclude '*.db', '*.db-journal', '*.db-wal', '*.db-shm', '*.log', '.instance.json', 'launched-browser.json', 'window-geometry.json', 'desktop_shortcut_created' -ErrorAction SilentlyContinue | Sort-Object FullName
   if (-not $files) { return '(empty)' }
   $lines = foreach ($f in $files) {
     "$($f.FullName)|$((Get-FileHash -Path $f.FullName -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash)"
