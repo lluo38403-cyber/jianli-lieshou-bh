@@ -329,7 +329,7 @@ export default function ConfigPage() {
                     onClick={() => setActiveTab(platform)}
                     className={`min-w-0 flex-1 rounded-full px-2 py-1.5 text-xs font-black transition ${(activeTab ?? guidePlatform ?? 'boss') === platform ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted hover:text-primary'}`}
                   >
-                    {PLATFORM_SHORT_LABELS[platform]}{enabled ? '' : '（没在用）'}
+                    {PLATFORM_SHORT_LABELS[platform]}{enabled ? '' : '（未开启）'}
                   </button>
                 )
               })}
@@ -352,7 +352,7 @@ export default function ConfigPage() {
                       <input type="checkbox" checked={enabled} onChange={event => setPlatformEnabled(platform, event.target.checked)} className="h-4 w-4 accent-primary" />
                       {label}
                     </label>
-                    <span className="text-xs text-muted">{enabled ? '正在用' : '没在用'}</span>
+                    <span className="text-xs text-muted">{enabled ? '已开启' : '未开启'}</span>
                   </div>
                   {enabled && <div className="mt-4 space-y-3">
                     <Field label="想找的岗位" dataTour={platform === guidePlatform ? 'search-keywords' : undefined} hint={platform === 'boss' ? '输完按回车确认，多个岗位用逗号隔开。' : undefined}>
@@ -406,9 +406,9 @@ export default function ConfigPage() {
                       <div className="grid gap-3 sm:grid-cols-3">{([{ key: 'warmup_minutes', label: '过几分钟先看一次', initial: 10, max: 60 }, { key: 'window_minutes', label: '隔几分钟看一次', initial: 5, max: 30 }, { key: 'min_new_jobs', label: '一次至少新找到几个', initial: 5, max: 1000 }]).map(field => <Field key={field.key} label={field.label}><ValidatedNumberInput label={field.label} value={search.city_yield_policy?.[field.key] ?? field.initial} onChange={value => updatePlatformSearch('boss', 'city_yield_policy', { enabled: true, warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5, ...search.city_yield_policy, [field.key]: value })} min={1} max={field.max} /></Field>)}</div>
                     </div>}
                     {platform === 'boss' && <div className="space-y-3 rounded-xl border border-card-border bg-card p-3">
-                      <p className="text-xs font-black text-foreground">BOSS 再细筛一下（可以不填）</p>
+                      <p className="text-xs font-black text-foreground">再细筛一下（可以不填）</p>
                       <div className="grid gap-3 md:grid-cols-2">
-                        <Field label="BOSS 搜索只找这种类型" hint="只在 BOSS 搜索时用">
+                        <Field label="搜索只找这种类型" hint="只对这个平台的搜索生效">
                           <Select value={Array.isArray(bossFilters.job_type) ? bossFilters.job_type[0] || '' : ''} onChange={event => updateBossFilter(search, 'job_type', event.target.value, false)}>
                             <option value="">不限</option>
                             {BOSS_FILTER_OPTIONS.job_type.map(option => <option key={option} value={option}>{option}</option>)}
@@ -557,16 +557,16 @@ export default function ConfigPage() {
         <SectionCard title="每天投多少、怎么投">
           <div className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
-              <Field label="BOSS 每天最多翻多少页">
-                <ValidatedNumberInput label="BOSS 每天最多翻多少页" value={config.collection?.daily_search_page_limit ?? 60} onChange={value => updateConfig('collection.daily_search_page_limit', value)} min={1} max={200} />
+              <Field label="每天最多翻多少页">
+                <ValidatedNumberInput label="每天最多翻多少页" value={config.collection?.daily_search_page_limit ?? 60} onChange={value => updateConfig('collection.daily_search_page_limit', value)} min={1} max={200} />
                 {bossTheoreticalPages > 0 && (
                   <p className={`mt-1 text-xs ${bossTheoreticalExceedsLimit ? 'font-bold text-warning' : 'text-muted'}`}>
                     现在这个组合最多要翻 {bossTheoreticalPages} 页；{bossTheoreticalExceedsLimit ? `超过了这个上限 ${bossDailySearchLimit} 页，设置这里和跑起来的时候都会提醒你。` : '还没超过这个上限。'}
                   </p>
                 )}
               </Field>
-              <Field label="BOSS 每天最多打开多少个岗位">
-                <ValidatedNumberInput label="BOSS 每天最多打开多少个岗位" value={config.collection?.daily_detail_page_limit ?? 900} onChange={value => updateConfig('collection.daily_detail_page_limit', value)} min={1} max={1000} />
+              <Field label="每天最多打开多少个岗位">
+                <ValidatedNumberInput label="每天最多打开多少个岗位" value={config.collection?.daily_detail_page_limit ?? 900} onChange={value => updateConfig('collection.daily_detail_page_limit', value)} min={1} max={1000} />
                 <p className="mt-1 text-xs text-muted">只算真正打开岗位详情的次数；列表里跳过的重复、筛掉的岗位不算。打开详情也算进下面的总数里。</p>
               </Field>
               <Field label="BOSS 页面连续打不开几次就停">
@@ -595,10 +595,10 @@ export default function ConfigPage() {
                 max={240}
               />
             </div>
-            <p className="text-xs text-muted">找完 BOSS 的岗位，每次投之前会随机歇一会儿再投；默认歇 5–15 分钟，只找新岗位的时候不受影响。</p>
-            <Field label="BOSS 每天最多打开多少个页面">
-              <ValidatedNumberInput label="BOSS 每天最多打开多少个页面" value={config.safety?.daily_platform_page_limit ?? 1100} onChange={value => updateConfig('safety.daily_platform_page_limit', value)} min={1} max={2000} />
-              <p className="mt-1 text-xs text-muted">BOSS 的搜索页、岗位详情、自动投递、看回复打开的页面都算在一起；默认 1100 次，够 60 次搜索加 900 个详情，还剩 140 次给别的操作。其他平台不占这个数。</p>
+            <p className="text-xs text-muted">找完岗位，每次投之前会随机歇一会儿再投；默认歇 5–15 分钟，只找新岗位的时候不受影响。</p>
+            <Field label="每天最多打开多少个页面">
+              <ValidatedNumberInput label="每天最多打开多少个页面" value={config.safety?.daily_platform_page_limit ?? 1100} onChange={value => updateConfig('safety.daily_platform_page_limit', value)} min={1} max={2000} />
+              <p className="mt-1 text-xs text-muted">采集时打开的搜索页、岗位详情页都算在该平台当天的总数里；默认 1100 次，够 60 次搜索加 900 个详情，还剩 140 次给别的操作。各平台分开算。</p>
             </Field>
             <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
               <div>

@@ -48,6 +48,22 @@ from bosshunter.db import (
     upsert_page_progress,
 )
 from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
+from bosshunter.platform_safety import (
+    PlatformSafetyStop,
+    collection_access_limits,
+    collection_guard_for,
+    quota_stop_message,
+)
+
+
+class _QuotaStop(Exception):
+    """内部信号：采集限额已用完。由 _fetch_page 抛出，collect() 接住后
+    转成 completed_with_shortage 的停采结果（不要让编排器的通用 except
+    把它当成 failed/collection_error）。"""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 
@@ -659,7 +675,18 @@ class Job51Collector:
             self._log(hooks, message, phase="procuring")
 
     def _fetch_page(self, host_target: str, kw_encoded: str, area: str, page: int) -> dict:
-        """在宿主页上下文发一次 API 请求并分析返回，返回 _analyze_api_response 结果。"""
+        """在宿主页上下文发一次 API 请求并分析返回，返回 _analyze_api_response 结果。
+
+        v36：每次 API 翻页都先占一个搜索页名额（按 51job 自己的平台名
+        计数）。探针、保底针、热区扫描都走这里，所以三阶段共享同一限额；
+        宿主页存活探针是连通性检查，不走这里、不占名额。
+        """
+        guard = getattr(self, "_access_guard", None)
+        if guard is not None:
+            try:
+                guard.reserve("search_page", daily_limit=getattr(self, "_search_limit", 60))
+            except PlatformSafetyStop as exc:
+                raise _QuotaStop(exc.reason)
         js = JS_FETCH_API_PAGE.replace("__KW__", kw_encoded).replace("__AREA__", area).replace("__PAGE__", str(page))
         raw = self.browser.evaluate(host_target, js, timeout=API_FETCH_TIMEOUT)
         # An empty answer is usually a stalled tab or a dropped CDP call, not risk control. Climb down the ladder
@@ -744,6 +771,15 @@ class Job51Collector:
         except Exception as exc:  # pragma: no cover - 防御性兜底
             raise CollectionBlockedError("browser_disconnected", f"打开 51job 宿主页失败：{exc}")
 
+        # v36：采集限额按实际平台算——以前只有 BOSS 采集建守卫，51job
+        # 的 API 翻页不受限，设置页的上限文案也就只能写 BOSS。现在
+        # 51job 也按自己的平台名计数（搜索页限额；51job 没有详情页，
+        # JD 直接从接口拿，所以只建搜索页限额），超限停采、返回
+        # completed_with_shortage，编排器不中断后续平台。
+        search_limit, _detail_limit = collection_access_limits(self.config)
+        self._access_guard = collection_guard_for(self.safety_conn, self.config, "51job")
+        self._search_limit = search_limit
+
         # ★ 全局限速器：探针/保底针/热区扫描三阶段共享同一个 60s 窗口，统一计数。
         rate_limiter = _ApiRateLimiter(total_requests=API_ADAPTIVE_MEDIUM, no_burst=False)
         self._limiter, self._hooks = rate_limiter, hooks
@@ -766,6 +802,8 @@ class Job51Collector:
                         blocked_companies=blocked_companies, allow_internship=allow_internship,
                         salary_min=salary_min, salary_max=salary_max,
                     )
+        except _QuotaStop as exc:
+            return PlatformCollectionResult(self.platform, "completed_with_shortage", exc.reason, quota_stop_message("51job", exc.reason))
         finally:
             if owns_host_target:
                 self.browser.close_tab(host_target)

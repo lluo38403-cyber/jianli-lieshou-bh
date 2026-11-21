@@ -289,6 +289,63 @@ describe('platform login states', () => {
     unmount()
   })
 
+  it('刷新失败置错后，新诊断成功就清掉旧错误（v36）', async () => {
+    // 截图里的矛盾：一次刷新失败置上“浏览器没连上”，之后检测成功、
+    // BOSS 卡片变绿了，红字还留在上面。修好后：新鲜检测一到，旧错误就走。
+    let diagnosticsMode: 'fail' | 'ok' = 'fail'
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/browser/diagnostics' && init?.method === 'POST') {
+        return diagnosticsMode === 'fail'
+          ? jsonResponse({ ok: false, chrome: false, error_kind: 'connection_failed', message: '浏览器已经装好了，但是现在连不上。' })
+          : jsonResponse(diagnosticsAllReady)
+      }
+      if (url === '/api/workbench') return jsonResponse({ platform_login: oldLogin })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { result, unmount } = renderHook(() => useDashboard('workbench'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await act(async () => { await result.current.refreshPlatformLogin() })
+    expect(result.current.platformLoginRefreshError).toContain('浏览器没连上')
+    diagnosticsMode = 'ok'
+    await act(async () => { await result.current.refreshPlatformLogin() })
+    expect(result.current.platformLoginRefreshError).toBe('')
+    expect(result.current.workbench.platform_login?.boss?.status).toBe('logged_in')
+    expect(result.current.platformLoginRefreshedAt).toBeInstanceOf(Date)
+    unmount()
+  })
+
+  it('刷新失败置错后，轮询带回更新的检测也清掉旧错误（v36）', async () => {
+    // 巡检/预检写库的新检测是经 5 秒轮询回来的，不走手动刷新——同样要清错，
+    // 否则卡片绿了、红字还在。旧库行（比报错更早）不清。
+    let workbenchPayload: Record<string, unknown> = { platform_login: oldLogin }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/browser/diagnostics' && init?.method === 'POST') {
+        return jsonResponse({ ok: false, chrome: false, error_kind: 'connection_failed', message: '浏览器已经装好了，但是现在连不上。' })
+      }
+      if (url === '/api/workbench') return jsonResponse(workbenchPayload)
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { result, unmount } = renderHook(() => useDashboard('workbench'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await act(async () => { await result.current.refreshPlatformLogin() })
+    expect(result.current.platformLoginRefreshError).toContain('浏览器没连上')
+    // 巡检写库：BOSS 有了比报错更新的检测。
+    workbenchPayload = {
+      platform_login: {
+        ...oldLogin,
+        boss: { status: 'logged_in', checked_at: new Date().toISOString(), detail: '已发现 BOSS 直聘页面，未见登录页' },
+      },
+    }
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.platformLoginRefreshError).toBe('')
+    expect(result.current.workbench.platform_login?.boss?.status).toBe('logged_in')
+    unmount()
+  })
+
   it('applyPlatformLoginStates only touches the login slice', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({
       pending_confirmation: [], pending_greetings: [], send_errors: [], needs_resume: [],
@@ -326,6 +383,28 @@ describe('dashboard does not stall on a stalled response body', () => {
     })
     expect(result.current.loading).toBe(false)
     expect(result.current.error).toBeTruthy()
+    unmount()
+  })
+
+  it('startTask 超时后抛可读错误，不一直等（v36）', async () => {
+    vi.useFakeTimers()
+    const workbench = { pending_confirmation: [], pending_greetings: [], send_errors: [], needs_resume: [] }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/workbench/task') return new Promise<Response>(() => {})
+      return jsonResponse(workbench)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { result, unmount } = renderHook(() => useDashboard('workbench'))
+    let caught: unknown
+    const promise = result.current.startTask('collect').catch(err => { caught = err })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31000)
+    })
+    await promise
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toContain('启动任务超时了')
+    // 启动接口只发了一次，没重试（POST 不重试）。
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/workbench/task')).toHaveLength(1)
     unmount()
   })
 })

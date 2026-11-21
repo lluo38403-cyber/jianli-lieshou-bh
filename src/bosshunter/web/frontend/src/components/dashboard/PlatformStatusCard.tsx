@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { PLATFORM_IDS, PLATFORM_LABELS, openPlatformLogin, portMismatchNote, type PlatformId } from '@/lib/platforms'
 import { getPlatformLoginStatusLabel } from '@/lib/status'
@@ -33,7 +33,27 @@ export function PlatformStatusCard({ platformLogin, browserName = '浏览器', o
   // 落在面板自己的浏览器里、程序检测不到，还要用户手动点“刷新”；
   // 现在不回退了，失败就直接显示原因、让用户再点一次。
   const [loginBusy, setLoginBusy] = useState<PlatformId | null>(null)
-  const [loginFeedback, setLoginFeedback] = useState<{ platform: PlatformId; message: string; ok: boolean } | null>(null)
+  const [loginFeedback, setLoginFeedback] = useState<{ platform: PlatformId; message: string; ok: boolean; at: number } | null>(null)
+
+  // v36：打开登录页的反馈是瞬态提示，不是状态——以前一旦置上就一直
+  // 留在“没连上”红字旁边，两句话互相打架。现在两条路让它走：
+  // ① 8 秒后自动消失；② 该平台有了比点开时更新的检测结果（用户已
+  // 登录 / 已掉线），立刻被最新检测取代。失败提示（ok=false）同样
+  // 8 秒后消失，用户可以再点一次。
+  useEffect(() => {
+    if (!loginFeedback) return
+    const timer = window.setTimeout(() => setLoginFeedback(null), 8000)
+    return () => window.clearTimeout(timer)
+  }, [loginFeedback])
+
+  useEffect(() => {
+    if (!loginFeedback) return
+    const info = platformLogin?.[loginFeedback.platform]
+    const checkedMs = info?.checked_at ? Date.parse(info.checked_at) : Number.NaN
+    if (!Number.isNaN(checkedMs) && checkedMs > loginFeedback.at) {
+      setLoginFeedback(null)
+    }
+  }, [platformLogin, loginFeedback])
 
   const nowMs = Date.now()
   const tiles = PLATFORM_IDS.map(platform => {
@@ -52,11 +72,11 @@ export function PlatformStatusCard({ platformLogin, browserName = '浏览器', o
 
   const handleOpenLogin = async (platform: PlatformId) => {
     if (loginBusy) {
-      setLoginFeedback({ platform, message: '正在打开工作浏览器，请稍等一下。', ok: true })
+      setLoginFeedback({ platform, message: '正在打开工作浏览器，请稍等一下。', ok: true, at: Date.now() })
       return
     }
     setLoginBusy(platform)
-    setLoginFeedback({ platform, message: `正在打开工作浏览器，准备去${PLATFORM_LABELS[platform]}登录…`, ok: true })
+    setLoginFeedback({ platform, message: `正在打开工作浏览器，准备去${PLATFORM_LABELS[platform]}登录…`, ok: true, at: Date.now() })
     try {
       const result = await openPlatformLogin(platform)
       const base = result.ok
@@ -70,6 +90,7 @@ export function PlatformStatusCard({ platformLogin, browserName = '浏览器', o
         platform,
         message: result.ok ? `${base}${portMismatchNote(result)}` : base,
         ok: result.ok,
+        at: Date.now(),
       })
     } finally {
       setLoginBusy(null)

@@ -32,6 +32,7 @@ import type { ActivityData, TopCompany } from '@/hooks/useDashboard'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
 import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
 import { parseHistoryDetail } from '@/lib/historyDetail'
+import { fetchWithRetry, isAbortError, withTimeout } from '@/lib/api'
 import { PLATFORM_LABELS, PLATFORM_IDS, openPlatformLogin, openPlatformPage, portMismatchNote, type PlatformId } from '@/lib/platforms'
 import { derivePlatformLoginStates } from '@/lib/platformLogin'
 import {
@@ -227,6 +228,13 @@ function startFailureMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : '操作失败'
   return /忙|busy/i.test(message) ? '上一个任务还在退出，等几秒再点启动。' : message
 }
+
+/** 启动前预检单次超时（v36）：后端冷启动诊断实测最慢约 30 秒，留足余量；
+ * 超时后调用方恢复按钮、显示可读错误，不一直转圈。POST 只发一次，不重试。 */
+const PREFLIGHT_TIMEOUT_MS = 90_000
+const PREFLIGHT_TIMEOUT_MESSAGE = '启动检查超时了，浏览器可能还没准备好，稍后再点一次。'
+/** 读预检响应体超时：响应头到了、body 卡住时也一样要能恢复。 */
+const PREFLIGHT_BODY_TIMEOUT_MS = 10_000
 
 const modes: Array<{ mode: WorkbenchMode; title: string; description: string }> = [
   {
@@ -819,14 +827,23 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
 
   const runPreflight = async (mode: WorkbenchMode, options?: Record<string, unknown>) => {
     setPreflightMode(mode)
-    const res = options
-      ? await fetch('/api/workbench/preflight', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, options }),
-      })
-      : await fetch(`/api/workbench/preflight?mode=${mode}`)
-    const data = await parsePreflightResponse(res)
+    let res: Response
+    try {
+      // v36：以前是裸 fetch，没有任何超时——后端一旦卡住（冷启动诊断、
+      // 响应丢了），点“重新采集”就永远转圈、按钮再也点不了。现在走
+      // fetchWithRetry 单次超时，超时抛可读错误，调用方恢复按钮并显示原因。
+      res = options
+        ? await fetchWithRetry('/api/workbench/preflight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode, options }),
+        }, { timeoutMs: PREFLIGHT_TIMEOUT_MS, retries: 0 })
+        : await fetchWithRetry(`/api/workbench/preflight?mode=${mode}`, {}, { timeoutMs: PREFLIGHT_TIMEOUT_MS, retries: 0 })
+    } catch (err) {
+      if (isAbortError(err)) throw new Error(PREFLIGHT_TIMEOUT_MESSAGE)
+      throw err
+    }
+    const data = await withTimeout(parsePreflightResponse(res), PREFLIGHT_BODY_TIMEOUT_MS, '读取预检结果超时了，稍后再点一次。')
     setPreflightChecks(data.checks)
     if (!data.ok) {
       // v28：失败不清空已有提示（保留上一次的有效信息），只把提示条
@@ -987,8 +1004,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       setNotice('正在重新检查运行环境...')
       const result = await runPreflight(preflightMode)
       setNotice(result.ok ? '检查通过，可以开始任务。' : preflightFailureNotice(result.checks))
-    } catch {
-      setNotice('重新检查失败，请确认简历猎手还在运行。')
+    } catch (err) {
+      setNotice(err instanceof Error && err.message === PREFLIGHT_TIMEOUT_MESSAGE ? err.message : '重新检查失败，请确认简历猎手还在运行。')
     } finally {
       setModePending(null)
     }
@@ -1004,8 +1021,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       setNotice('正在检查全流程运行环境...')
       const result = await runPreflight('full')
       setNotice(result.ok ? '全流程预检通过，可以开始任务。' : preflightFailureNotice(result.checks))
-    } catch {
-      setNotice('检查没通过，请确认简历猎手还在运行。')
+    } catch (err) {
+      setNotice(err instanceof Error && err.message === PREFLIGHT_TIMEOUT_MESSAGE ? err.message : '检查没通过，请确认简历猎手还在运行。')
     } finally {
       setPreflightRunning(false)
     }

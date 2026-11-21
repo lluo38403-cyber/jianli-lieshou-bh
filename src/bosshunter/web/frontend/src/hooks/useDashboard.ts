@@ -1,5 +1,5 @@
 import { useCallback, useState, useEffect, useRef } from 'react'
-import { fetchWithRetry, isServiceNotReadyError, readJsonWithTimeout } from '@/lib/api'
+import { fetchWithRetry, isAbortError, isServiceNotReadyError, readJsonWithTimeout } from '@/lib/api'
 import { derivePlatformLoginStates, mergePlatformLoginStates } from '@/lib/platformLogin'
 
 interface FunnelData {
@@ -272,6 +272,29 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
   const platformLoginOverrideRef = useRef<Partial<Record<string, PlatformLoginInfo>> | null>(null)
   const greetingRevisionRef = useRef(0)
   const firstLoadRef = useRef(true)
+  /** 最近一次“没连上”报错是几点置上的（v36）：只有比它更新的检测
+   * 才有资格清掉它——旧库行、旧的手动刷新结果都不算。 */
+  const loginRefreshErrorAtRef = useRef<number | null>(null)
+
+  /** 新鲜检测到了，清掉“没连上”的旧错误（v36）。以前错误一旦置上就
+   * 再也不清：之后检测成功、卡片变绿了，红字还留在上面，互相打架。
+   * 只有比报错更新的检测才清；浏览器没连上时推导不出东西（states
+   * 为 null 或全是旧时间戳），旧值不动、错误也不动。 */
+  const clearLoginRefreshErrorOnFreshStates = useCallback((states: Partial<Record<string, PlatformLoginInfo>> | null | undefined) => {
+    const errorAt = loginRefreshErrorAtRef.current
+    if (errorAt === null || !states) return
+    const hasNewer = Object.values(states).some(info => {
+      if (!info?.checked_at) return false
+      const checkedMs = Date.parse(info.checked_at)
+      // >= 而不是 >：失败和紧接着的成功可能落在同一毫秒，那次检测
+      // 仍然是失败之后新跑出来的，不是旧库行。
+      return !Number.isNaN(checkedMs) && checkedMs >= errorAt
+    })
+    if (hasNewer) {
+      loginRefreshErrorAtRef.current = null
+      setPlatformLoginRefreshError('')
+    }
+  }, [])
 
   /** 还在重试等本地服务：首次打开就把骨架屏撤掉，换成等服务的提示，
    * 页面其余部分照常渲染，服务起来数据一到就自动补上。 */
@@ -334,6 +357,8 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
         const platformLogin = platformLoginOverrideRef.current
           ? mergePlatformLoginStates(incoming.platform_login, platformLoginOverrideRef.current)
           : incoming.platform_login
+        // v36：巡检/预检写库的新检测经轮询回来时，比报错更新的同样清掉旧错误。
+        clearLoginRefreshErrorOnFreshStates(incoming.platform_login)
         setWorkbench({ ...incoming, platform_login: platformLogin })
       }
       if (historyData !== undefined) setHistory(historyData)
@@ -363,18 +388,19 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
         firstLoadRef.current = false
       }
     }
-  }, [scope, markWaiting])
+  }, [scope, markWaiting, clearLoginRefreshErrorOnFreshStates])
 
   /** 把一次新鲜诊断算出的登录态写进 workbench（只动 platform_login
    * 这一格），并记住它，供上面轮询合并时按 checked_at 取新。 */
   const applyPlatformLoginStates = useCallback((states: Partial<Record<string, PlatformLoginInfo>> | null) => {
     if (!states) return
+    clearLoginRefreshErrorOnFreshStates(states)
     platformLoginOverrideRef.current = mergePlatformLoginStates(platformLoginOverrideRef.current, states)
     setWorkbench(previous => ({
       ...previous,
       platform_login: mergePlatformLoginStates(previous.platform_login, states),
     }))
-  }, [])
+  }, [clearLoginRefreshErrorOnFreshStates])
 
   /** 只刷新各平台登录状态：调现成的 POST /api/browser/diagnostics
    * （只做检测，不拉起浏览器、不跑任务、不碰预检），按后端的同一份
@@ -391,6 +417,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     const timer = window.setTimeout(() => controller.abort(), 15000)
     setPlatformLoginRefreshing(true)
     setPlatformLoginRefreshError('')
+    loginRefreshErrorAtRef.current = null
     try {
       const res = await fetch('/api/browser/diagnostics', {
         method: 'POST',
@@ -403,6 +430,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
       const states = derivePlatformLoginStates(data)
       if (!states) {
         setPlatformLoginRefreshError('浏览器没连上，登录态查不出来。先点任意一个平台的“去登录”，再点刷新试试。')
+        loginRefreshErrorAtRef.current = Date.now()
         return data
       }
       applyPlatformLoginStates(states)
@@ -415,6 +443,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
         console.error('Failed to refresh platform login states:', err)
         setPlatformLoginRefreshError('没刷出来，稍后再点刷新试试。')
       }
+      loginRefreshErrorAtRef.current = Date.now()
       return null
     } finally {
       window.clearTimeout(timer)
@@ -439,17 +468,27 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
   }, [fetchAll])
 
   const startTask = async (mode: 'full' | 'collect' | 'score' | 'rescore' | 'greet' | 'monitor' | 'deliver', options?: Record<string, unknown>) => {
-    const res = await fetch('/api/workbench/task', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode, ...(options ? { options } : {}) }),
-    })
+    // v36：以前是裸 fetch，没有任何超时——启动接口一旦卡住（比如别的
+    // 请求正占着任务锁做浏览器操作），点“重新采集”就永远转圈。现在
+    // 单次 30 秒超时（接口本身是立即返回、任务在后台线程跑，30 秒绰绰有余），
+    // 超时抛可读错误，弹窗恢复可点并显示原因。
+    let res: Response
+    try {
+      res = await fetchWithRetry('/api/workbench/task', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, ...(options ? { options } : {}) }),
+      }, { timeoutMs: 30_000, retries: 0 })
+    } catch (err) {
+      if (isAbortError(err)) throw new Error('启动任务超时了，稍后再点一次。')
+      throw err
+    }
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      const details = Array.isArray(data.messages) ? data.messages.map(String).filter(Boolean).join('；') : ''
+      const data = await readJsonWithTimeout(res).catch(() => ({})) as { error?: string; messages?: unknown }
+      const details = Array.isArray(data.messages) ? (data.messages as unknown[]).map(String).filter(Boolean).join('；') : ''
       throw new Error([data.error || '没启动', details].filter(Boolean).join('：'))
     }
-    const task = await res.json() as WorkbenchTask
+    const task = await readJsonWithTimeout(res) as WorkbenchTask
     setWorkbench(prev => ({ ...prev, task, last_task: task }))
     void fetchAll()
     return task

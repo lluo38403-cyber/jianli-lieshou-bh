@@ -63,6 +63,22 @@ export async function readJsonWithTimeout<T = any>(res: Response, timeoutMs = 10
 }
 
 /**
+ * 给一个 promise 加超时：到时没回来就按失败处理，调用方才能恢复按钮、显示错误。
+ * fetch 只管到响应头时用它包住读 body 的一步；发请求本身的超时走 fetchWithRetry。
+ */
+export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+    })
+    return await Promise.race([promise, timeout])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/**
  * 这次失败是不是“本地服务没起来”：联不上、超时、5xx。
  * 后端下线、端口被占、更新重启中，都是这个样子。
  */

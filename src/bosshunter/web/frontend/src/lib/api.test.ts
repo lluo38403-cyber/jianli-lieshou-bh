@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchWithRetry, isRetryableStatus, isServiceNotReadyError, readJsonWithTimeout } from './api'
+import { fetchWithRetry, isRetryableStatus, isServiceNotReadyError, readJsonWithTimeout, withTimeout } from './api'
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -135,5 +135,19 @@ describe('readJsonWithTimeout (v29)', () => {
 
   it('正常响应按时返回解析结果', async () => {
     await expect(readJsonWithTimeout(jsonResponse({ ok: true }), 1000)).resolves.toEqual({ ok: true })
+  })
+})
+
+describe('withTimeout', () => {
+  it('没超时就按原样返回', async () => {
+    await expect(withTimeout(Promise.resolve('ok'), 1000, '超时了')).resolves.toBe('ok')
+  })
+
+  it('超时就按失败处理，调用方才能恢复按钮、显示错误', async () => {
+    vi.useFakeTimers()
+    const promise = withTimeout(new Promise(() => {}), 1000, '读取超时了')
+    const assertion = expect(promise).rejects.toThrow('读取超时了')
+    await vi.advanceTimersByTimeAsync(1000)
+    await assertion
   })
 })

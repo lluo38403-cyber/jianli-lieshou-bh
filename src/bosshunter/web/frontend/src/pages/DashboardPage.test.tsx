@@ -178,7 +178,7 @@ describe('DashboardPage workbench task panel', () => {
     expect(started).toHaveBeenCalledOnce()
 
     fireEvent.click(within(guide).getByRole('button', { name: '检查一下能不能跑' }))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/workbench/preflight?mode=full'))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/workbench/preflight?mode=full', expect.anything()))
   })
 
   it('does not keep the getting started card above the workbench after jobs have been collected', async () => {
@@ -215,7 +215,7 @@ describe('DashboardPage workbench task panel', () => {
     const checks = screen.getAllByRole('button', { name: '检查一下能不能跑' })
     expect(checks).toHaveLength(1)
     fireEvent.click(checks[0])
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/workbench/preflight?mode=full'))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/workbench/preflight?mode=full', expect.anything()))
   })
 
   it('points at the platform login buttons instead of a one-click launch when the browser runtime is down', async () => {
@@ -696,7 +696,7 @@ describe('DashboardPage persisted preflight and platform login status', () => {
     const guide = await screen.findByRole('region', { name: '开始使用' })
     const results = await within(guide).findByRole('region', { name: '启动检查结果' })
     expect(within(results).getByRole('status').textContent).toContain('尚未配置有效简历')
-    expect(fetchMock).not.toHaveBeenCalledWith('/api/workbench/preflight?mode=full')
+    expect(fetchMock.mock.calls.some(call => String(call[0]) === '/api/workbench/preflight?mode=full')).toBe(false)
   })
 
   it('shows the always-on platform login status and a relogin shortcut for the logged-out one', async () => {

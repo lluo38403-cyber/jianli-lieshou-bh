@@ -1,3 +1,5 @@
+import { fetchWithRetry, isAbortError, readJsonWithTimeout } from '@/lib/api'
+
 export const PLATFORM_LABELS: Record<string, string> = {
   boss: 'BOSS 直聘',
   zhilian: '智联招聘',
@@ -97,12 +99,14 @@ async function openUrlInWorkBrowser(url: string): Promise<OpenLoginResult> {
     // 会把页面开在面板自己的浏览器里，登录态落在另一个配置目录，
     // 程序永远检测不到——就是之前“浏览器没连上，登录查不出来”的根因。
     // 后端没接通就把失败原因交回给界面，由界面显示并让用户再点一次。
-    const res = await fetch('/api/browser/open', {
+    // v36：以前是裸 fetch，没有任何超时——浏览器拉起卡住时，点“重新采集”
+    // 会永远等下去；现在单次 60 秒超时，超时按失败回给界面、按钮恢复可点。
+    const res = await fetchWithRetry('/api/browser/open', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
-    })
-    const data = await res.json().catch(() => ({})) as {
+    }, { timeoutMs: 60_000, retries: 0 })
+    const data = await readJsonWithTimeout(res, 10_000).catch(() => ({})) as {
       ok?: boolean
       browser_started?: boolean
       reused_tab?: boolean
@@ -127,7 +131,10 @@ async function openUrlInWorkBrowser(url: string): Promise<OpenLoginResult> {
       portMismatch: Boolean(data.port_mismatch),
       chromePort: data.chrome_port,
     }
-  } catch {
+  } catch (err) {
+    if (isAbortError(err)) {
+      return { ok: false, message: '打开浏览器页面超时了，浏览器可能还没准备好，稍后再点一次。' }
+    }
     return { ok: false, message: '没连上程序的浏览器，请确认简历猎手还在运行，再点一次。' }
   }
 }

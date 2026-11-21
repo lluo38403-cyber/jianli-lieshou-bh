@@ -116,4 +116,22 @@ describe('openPlatformLogin', () => {
     expect(result.ok).toBe(false)
     expect(openSpy).not.toHaveBeenCalled()
   })
+
+  it('后端一直不回时按超时失败回给界面，而不是一直等（v36）', async () => {
+    vi.useFakeTimers()
+    try {
+      fetchMock.mockImplementation(() => new Promise<Response>(() => {}))
+      const result = openPlatformLogin('boss')
+      const assertion = expect(result).resolves.toMatchObject({
+        ok: false,
+        message: '打开浏览器页面超时了，浏览器可能还没准备好，稍后再点一次。',
+      })
+      await vi.advanceTimersByTimeAsync(61000)
+      await assertion
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(openSpy).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

@@ -32,7 +32,12 @@ from bosshunter.collection.platforms.boss_font import (
     parse_font_face_urls,
 )
 from bosshunter.db import add_risk_event
-from bosshunter.platform_safety import PlatformAccessGuard, PlatformSafetyStop
+from bosshunter.platform_safety import (
+    PlatformAccessGuard,
+    PlatformSafetyStop,
+    collection_access_limits,
+    quota_stop_message,
+)
 from bosshunter.throttle import PageThrottle
 
 
@@ -434,8 +439,7 @@ class BossCollector:
             delay_max=5.0 * delay_multiplier,
         )
         guard = PlatformAccessGuard(self.safety_conn, self.config, "collection", "boss") if self.safety_conn is not None else None
-        search_limit = _positive_int(collection_cfg.get("daily_search_page_limit", 60), 60)
-        detail_limit = _positive_int(collection_cfg.get("daily_detail_page_limit", 900), 900)
+        search_limit, detail_limit = collection_access_limits(self.config)
         failure_limit = _positive_int(collection_cfg.get("max_consecutive_page_failures", 3), 3)
         risk_pause_min = _positive_int(collection_cfg.get("risk_pause_min_minutes", 5), 5)
         risk_pause_max = max(
@@ -462,11 +466,7 @@ class BossCollector:
         def limited(reason: str) -> PlatformCollectionResult:
             return make_result(
                 self.platform, "completed_with_shortage", reason,
-                (
-                    "BOSS 采集暂时暂停：此前检测到风险提示，请稍后重试。"
-                    if reason == "persistent_risk_lock"
-                    else f"BOSS 采集已达安全上限：{reason}"
-                ),
+                quota_stop_message("BOSS", reason),
             )
 
         def risk(kind: str, evidence: str = "", detail: str = "") -> PlatformCollectionResult:

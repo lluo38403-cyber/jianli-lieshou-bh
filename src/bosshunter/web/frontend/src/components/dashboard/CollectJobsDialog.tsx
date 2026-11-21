@@ -441,7 +441,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
                 onClick={() => setActiveTab(platform)}
                 className={`min-w-0 flex-1 rounded-full px-2 py-1.5 text-xs font-black transition ${activeTab === platform ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted hover:text-primary'}`}
               >
-                {PLATFORM_SHORT_LABELS[platform]}{drafts[platform].enabled ? '' : '（没在用）'}
+                {PLATFORM_SHORT_LABELS[platform]}{drafts[platform].enabled ? '' : '（未开启）'}
               </button>
             ))}
           </div>

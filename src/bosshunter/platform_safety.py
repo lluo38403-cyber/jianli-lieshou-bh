@@ -97,3 +97,45 @@ def _positive_int(value: object, default: int) -> int:
         return max(int(value), 1)
     except (TypeError, ValueError):
         return default
+
+
+def collection_guard_for(safety_conn: sqlite3.Connection | None, config: dict, platform: str) -> PlatformAccessGuard | None:
+    """给一个平台的采集建守卫；没有真实数据库连接时返回 None（不限额）。
+
+    采集器测试里常传 object() 占位（db 函数都被 patch 掉），那种连接
+    根本跑不了计数——这时不限额、保持旧行为；编排器传的是 get_db 的
+    真连接，守卫正常生效。
+    """
+    if not isinstance(safety_conn, sqlite3.Connection):
+        return None
+    return PlatformAccessGuard(safety_conn, config, "collection", platform)
+
+
+def collection_access_limits(config: dict) -> tuple[int, int]:
+    """采集页数限额（搜索页 / 详情页）：取 collection 配置，缺省 60 / 900。
+
+    v36：以前只有 BOSS 采集读这两个值；现在四个平台共用同一对限额，
+    各自按自己的平台名计数（见 PlatformAccessGuard 的 platform 参数）。
+    """
+    collection_cfg = config.get("collection", {}) if isinstance(config.get("collection"), dict) else {}
+    return (
+        _positive_int(collection_cfg.get("daily_search_page_limit", 60), 60),
+        _positive_int(collection_cfg.get("daily_detail_page_limit", 900), 900),
+    )
+
+
+def quota_stop_message(platform_label: str, reason: str) -> str:
+    """超限停采的提示文案：把原因码翻成用户能看懂的话。
+
+    reason 码是给程序判断用的（orchestrator 只认 completed_with_shortage
+    + 原因码），message 只给用户看，别把 daily_search_page_limit 这类码
+    原样甩给用户。
+    """
+    if reason == "persistent_risk_lock":
+        return f"{platform_label}采集暂时暂停：此前检测到风险提示，请稍后重试。"
+    detail = {
+        "daily_search_page_limit": "今天翻页已到上限",
+        "daily_detail_page_limit": "今天打开岗位详情已到上限",
+        "daily_platform_page_limit": "今天打开页面总数已到上限",
+    }.get(reason, reason)
+    return f"{platform_label}采集已达安全上限：{detail}，明天再继续。"

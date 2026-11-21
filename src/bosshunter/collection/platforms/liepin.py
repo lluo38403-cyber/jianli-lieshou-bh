@@ -46,6 +46,12 @@ from bosshunter.db import (
     upsert_page_progress,
 )
 from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
+from bosshunter.platform_safety import (
+    PlatformSafetyStop,
+    collection_access_limits,
+    collection_guard_for,
+    quota_stop_message,
+)
 
 
 
@@ -336,6 +342,27 @@ class LiepinCollector:
                 self.safety_conn, "liepin", within_hours=self._resume_ttl_hours()
             )
 
+        # v36：采集限额按实际平台算——以前只有 BOSS 采集建守卫，猎聘
+        # 翻多少页、开多少详情都不受限，设置页的上限文案也就只能写 BOSS。
+        # 现在猎聘也按自己的平台名计数（搜索页 / 详情页各走各的限额，
+        # 1100 总数也是猎聘自己的），超限就停采、返回 completed_with_shortage，
+        # 编排器不中断后续平台（与 BOSS 的 limited() 行为一致）。
+        search_limit, detail_limit = collection_access_limits(self.config)
+        guard = collection_guard_for(self.safety_conn, self.config, "liepin")
+
+        def limited(reason: str) -> PlatformCollectionResult:
+            return PlatformCollectionResult(self.platform, "completed_with_shortage", reason, quota_stop_message("猎聘", reason))
+
+        def check_quota(action: str, limit: int) -> PlatformCollectionResult | None:
+            """超限返回停采结果（调用方直接 return），未超限返回 None。"""
+            if guard is None:
+                return None
+            try:
+                guard.reserve(action, daily_limit=limit)
+            except PlatformSafetyStop as exc:
+                return limited(exc.reason)
+            return None
+
         for city in request.cities:
             for keyword in request.keywords:
                 if (city, keyword) in collected_combos:
@@ -357,6 +384,9 @@ class LiepinCollector:
                                    message=f"猎聘 {keyword} 页级断点已超最大页（{saved_page}/{request.max_pages}），视为已采完，跳过")
                     continue
                 search_url = self.build_search_url(request, city, keyword, page=start_page)
+                stop = check_quota("search_page", search_limit)
+                if stop is not None:
+                    return stop
                 initial_url = "about:blank" if self.browser.navigate_action is not None else search_url
                 target_id = self.browser.new_tab(initial_url, background=True)
                 if not target_id:
@@ -372,6 +402,9 @@ class LiepinCollector:
                             hooks.on_event(phase="pacing", keyword=keyword, city=city, page=page, message=f"翻页安全间隔 {detail_req:.1f} 秒")
                             if self._wait(hooks, detail_req):
                                 return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
+                            stop = check_quota("search_page", search_limit)
+                            if stop is not None:
+                                return stop
                             if not self._navigate(hooks, target_id, self.build_search_url(request, city, keyword, page=page), "猎聘翻页"):
                                 return PlatformCollectionResult(self.platform, "failed", "browser_disconnected", "猎聘翻页导航失败")
                         hooks.on_event(phase="loading_list", keyword=keyword, city=city, page=page)
@@ -421,6 +454,9 @@ class LiepinCollector:
                             if self._wait(hooks, detail_req):
                                 return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                             hooks.on_event(phase="loading_detail", keyword=keyword, city=city, page=page)
+                            stop = check_quota("detail_page", detail_limit)
+                            if stop is not None:
+                                return stop
                             detail_initial_url = "about:blank" if self.browser.navigate_action is not None else candidate.url
                             detail_target = self.browser.new_tab(detail_initial_url, background=True)
                             if not detail_target:

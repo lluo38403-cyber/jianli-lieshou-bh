@@ -42,6 +42,23 @@ from bosshunter.db import (
     upsert_page_progress,
 )
 from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
+from bosshunter.platform_safety import (
+    PlatformSafetyStop,
+    collection_access_limits,
+    collection_guard_for,
+    quota_stop_message,
+)
+
+
+class _QuotaStop(Exception):
+    """内部信号：采集限额已用完。由 _fetch_page 抛出，collect() 接住后
+    转成 completed_with_shortage 的停采结果（不要让编排器的通用 except
+    把它当成 failed/collection_error，也不要让 API 模式降级到 DOM 模式
+    后再翻一遍——降级只在 API 不可用时发生，超限不是不可用）。"""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 
@@ -1049,7 +1066,16 @@ class ZhilianCollector:
         return host_target, True
 
     def _fetch_page(self, host_target: str, kw_encoded: str, city_id: str, start: int) -> dict:
-        """在宿主页上下文发一次 API 请求并分析返回。"""
+        """在宿主页上下文发一次 API 请求并分析返回。
+
+        v36：每次 API 翻页都先占一个搜索页名额（按智联自己的平台名计数）。
+        """
+        guard = getattr(self, "_access_guard", None)
+        if guard is not None:
+            try:
+                guard.reserve("search_page", daily_limit=getattr(self, "_search_limit", 60))
+            except PlatformSafetyStop as exc:
+                raise _QuotaStop(exc.reason)
         js = (
             JS_FETCH_API_PAGE
             .replace("__KW__", kw_encoded)
@@ -1301,9 +1327,36 @@ class ZhilianCollector:
                 self.safety_conn, "zhilian", within_hours=self._resume_ttl_hours()
             )
 
+        # v36：采集限额按实际平台算——以前只有 BOSS 采集建守卫，智联
+        # 翻多少页、开多少详情都不受限，设置页的上限文案也就只能写 BOSS。
+        # 现在智联也按自己的平台名计数（API 翻页算搜索页；DOM 模式下
+        # 每翻一页算搜索页、每次点开详情算详情页；1100 总数也是智联
+        # 自己的），超限就停采、返回 completed_with_shortage，编排器
+        # 不中断后续平台（与 BOSS 的 limited() 行为一致）。
+        search_limit, detail_limit = collection_access_limits(self.config)
+        guard = collection_guard_for(self.safety_conn, self.config, "zhilian")
+        self._access_guard, self._search_limit, self._detail_limit = guard, search_limit, detail_limit
+
+        def limited(reason: str) -> PlatformCollectionResult:
+            return PlatformCollectionResult(self.platform, "completed_with_shortage", reason, quota_stop_message("智联", reason))
+
+        def check_quota(action: str, limit: int) -> PlatformCollectionResult | None:
+            """超限返回停采结果（调用方直接 return），未超限返回 None。"""
+            if guard is None:
+                return None
+            try:
+                guard.reserve(action, daily_limit=limit)
+            except PlatformSafetyStop as exc:
+                return limited(exc.reason)
+            return None
+
         # API-fetch 优先：尝试 API 模式，不可用时降级到 DOM 模式
         if self._api_fetch_enabled():
-            api_result = self._collect_api(request, hooks, collected_combos)
+            try:
+                api_result = self._collect_api(request, hooks, collected_combos)
+            except _QuotaStop as exc:
+                # 超限不是“API 不可用”，不要降级到 DOM 模式再翻一遍。
+                return limited(exc.reason)
             if api_result is not None:
                 return api_result
             hooks.on_event(message="智联 API-fetch 不可用，降级到 DOM 模式")
@@ -1341,6 +1394,9 @@ class ZhilianCollector:
                         if hooks.stop_event is not None and hooks.stop_event.is_set():
                             return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                         hooks.on_event(phase="loading_list", keyword=keyword, city=city, page=page)
+                        stop = check_quota("search_page", search_limit)
+                        if stop is not None:
+                            return stop
                         try:
                             self.browser.wait_for_load(target_id, timeout=10, stop_event=hooks.stop_event)
                             # 收到停止立即中断：不等搜索页加载，直接走正常停止分支。
@@ -1404,6 +1460,9 @@ class ZhilianCollector:
                                     else:
                                         self.sleep(delay)
                                 hooks.on_event(phase="loading_detail", keyword=keyword, city=city, page=page)
+                                stop = check_quota("detail_page", detail_limit)
+                                if stop is not None:
+                                    return stop
                                 clicked = self._parse_payload(
                                     self.browser.evaluate(target_id, _build_click_card_script(int(card_index)))
                                 )
@@ -1480,6 +1539,9 @@ class ZhilianCollector:
                                 else:
                                     self.sleep(delay)
                             hooks.on_event(phase="loading_detail", keyword=keyword, city=city, page=page)
+                            stop = check_quota("detail_page", detail_limit)
+                            if stop is not None:
+                                return stop
                             detail_initial_url = "about:blank" if self.browser.navigate_action is not None else candidate.url
                             detail_target = self.browser.new_tab(detail_initial_url, background=True)
                             if not detail_target:

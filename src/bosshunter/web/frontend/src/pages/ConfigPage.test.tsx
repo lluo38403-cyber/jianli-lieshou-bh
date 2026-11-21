@@ -332,8 +332,9 @@ it('explains the job-type toggle state in plain words and keeps the three button
   expect(fulltime.className).toContain('bg-secondary')
   expect(parttime.className).not.toContain('bg-secondary')
   expect(intern.className).not.toContain('bg-secondary')
-  // BOSS 再细筛的下拉框已改名，不再跟全局的三颗按钮重名。
-  expect(screen.getByText('BOSS 搜索只找这种类型')).toBeTruthy()
+  // BOSS 再细筛的下拉框已改名，不再跟全局的三颗按钮重名（v36：文案
+  // 里的 BOSS 字样也去掉了，它本来就只在 BOSS 页签里出现）。
+  expect(screen.getByText('搜索只找这种类型')).toBeTruthy()
 })
 
 it('shows salary in k with 4k/7k placeholders and explains the ceiling ratio in plain words', async () => {

@@ -144,3 +144,25 @@ it('shows risk protection in full mode and syncs it to /api/config immediately',
   await waitFor(() => expect(savedConfig?.throttle?.random_interval).toBe(false))
   await waitFor(() => expect(screen.getByText(/已保存，和“我的设置”里是一样的。/)).toBeTruthy())
 })
+
+it('启动失败时显示错误，按钮恢复可点而不是一直转圈（v36）', async () => {
+  const start = vi.fn(async (_options: Record<string, unknown>) => ({ ok: false, error: '启动任务超时了，稍后再点一次。' }))
+  const close = vi.fn()
+  render(<CollectJobsDialog open activeTask={null} onClose={close} onStart={start} />)
+  await screen.findByDisplayValue('AI')
+  fireEvent.click(screen.getByRole('button', { name: '重新采集' }))
+  await waitFor(() => expect(screen.getByText('启动任务超时了，稍后再点一次。')).toBeTruthy())
+  expect((screen.getByRole('button', { name: '重新采集' }) as HTMLButtonElement).disabled).toBe(false)
+  expect(close).not.toHaveBeenCalled()
+})
+
+it('启动接口抛错时同样显示错误、按钮恢复可点（v36）', async () => {
+  const start = vi.fn(async (_options: Record<string, unknown>) => { throw new Error('启动检查超时了，浏览器可能还没准备好，稍后再点一次。') })
+  const close = vi.fn()
+  render(<CollectJobsDialog open activeTask={null} onClose={close} onStart={start} />)
+  await screen.findByDisplayValue('AI')
+  fireEvent.click(screen.getByRole('button', { name: '重新采集' }))
+  await waitFor(() => expect(screen.getByText('启动检查超时了，浏览器可能还没准备好，稍后再点一次。')).toBeTruthy())
+  expect((screen.getByRole('button', { name: '重新采集' }) as HTMLButtonElement).disabled).toBe(false)
+  expect(close).not.toHaveBeenCalled()
+})

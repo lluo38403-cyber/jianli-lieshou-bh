@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from bosshunter.config import DEFAULTS, load_config
+from bosshunter.collection.base import CollectorHooks
 from bosshunter.db import (
     add_platform_access,
     clear_platform_safety_lock,
@@ -296,6 +297,174 @@ platforms:
 
         choose.assert_called_once_with(5, 15)
         self.assertEqual(task.context["boss_delivery_cooldown_minutes"], 11.25)
+
+
+class NonBossPlatformQuotaTests(unittest.TestCase):
+    """v36：采集限额按实际平台算——智联 / 51job / 猎聘翻到上限也要停采，
+    而不是只有 BOSS 受限。每个平台按自己的平台名计数（搜索页 / 详情页
+    各走各的限额），超限返回 completed_with_shortage，编排器不中断
+    后续平台；提示文案是人话，不把 daily_search_page_limit 这类原因码
+    原样甩给用户。"""
+
+    def _hooks(self, collected):
+        return CollectorHooks(
+            stop_event=None,
+            on_list_candidate=lambda _candidate: True,
+            on_candidate=lambda candidate: collected.append(candidate) or True,
+            on_parse_failed=lambda _reason: None,
+            on_event=lambda **_kwargs: None,
+        )
+
+    def test_liepin_search_page_limit_stops_on_second_page(self):
+        from bosshunter.collection.models import PlatformCollectionRequest
+        from bosshunter.collection.platforms.liepin import LiepinBrowser, LiepinCollector
+
+        list_payload = json.dumps({"status": "ready", "jobs": [{
+            "source_job_id": "job-1",
+            "salary": "15-25K",
+            "title": "AI 产品经理",
+            "company": "示例公司",
+            "city": "上海",
+            "url": "https://www.liepin.com/job/1001.shtml",
+        }]}, ensure_ascii=False)
+        detail_payload = json.dumps({
+            "status": "ready", "title": "AI 产品经理", "company": "示例公司",
+            "city": "上海", "jd": "负责需求分析。",
+        }, ensure_ascii=False)
+        browser = LiepinBrowser(
+            new_tab=lambda url, **_kwargs: url,
+            close_tab=lambda _target: True,
+            evaluate=lambda _target, script: list_payload if "job-detail-job-info" in script else detail_payload,
+            scroll=lambda *_args, **_kwargs: True,
+            wait_for_load=lambda *_args, **_kwargs: True,
+        )
+        collected = []
+        with tempfile.TemporaryDirectory() as tmp:
+            db = get_db(Path(tmp) / "bosshunter.db")
+            try:
+                result = LiepinCollector(
+                    config={"collection": {"daily_search_page_limit": 1, "daily_detail_page_limit": 900}},
+                    safety_conn=db,
+                    browser=browser,
+                    sleep=lambda _seconds: None,
+                    uniform=lambda _low, _high: 0.0,
+                ).collect(
+                    PlatformCollectionRequest("liepin", ["AI 产品"], ["上海"], {"上海": "020"}, max_pages=2),
+                    self._hooks(collected),
+                )
+                self.assertEqual(result.status, "completed_with_shortage")
+                self.assertEqual(result.reason_code, "daily_search_page_limit")
+                self.assertIn("猎聘", result.message)
+                self.assertNotIn("daily_search_page_limit", result.message)
+                # 第 1 页的搜索 + 详情各记 1 次；第 2 页翻页被拦住，没记上。
+                self.assertEqual(count_platform_access_today(db, platform="liepin", stage="collection", action="search_page"), 1)
+                self.assertEqual(count_platform_access_today(db, platform="liepin", stage="collection", action="detail_page"), 1)
+            finally:
+                db.close()
+
+    def test_51job_search_page_limit_stops_on_second_fetch(self):
+        from bosshunter.collection.models import PlatformCollectionRequest
+        from bosshunter.collection.platforms.job51 import Job51Browser, Job51Collector, _ApiRateLimiter
+
+        body = json.dumps({
+            "status": "1",
+            "resultbody": {"job": {"items": [{
+                "jobName": "AI 工程师", "companyName": "测试科技",
+                "salary": "15-25K", "city": "上海",
+                "jobDesc": "负责 AI 系统开发",
+            }], "totalCount": 100}},
+        }, ensure_ascii=False)
+        raw = json.dumps({"http_status": 200, "content_type": "application/json", "body": body})
+        browser = Job51Browser(
+            get_page_targets=lambda: [],
+            new_tab=lambda url, **_kwargs: "host-tab",
+            close_tab=lambda _target: True,
+            evaluate=lambda _target, _js, **_kwargs: raw,
+        )
+        collected = []
+        with tempfile.TemporaryDirectory() as tmp:
+            db = get_db(Path(tmp) / "bosshunter.db")
+            try:
+                collector = Job51Collector(
+                    config={"collection": {"daily_search_page_limit": 1}},
+                    safety_conn=db,
+                    browser=browser,
+                    sleep=lambda _seconds: None,
+                )
+                with (
+                    patch("bosshunter.collection.platforms.job51._wait_or_stop", return_value=False),
+                    patch.object(_ApiRateLimiter, "wait_before_request", return_value=True),
+                ):
+                    result = collector.collect(
+                        PlatformCollectionRequest("51job", ["AI"], ["上海"], {"上海": "020000"}, max_pages=5),
+                        self._hooks(collected),
+                    )
+                self.assertEqual(result.status, "completed_with_shortage")
+                self.assertEqual(result.reason_code, "daily_search_page_limit")
+                self.assertIn("51job", result.message)
+                self.assertNotIn("daily_search_page_limit", result.message)
+                # 探针占了唯一 1 次搜索页名额；接下来的正式翻页被拦住。
+                self.assertEqual(count_platform_access_today(db, platform="51job", stage="collection", action="search_page"), 1)
+            finally:
+                db.close()
+
+    def test_zhilian_api_search_page_limit_stops_on_second_page(self):
+        from bosshunter.collection.models import PlatformCollectionRequest
+        from bosshunter.collection.platforms.zhilian import ZhilianBrowser, ZhilianCollector, _ApiRateLimiter
+
+        def api_item(number):
+            return {
+                "number": number, "jobName": "AI 工程师", "companyName": "测试科技",
+                "salary": "15-25K", "cityName": "北京", "jobDesc": "负责 AI 系统开发",
+                "workingExp": "3-5年", "education": "本科", "url": f"/jobdetail/{number}.htm",
+            }
+
+        api_response = json.dumps({
+            "http_status": 200,
+            "content_type": "application/json",
+            "body": json.dumps({
+                "code": 200, "apiCode": 200, "message": "",
+                "data": {
+                    "results": [api_item(f"CC{i}") for i in range(20)],
+                    "numTotal": 40, "numFound": 40, "taskId": "test-task",
+                },
+            }, ensure_ascii=False),
+        })
+        browser = ZhilianBrowser(
+            get_page_targets=lambda: [],
+            new_tab=lambda *a, **kw: "host-1",
+            close_tab=lambda _target: True,
+            evaluate=lambda *a, **kw: api_response,
+            scroll=lambda *a, **kw: True,
+            wait_for_load=lambda *a, **kw: True,
+        )
+        collected = []
+        with tempfile.TemporaryDirectory() as tmp:
+            db = get_db(Path(tmp) / "bosshunter.db")
+            try:
+                collector = ZhilianCollector(
+                    config={
+                        "collection": {"daily_search_page_limit": 1, "daily_detail_page_limit": 900},
+                        "platforms": {"zhilian": {"search": {"api_fetch": True}}},
+                        "profile": {"deal_breakers": [], "blocked_companies": []},
+                    },
+                    safety_conn=db,
+                    browser=browser,
+                    sleep=lambda _seconds: None,
+                )
+                with patch.object(_ApiRateLimiter, "wait_before_request", return_value=True):
+                    result = collector.collect(
+                        PlatformCollectionRequest("zhilian", ["AI"], ["北京"], {"北京": "530"}, max_pages=3),
+                        self._hooks(collected),
+                    )
+                self.assertEqual(result.status, "completed_with_shortage")
+                self.assertEqual(result.reason_code, "daily_search_page_limit")
+                self.assertIn("智联", result.message)
+                self.assertNotIn("daily_search_page_limit", result.message)
+                # 第 1 页占了唯一 1 次搜索页名额；第 2 页被拦住，没记上。
+                self.assertEqual(count_platform_access_today(db, platform="zhilian", stage="collection", action="search_page"), 1)
+            finally:
+                db.close()
 
 
 if __name__ == "__main__":
