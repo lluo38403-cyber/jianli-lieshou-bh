@@ -43,6 +43,17 @@ export function getStatusLabel(status: string | null | undefined): string {
   return STATUS_LABELS[status] ?? status
 }
 
+/** 已投出岗位的状态：与后端 db.py 的 APPLIED_STATUSES 是同一份
+ * 口径（sent / replied / resume_sent / needs_resume / follow_up_sent）。
+ * 前端只用它来画筛选选项、判断一行是不是已投出；真正决定哪页能看到
+ * 哪类岗位的是后端 /api/jobs/search 的分池，前端筛选项改不改都不影响。 */
+export const APPLIED_JOB_STATUSES = ['sent', 'replied', 'resume_sent', 'needs_resume', 'follow_up_sent'] as const
+
+export function isAppliedJobStatus(status: string | null | undefined): boolean {
+  if (!status) return false
+  return (APPLIED_JOB_STATUSES as readonly string[]).includes(status)
+}
+
 export function getActionLabel(action: string | null | undefined): string {
   if (!action) return '未知'
   return ACTION_LABELS[action] ?? action

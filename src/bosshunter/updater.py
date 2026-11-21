@@ -870,6 +870,24 @@ def build_update_script() -> str:
         'if "%FAIL_CODE%"=="" set "FAIL_CODE=copy"\r\n'
         'echo [%date% %time%] 正在用备份恢复旧版本... >> "%LOG%"\r\n'
         'if "%BACKUP%"=="" goto :fail_copy\r\n'
+        'rem v33：回滚前先停掉还活着的程序。换版后拉起的新版还占着文件，\r\n'
+        'rem 直接 robocopy 恢复会撞锁（v31→v32 全流程测试 run 44880570903：\r\n'
+        'rem 新版在 8686 上跑着，bat 在 18686 上等它、误判后回滚，恢复退出码 11、\r\n'
+        'rem verdict 是 rollback_failed）。:precopy 前有同样的关口（绝不带着\r\n'
+        'rem 活进程硬拷），回滚这里补上；停不掉就如实写 rollback_failed，不硬拷。\r\n'
+        'echo [%date% %time%] 正在结束还活着的主程序，免得它占住要恢复的文件... >> "%LOG%"\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$installDir = '%INSTALL_DIR%'; $nodePath = $installDir + '\\_internal\\patchright\\driver\\node.exe'; $doomed = @(); foreach ($p in Get-CimInstance Win32_Process) { if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($installDir + '\\', [System.StringComparison]::OrdinalIgnoreCase)) { $doomed += $p } }; foreach ($p in $doomed) { try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop } catch { Write-Output 'kill failed' } }; Start-Sleep -Seconds 2; if (Test-Path $nodePath) { try { $fs = [System.IO.File]::Open($nodePath, 'Open', 'ReadWrite', 'None'); $fs.Close(); exit 0 } catch { Write-Output 'node.exe still locked'; exit 1 } } else { exit 0 }\" >> \"%LOG%\" 2>&1\r\n"
+        'set "KILL_RC=%errorlevel%"\r\n'
+        'if %KILL_RC% neq 0 echo [%date% %time%] 主程序还占着文件，恢复旧版本会失败，先停在这里。 >> "%LOG%"\r\n'
+        "if %KILL_RC% neq 0 goto :rollback_failed\r\n"
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
+        "if %errorlevel% neq 0 goto :rollback_restore\r\n"
+        'echo [%date% %time%] 还有同名程序在跑（会占住要恢复的文件），正在结束... >> "%LOG%"\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"& taskkill /F /IM '%EXE_NAME%' /T; exit $LASTEXITCODE\" >> \"%LOG%\" 2>&1\r\n"
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Sleep -Seconds 3" <nul\r\n'
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
+        "if %errorlevel% equ 0 goto :rollback_failed\r\n"
+        ":rollback_restore\r\n"
         "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"& robocopy '%INSTALL_DIR%\\%BACKUP%' '%INSTALL_DIR%' /E /IS /R:3 /W:2 /XD data /XF config.yaml; exit $LASTEXITCODE\" >> \"%LOG%\" 2>&1\r\n"
         'set "RC=%errorlevel%"\r\n'
         'echo [%date% %time%] robocopy 恢复主文件退出码 %RC% >> "%LOG%"\r\n'
@@ -1878,6 +1896,32 @@ def ensure_desktop_shortcut(
     return True
 
 
+def _install_dir_kill_script(install_dir: str | Path, exclude_pid: int | None = None) -> str:
+    """Build the PowerShell script that ends processes under install_dir.
+
+    v33 从 _kill_install_dir_processes 抽出：路径判定是红线，单测要能
+    直接钉住它。只认 ExecutablePath 前缀：$prefix = 安装目录 + '\\'，
+    再 StartsWith($prefix, OrdinalIgnoreCase)——目录边界在内，安装
+    目录的兄弟目录（C:\\app2\\）不会被 C:\\app 的规则误杀；exclude_pid
+    跳过指定 PID（调用方传自己，不自杀）。绝不按映像名杀 node.exe /
+    chrome.exe（v28 教训：会误杀用户浏览器和其他 node）。
+    """
+    install = Path(install_dir)
+    return (
+        "$installDir = " + _ps_quote(str(install)) + "; "
+        "$prefix = $installDir + '\\'; "
+        "$doomed = @(); "
+        "foreach ($p in Get-CimInstance Win32_Process) { "
+        "if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)"
+        + (f" -and $p.ProcessId -ne {int(exclude_pid)}" if exclude_pid is not None else "")
+        + ") { $doomed += $p } }; "
+        "$killed = 0; $failed = 0; "
+        "foreach ($p in $doomed) { try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } }; "
+        "Start-Sleep -Seconds 1; "
+        "Write-Output \"killed=$killed failed=$failed\""
+    )
+
+
 def _kill_install_dir_processes(install_dir: str | Path, exclude_pid: int | None = None) -> bool:
     """换文件前（Python 侧第一道防御）：结束可执行路径在安装目录里的进程。
 
@@ -1897,19 +1941,7 @@ def _kill_install_dir_processes(install_dir: str | Path, exclude_pid: int | None
         return False
     install = Path(install_dir)
     log_path = install / "update.log"
-    script = (
-        "$installDir = " + _ps_quote(str(install)) + "; "
-        "$prefix = $installDir + '\\'; "
-        "$doomed = @(); "
-        "foreach ($p in Get-CimInstance Win32_Process) { "
-        "if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)"
-        + (f" -and $p.ProcessId -ne {int(exclude_pid)}" if exclude_pid is not None else "")
-        + ") { $doomed += $p } }; "
-        "$killed = 0; $failed = 0; "
-        "foreach ($p in $doomed) { try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } }; "
-        "Start-Sleep -Seconds 1; "
-        "Write-Output \"killed=$killed failed=$failed\""
-    )
+    script = _install_dir_kill_script(install, exclude_pid)
     stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     try:
         result = subprocess.run(

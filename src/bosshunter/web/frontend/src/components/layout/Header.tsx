@@ -4,7 +4,7 @@ import { ThemeToggle } from './ThemeToggle'
 const pageTitles: Record<string, { title: string; subtitle: string }> = {
   '/': { title: '首页', subtitle: '今天的找工作进度，一眼看清' },
   '/jobs': { title: '找工作', subtitle: '所有找到的岗位都在这儿' },
-  '/monitor': { title: '投递跟进', subtitle: 'HR 回了消息，第一时间处理' },
+  '/monitor': { title: '投递跟进', subtitle: '投递进度和 HR 回复都在这儿' },
   '/config': { title: '我的设置', subtitle: '想找什么工作，在这儿一次说清' },
 }
 

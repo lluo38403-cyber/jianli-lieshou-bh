@@ -19,11 +19,16 @@ from bosshunter.outsourcing import (
 
 DB_PATH = Path("./data/bosshunter.db")
 MAX_JOB_IDS = 1000
-DELETION_PROTECTED_STATUSES = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
+# 已投出 = 岗位状态已越过投递动作（含投递后的跟进状态）。找工作页与
+# 投递跟进页的分界就认这一份：/api/jobs/search 默认排除它，
+# applied_only=1 时只返回它；前端 status.ts 的 APPLIED_JOB_STATUSES
+# 是同一份口径的镜像，只用来画筛选选项，真正拦截以后端为准。
+APPLIED_STATUSES = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
+DELETION_PROTECTED_STATUSES = set(APPLIED_STATUSES)
 GREETING_ALLOWED_STATUSES = {"ready", "approved", "error"}
 REJECT_ALLOWED_STATUSES = {"ready", "approved", "error"}
 MANUAL_STATUS_TARGETS = {"ready", "filtered", "skipped", "rejected"}
-MANUAL_STATUS_PROTECTED = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
+MANUAL_STATUS_PROTECTED = set(APPLIED_STATUSES)
 DELETION_PROTECTED_HISTORY_ACTIONS = {
     "sent", "manual_sent", "replied", "resume_sent", "needs_resume", "follow_up_sent", "reply_pending", "auto_replied",
 }
@@ -419,7 +424,7 @@ def mark_external_jobs_sent(conn: sqlite3.Connection, job_ids: Any, *, confirmed
     if not_found:
         raise JobManualSentConflictError("存在不存在的岗位，未执行标记", not_found=not_found)
 
-    completed_statuses = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
+    completed_statuses = APPLIED_STATUSES
     already_sent: list[str] = []
     blocked: list[dict[str, Any]] = []
     pending_rows: list[dict[str, Any]] = []
@@ -1123,6 +1128,53 @@ def get_jobs_with_send_errors(conn: sqlite3.Connection) -> list[dict]:
           AND (greeting IS NOT NULL AND TRIM(greeting) != '' OR source_platform != 'boss')
         ORDER BY updated_at DESC, score DESC
     """).fetchall()
+    return [dict(row) for row in rows]
+
+
+# 投递生命周期的岗位状态：已确认（等着投）→ 已投出 → 投后跟进（HR 回了 / 要简历 / 已问过一次），
+# 以及没投出去。只取这些状态的岗位，别的阶段（还没打分、筛掉了、不要了）不进投递跟进。
+DELIVERY_JOB_STATUSES = {
+    "approved", "sent", "error",
+    "replied", "resume_sent", "needs_resume", "follow_up_sent",
+}
+
+# 每个岗位最近一次投递动作：确认 / 投出 / 手动标记已投 / 失败。
+# 用它给列表补“最后走到哪一步、什么时候走到的”，状态本身仍以 jobs.status 为准，
+# 不另起一套状态。
+DELIVERY_STEP_ACTIONS = ("approved", "sent", "manual_sent", "error")
+
+
+def get_recent_delivery_jobs(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
+    """Get recently delivery-touched jobs with their latest delivery step.
+
+    One row per job: the job itself plus the latest history row among the
+    delivery actions (``DELIVERY_STEP_ACTIONS``), so the frontend can show
+    the flow ``已确认 → 已投出 / 没投出去`` with the time it happened and
+    the persisted failure reason (``last_error``) instead of a bare status
+    word. Jobs without any delivery history row still come back (step fields
+    are None); the caller falls back to the job status.
+    """
+    try:
+        limit = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        limit = 20
+    placeholders = ",".join("?" for _ in DELIVERY_JOB_STATUSES)
+    step_placeholders = ",".join("?" for _ in DELIVERY_STEP_ACTIONS)
+    rows = conn.execute(
+        f"""
+        SELECT j.*, step.action AS step_action, step.detail AS step_detail,
+               step.created_at AS step_created_at
+        FROM jobs j
+        LEFT JOIN history step ON step.id = (
+            SELECT MAX(h.id) FROM history h
+            WHERE h.job_id = j.id AND h.action IN ({step_placeholders})
+        )
+        WHERE j.status IN ({placeholders}) AND j.deleted_at IS NULL
+        ORDER BY j.updated_at DESC, j.id DESC
+        LIMIT ?
+        """,
+        [*DELIVERY_STEP_ACTIONS, *sorted(DELIVERY_JOB_STATUSES), limit],
+    ).fetchall()
     return [dict(row) for row in rows]
 
 

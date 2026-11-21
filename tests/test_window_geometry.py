@@ -301,7 +301,7 @@ class LaunchWithGeometryTests(unittest.TestCase):
         with patch("bosshunter.app_window.get_monitor_work_areas", return_value=None):
             self._launch(popen)
         argv = popen.call_args.args[0]
-        self.assertEqual(argv, ["C:/Chrome/chrome.exe", "--app=http://127.0.0.1:8686"])
+        self.assertEqual(argv, ["C:/Chrome/chrome.exe", "--lang=zh-CN", "--app=http://127.0.0.1:8686"])
 
 
 class SaveCurrentWindowGeometryTests(unittest.TestCase):

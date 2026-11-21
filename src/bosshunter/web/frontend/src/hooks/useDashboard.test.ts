@@ -175,6 +175,8 @@ describe('dashboard progress polling', () => {
     vi.useFakeTimers()
     let finishOld!: (value: Response) => void
     const fetchMock = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { finishOld = resolve }))
+      // 监控页也会读 workbench（投递任务列表）：先是 workbench，再是历史。
+      .mockResolvedValueOnce(jsonResponse({ task: null }))
       .mockResolvedValueOnce(jsonResponse([]))
     vi.stubGlobal('fetch', fetchMock)
     const { result, rerender } = renderHook(({ scope }: { scope: 'workbench' | 'monitor' }) => useDashboard(scope), { initialProps: { scope: 'workbench' as 'workbench' | 'monitor' } })

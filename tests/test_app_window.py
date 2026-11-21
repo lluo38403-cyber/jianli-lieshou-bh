@@ -61,6 +61,7 @@ class LaunchAppWindowTests(unittest.TestCase):
         # v27：--app 窗口与工作浏览器同一个实例——专用 profile + 调试端口。
         self.assertEqual(argv, [
             "C:/Chrome/chrome.exe",
+            "--lang=zh-CN",
             f"--user-data-dir={profile}",
             "--remote-debugging-port=9222",
             "--app=http://127.0.0.1:8686",
@@ -391,7 +392,7 @@ class LaunchSplashWindowTests(unittest.TestCase):
         )
         self.assertIs(result, proc)
         argv = popen.call_args.args[0]
-        self.assertEqual(argv, ["C:/Chrome/chrome.exe", "--app=http://127.0.0.1:46595/"])
+        self.assertEqual(argv, ["C:/Chrome/chrome.exe", "--lang=zh-CN", "--app=http://127.0.0.1:46595/"])
         # 窗口开的是启动页，watch 盯的还是面板地址。
         self.assertEqual(app_window.get_app_window_url(), "http://127.0.0.1:8686")
         self.assertEqual(app_window.get_app_window_splash_url(), "http://127.0.0.1:46595/")

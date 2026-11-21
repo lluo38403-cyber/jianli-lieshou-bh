@@ -194,6 +194,16 @@ _MIN_VISIBLE_HEIGHT = 120
 _APP_WINDOW_TITLE = "简历猎手"
 _SPLASH_WINDOW_TITLE = "简历猎手正在启动"
 
+# v33：我们拉起的 Chrome 实例的界面语言（只影响 --app 窗口与工作
+# 浏览器共用的这一个专用配置目录实例，见模块 docstring 的 v27）。
+# X 按钮的确认框是 beforeunload 触发的浏览器通用框，文案由浏览器写、
+# 跟着 Chrome 界面语言走，网页放不进自定义文案（Chrome 51 起）；
+# --lang=zh-CN 让它从英文 "Leave app?" 变成中文，不再出现英文。
+# Chromium 取界面语言的顺序是命令行 --lang > 配置偏好 > 系统语言，
+# 所以先拉起实例的那次启动必须带上它——launch_debuggable_browser
+# 那边也加了同一参数（哪边先拉起实例，哪边定语言）。
+_CHROME_UI_LANG_ARGS = ["--lang=zh-CN"]
+
 # 几何文件路径（run_server 起服务时经 set_window_geometry_path 配成
 # DATA_DIR/window-geometry.json；没配好时不保存、启动也不加参数）。
 _WINDOW_GEOMETRY_PATH = None
@@ -966,6 +976,11 @@ def launch_app_window(
                 f"--user-data-dir={profile_dir}",
                 f"--remote-debugging-port={debug_port}",
             ] + args[1:]
+        # v33：--lang=zh-CN（见 _CHROME_UI_LANG_ARGS）：--app 窗口的 X
+        # 确认框（beforeunload 通用框）跟着 Chrome 界面语言走，强制中文
+        # 就不再弹英文 Leave app?。放哪里都行（Chrome 参数不认顺序），
+        # 插在可执行文件后面、--app 之前，读起来顺。
+        args = [args[0]] + _CHROME_UI_LANG_ARGS + args[1:]
         # v32：窗口尺寸与位置记忆——按上次保存的几何（校验过）或默认
         # 几何给新窗口加 --window-size/--window-position；没有可用工作
         # 区信息（非 Windows）或没拿到几何时不加参数，走 Chrome 默认，

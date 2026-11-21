@@ -61,6 +61,7 @@ from bosshunter.config import (
 	verify_admin_password,
 )
 from bosshunter.db import (
+	APPLIED_STATUSES,
 	GREETING_ALLOWED_STATUSES,
 	auto_approve_pending,
 	REJECT_ALLOWED_STATUSES,
@@ -83,6 +84,7 @@ from bosshunter.db import (
 	get_jobs_ready_to_send,
 	get_jobs_with_send_errors,
 	get_open_verification_hold,
+	get_recent_delivery_jobs,
 	get_recent_history,
 	get_recent_monitor_replies,
 	get_score_trace,
@@ -1618,39 +1620,93 @@ def api_update_apply():
 	return _json_response({"applying": True})
 
 
+def _stop_active_tasks(max_rounds: int = 3) -> None:
+	"""Stop the running task, if any (v33, exit cleanup step 1).
+	
+	Runner 同一时间最多一个进行中任务（start 会拒绝第二个），但
+	stop() 后状态是 "stopping"，仍算 active——按任务 id 去重，最多
+	3 轮，绝不重复停同一个、绝不死循环。失败只吞掉、不挡退出。
+	"""
+	stopped: set[str] = set()
+	for _ in range(max(1, max_rounds)):
+		try:
+			active = task_runner.status().get("active")
+		except Exception:
+			return
+		if not active:
+			return
+		task_id = str(active.get("id") or "")
+		if not task_id or task_id in stopped:
+			return
+		stopped.add(task_id)
+		try:
+			task_runner.stop(task_id, "用户退出应用程序")
+		except Exception:
+			pass
+		try:
+			task_runner.wait(timeout=5)
+		except Exception:
+			pass
+
+
+def _perform_exit_cleanup() -> None:
+	"""v33：两条退出路径共用的退出清理（/api/exit 与关窗监视线程）。
+	
+	顺序：停进行中的任务 → 停 runtime / 我们拉的 Chrome / 清实例文件
+	（shutdown_browser_resources）→ 安装目录扫尾 → 再清一次实例文件。
+	调用方随后 os._exit(0)。每一步失败都只记日志、不抛异常、不挡退出。
+	扫尾只杀自有进程：frozen 时才有安装目录（updater.get_install_dir），
+	Windows 走 _kill_install_dir_processes（ExecutablePath 前缀规则，
+	传自己 PID 排除，不自杀）、POSIX 走 _kill_processes_with_exe_under
+	（同款 exe 路径规则）；开发环境没有安装目录，扫尾跳过（runtime
+	与 launched Chrome 清理已覆盖）。绝不按映像名杀 chrome.exe /
+	node.exe（v28 教训：会误杀用户浏览器和其他 node）。
+	"""
+	_stop_active_tasks()
+	try:
+		from bosshunter.browser.runtime import shutdown_browser_resources
+		
+		shutdown_browser_resources()
+	except Exception:
+		pass
+	try:
+		from bosshunter import updater
+		
+		install_dir = updater.get_install_dir()
+		if install_dir is not None:
+			from bosshunter.browser.runtime import _is_windows
+			
+			if _is_windows():
+				updater._kill_install_dir_processes(install_dir, exclude_pid=os.getpid())
+			else:
+				from bosshunter.browser.runtime import _kill_processes_with_exe_under
+				
+				_kill_processes_with_exe_under(install_dir)
+	except Exception:
+		pass
+	try:
+		from bosshunter.browser.runtime import clear_instance_file
+		
+		clear_instance_file(DATA_DIR)
+	except Exception:
+		pass
+
+
 @app.route("/api/exit", method="POST")
 def api_exit():
-	"""Exit the whole application (v25, 面板“退出程序”入口点“是”后调)。
-
-	先回包，再在后台线程里按顺序：停进行中的任务（task_runner.stop，
-	现成机制）、停浏览器运行组件与我们拉起的自动化 Chrome（统一清理
-	入口 shutdown_browser_resources），最后退出进程。更新流程不走这里，
-	走自己的 apply_update + request_restart，两条退出路径不冲突；
-	关 --app 窗口点 X 也不走这里，走 beforeunload 确认 + 关窗监视线程。
+	"""Exit the whole application (v25, 面板“退出程序”入口点“是”后调；v33 清理收敛到 _perform_exit_cleanup，与关窗监视线程同一套）。
+	
+	先回包，再在后台线程里走统一清理（停任务 → 停 runtime/我们拉的
+	Chrome → 安装目录扫尾 → 清实例文件），最后退出进程。更新流程不走
+	这里，走自己的 apply_update + request_restart，两条退出路径不冲突；
+	关 --app 窗口点 X 也不走这里，走 beforeunload 确认 + 关窗监视线程
+	（确认后调同一套 _perform_exit_cleanup）。
 	"""
 	def _exit() -> None:
 		time.sleep(1.5)  # 让 HTTP 回包先发出去
-		try:
-			active = task_runner.status().get("active")
-			if active:
-				try:
-					task_runner.stop(str(active.get("id") or ""), "用户退出应用程序")
-				except Exception:
-					pass
-				try:
-					task_runner.wait(timeout=5)
-				except Exception:
-					pass
-		except Exception:
-			pass
-		try:
-			from bosshunter.browser.runtime import shutdown_browser_resources
-
-			shutdown_browser_resources()
-		except Exception:
-			pass
+		_perform_exit_cleanup()
 		os._exit(0)
-
+	
 	threading.Thread(target=_exit, daemon=True).start()
 	return _json_response({"exiting": True})
 
@@ -1888,17 +1944,25 @@ def api_job_search():
 		if any(value not in {"博士", "硕士", "本科", "大专", "不限", "其他", "unknown"} for value in education_filters):
 			raise ValueError("education 参数无效")
 		sort_by = request.params.get("sort_by", "created_at").strip()
-		if sort_by not in {"salary", "education", "score", "status", "hr_active", "created_at"}:
+		if sort_by not in {"salary", "education", "score", "status", "hr_active", "created_at", "updated_at"}:
 			raise ValueError("sort_by 参数无效")
 		sort_order = request.params.get("sort_order", "desc").strip().lower()
 		if sort_order not in {"asc", "desc"}:
 			raise ValueError("sort_order 参数无效")
+		# 已投出分池：默认（找工作页）排除已投出岗位；applied_only=1
+		# （投递跟进页）只返回已投出岗位。显式 status 筛选与分池条件
+		# 是 AND 关系，所以找工作页即使传 status=sent 也拿不到已投出岗位。
+		applied_only = request.params.get("applied_only", "").strip().lower() in ("1", "true", "yes")
 	except ValueError as exc:
 		return _json_response({"error": str(exc)}, 400)
 
 	query = "SELECT * FROM jobs"
 	conditions = ["deleted_at IS NULL"]
-	params = []
+	params: list = []
+	applied_values = sorted(APPLIED_STATUSES)
+	applied_placeholders = ",".join("?" for _ in applied_values)
+	conditions.append(f"status {'IN' if applied_only else 'NOT IN'} ({applied_placeholders})")
+	params.extend(applied_values)
 	keyword = (request.query.getunicode("q") or "").strip()
 	status_filters = _query_values("status")
 	if keyword:
@@ -1952,6 +2016,9 @@ def api_job_search():
 		"status": "COALESCE(status, '')",
 		"hr_active": "COALESCE(hr_active, '')",
 		"created_at": "COALESCE(created_at, '')",
+		# 投递跟进页按“最近一次状态变化”排：updated_at 每次改状态都会刷新，
+		# 已投出岗位就是按投递/回复/跟进的最近动作排；老数据没有就退回 created_at。
+		"updated_at": "COALESCE(updated_at, created_at)",
 	}
 	query += f" ORDER BY {sort_expressions[sort_by]} {sort_order.upper()}, created_at DESC, score DESC"
 
@@ -1965,13 +2032,22 @@ def api_job_search():
 				" WHERE deleted_at IS NULL AND TRIM(COALESCE(city, '')) <> ''"
 			).fetchall()
 		})
+		# all_total 与 items 走同一分池：找工作页的“一共”不含已投出岗位，
+		# 投递跟进页的“一共”只含已投出岗位；屏蔽公司逻辑原样保留。
+		applied_clause = f"status {'IN' if applied_only else 'NOT IN'} ({applied_placeholders})"
 		if blocked_companies:
 			all_total = sum(
 				matching_blocked_company(row["company"], blocked_companies) is None
-				for row in db.execute("SELECT company FROM jobs WHERE deleted_at IS NULL")
+				for row in db.execute(
+					f"SELECT company FROM jobs WHERE deleted_at IS NULL AND {applied_clause}",
+					applied_values,
+				)
 			)
 		else:
-			all_total = db.execute("SELECT COUNT(*) FROM jobs WHERE deleted_at IS NULL").fetchone()[0]
+			all_total = db.execute(
+				f"SELECT COUNT(*) FROM jobs WHERE deleted_at IS NULL AND {applied_clause}",
+				applied_values,
+			).fetchone()[0]
 		rows = [dict(row) for row in db.execute(query, params).fetchall()]
 		if blocked_companies:
 			rows = [row for row in rows if matching_blocked_company(row.get("company", ""), blocked_companies) is None]
@@ -2208,6 +2284,14 @@ def api_workbench():
 			"open_hold": get_open_verification_hold(db),
 			"task": status["active"],
 			"last_task": status["last_task"],
+			# 投递跟进的“进行中任务”列表：最近的任务快照（新的在前，最多 10 个），
+			# 只读 task_runner 已有的内存快照，不另建状态；进行中和刚跑完的都在里面。
+			"tasks": list(reversed(status["tasks"]))[:10],
+			# 每个岗位投得怎么样：库里最近走过投递流程的岗位 + 最近一次投递动作，
+			# 任务重启/进程重启后还在，补快照只在内存里的缺口。
+			"delivery_jobs": [
+				_serialize_job(job) for job in get_recent_delivery_jobs(db)
+			],
 			# 四平台登录态（DB 持久化，无记录时 unknown）与最近一次
 			# preflight 结果（服务端内存），供首页持久展示。
 			"platform_login": get_all_platform_login_states(db),
@@ -3018,7 +3102,7 @@ def api_workbench_deliver():
 					"invalid_ids": pending_review_ids,
 				}, 409)
 			allowed_statuses = {"ready", "approved", "error"} if direct_send else {"ready", "approved"}
-			completed_statuses = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
+			completed_statuses = APPLIED_STATUSES
 			already_sent_ids = {
 				str(row["id"])
 				for row in platform_rows
@@ -5185,21 +5269,19 @@ def _run_server_impl(host: str = "127.0.0.1", port: int = 8686, open_browser: bo
 	if open_browser:
 		def _watch_app_close():
 			# v25：关 --app 窗口先经 beforeunload 确认（浏览器通用确认
-			# 框，见前端 closeConfirm）；用户点“离开”后句柄退出，这里
-			# 走统一清理再退出进程。更新换版时监视线程自己会跳过
-			# （updater._UPDATE_APPLYING 置位）。Bottle 没有干净的停服
-			# 务句柄，清理完直接退出进程就是停服务。
+			# 框，见前端 closeConfirm；v33 起我们拉起的 Chrome 实例带
+			# --lang=zh-CN，通用框是中文，不再是英文 Leave app?）；用户点
+			# “离开”后句柄退出，这里走与 /api/exit 同一套退出清理
+			# _perform_exit_cleanup（停任务 → 停 runtime/我们拉的 Chrome →
+			# 安装目录扫尾 → 清实例文件）再退出进程。更新换版时监视线程
+			# 自己会跳过（updater._UPDATE_APPLYING 置位）。Bottle 没有干净的
+			# 停服务句柄，清理完直接退出进程就是停服务。
 			try:
 				from bosshunter.app_window import watch_app_window_close
-				from bosshunter.browser.runtime import clear_instance_file, shutdown_browser_resources
 
 				def _on_close() -> None:
 					try:
-						shutdown_browser_resources()
-					except Exception:
-						pass
-					try:
-						clear_instance_file(DATA_DIR)
+						_perform_exit_cleanup()
 					except Exception:
 						pass
 					os._exit(0)

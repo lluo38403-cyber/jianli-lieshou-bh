@@ -109,4 +109,18 @@ describe('Sidebar exit app', () => {
     await vi.waitFor(() => expect(closeSpy).toHaveBeenCalled())
     expect(window.__jlSkipCloseConfirm).toBe(true)
   })
+
+  it('v33：确认文案只讲点“是”会发生什么，不提删安装文件夹', async () => {
+    stubFetch('1.1.11')
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByTestId('sidebar-exit-app'))
+    expect(
+      screen.getByText('点“是”会立即终止所有进行中的任务，关掉浏览器运行组件和程序自己拉起的浏览器窗口，然后退出程序。'),
+    ).toBeTruthy()
+    expect(screen.queryByText(/安装文件夹就能直接删掉/)).toBeNull()
+  })
 })

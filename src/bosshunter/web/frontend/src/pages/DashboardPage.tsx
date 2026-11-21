@@ -1,6 +1,7 @@
+import { Link } from 'react-router-dom'
 import { OutsourcingBadge } from '@/components/jobs/OutsourcingBadge'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
+import { useDashboard, type CollectionProgress, type DeliveryJob, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
 import { useUpdateContext } from '@/hooks/useUpdate'
 import { UpdateBanner } from '@/components/dashboard/UpdateBanner'
 import { UpdateModal } from '@/components/dashboard/UpdateModal'
@@ -15,9 +16,11 @@ import { AnimatedNumber } from '@/components/AnimatedNumber'
 import { JobsTable } from '@/components/dashboard/JobsTable'
 import { RecycleBinPanel } from '@/components/dashboard/RecycleBinPanel'
 import { TaskScoringProgress, formatScoringCurrentJob } from '@/components/dashboard/ScoringProgress'
+import { DeliveryTaskList } from '@/components/dashboard/DeliveryTaskList'
 import { ScoreJobsDialog } from '@/components/dashboard/ScoreJobsDialog'
 import { CollectJobsDialog } from '@/components/dashboard/CollectJobsDialog'
 import { VerificationModal } from '@/components/dashboard/VerificationModal'
+import { AppliedJobsPanel } from '@/components/dashboard/AppliedJobsPanel'
 import { CollectionSessionsPanel } from '@/components/dashboard/CollectionSessionsPanel'
 import { PlatformStatusCard } from '@/components/dashboard/PlatformStatusCard'
 import { BrowserDiagnosticsPanel, type BrowserDiagnostics } from '@/components/dashboard/BrowserDiagnosticsPanel'
@@ -39,7 +42,7 @@ import {
   useDebouncedValue,
   type JobFilters,
 } from '@/lib/jobFilters'
-import { getActionLabel, getStatusLabel } from '@/lib/status'
+import { getActionLabel, getStatusLabel, isAppliedJobStatus, STATUS_LABELS } from '@/lib/status'
 import { describeGreetTaskOutcome, greetPauseReasonLabel } from '@/lib/greetTask'
 import { cn } from '@/lib/utils'
 import {
@@ -904,12 +907,14 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     return { ok: second.ok, checks: second.checks, openFailed }
   }
 
-  const handleModeClick = async (mode: WorkbenchMode) => {
+  /** 返回是否真的启动了：投递跟进页的“再查一次 HR 回复”复用同一入口，
+   * 靠返回值在跟进页给反馈（首页的 notice 在跟进页看不到）。 */
+  const handleModeClick = async (mode: WorkbenchMode): Promise<boolean> => {
     try {
       if (activeTask?.mode === mode) {
         if (activeTask.status === 'stopping') {
           setNotice(`正在停下${activeTask.label}，请稍等一下。`)
-          return
+          return false
         }
         if (window.confirm(`是否停止当前${activeTask.label}任务？已入库岗位会保留。`)) {
           setModePending(mode)
@@ -917,11 +922,11 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           await stopTask(activeTask.id)
           setNotice(`${activeTask.label}已请求停止。`)
         }
-        return
+        return false
       }
       if (modePending) {
         setNotice('正在处理上一个操作，请稍等一下。')
-        return
+        return false
       }
       if (activeTask) {
         setNotice(
@@ -929,12 +934,12 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             ? `当前${activeTask.label}正在停止，请等待后台完全结束后再启动其他模式。`
             : `当前正在运行${activeTask.label}，请先点击正在运行的卡片停止后再启动其他模式。`
         )
-        return
+        return false
       }
       if (mode === 'full') {
         setCollectDialogMode('full')
         setCollectDialogOpen(true)
-        return
+        return false
       }
       const target = modes.find(item => item.mode === mode)
       setModePending(mode)
@@ -942,17 +947,34 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       const preflight = await runPreflightWithAutoOpen(mode)
       if (!preflight.ok) {
         setNotice(`${preflightFailureNotice(preflight.checks)}${openFailSuffix(preflight.openFailed)}`)
-        return
+        return false
       }
       setNotice(`${target?.title || '任务'}启动中，请稍候...`)
       await startTask(mode)
       const suffix = openFailSuffix(preflight.openFailed)
       setNotice(`${target?.title || '任务'}已启动，日志会在下方更新。${suffix}`)
+      return true
     } catch (err) {
       setNotice(startFailureMessage(err))
+      return false
     } finally {
       setModePending(null)
     }
+  }
+
+  /** 投递跟进页“再查一次 HR 回复”的反馈：正在查就别重复点，别的事
+   * 在跑就直说，没启动成功就指去首页看原因。 */
+  const checkRepliesFromMonitor = async (): Promise<string> => {
+    if (activeTask?.mode === 'monitor' && (activeTask.status === 'running' || activeTask.status === 'stopping')) {
+      return '正在查 HR 回复，等它查完就行，查到会出现在上面「等你处理」里。'
+    }
+    if (activeTask) {
+      return `现在正忙着 ${activeTask.label}，先停下再查。`
+    }
+    const started = await handleModeClick('monitor')
+    return started
+      ? '已经开始查 HR 回复了，查到会出现在上面「等你处理」里。'
+      : '没查成，原因写在首页的提示里，去首页看看。'
   }
 
   const retryPreflight = async () => {
@@ -1088,10 +1110,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       await refresh()
       setNotice(
         data.already_queued_count === count
-          ? `选中的 ${count} 个已经在投递队列里了。`
+          ? `选中的 ${count} 个已经在投递队列里了，投出去后会出现在投递跟进里。`
           : data.queued_count
-            ? `已经把 ${data.queued_count} 个加进投递队列了。`
-            : `已经确认投 ${count} 个岗位，后端会按队列推进。`
+            ? `已经把 ${data.queued_count} 个加进投递队列了，投出去后会出现在投递跟进里。`
+            : `已经确认投 ${count} 个岗位，后端会按队列推进，投出去后会出现在投递跟进里。`
       )
       setSelected(prev => prev.filter(id => !new Set(ids).has(id)))
     } catch (err) {
@@ -1253,6 +1275,9 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         refresh={refresh}
         refreshing={refreshing}
         lastRefreshedAt={lastRefreshedAt}
+        onCheckReplies={checkRepliesFromMonitor}
+        tasks={workbench.tasks ?? []}
+        deliveryJobs={workbench.delivery_jobs ?? []}
       />
     )
   }
@@ -2444,10 +2469,10 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
       refreshJobs()
       setNotice(
         result.already_queued_count === count
-          ? `所选 ${count} 个岗位已在当前发送队列中。`
+          ? `所选 ${count} 个岗位已在当前发送队列中，投出去后会出现在投递跟进里。`
           : result.queued_count
-            ? `已将 ${result.queued_count} 个岗位追加到当前发送队列。`
-            : `已确认投递 ${count} 个了，系统会按顺序慢慢投。`
+            ? `已将 ${result.queued_count} 个岗位追加到当前发送队列，投出去后会出现在投递跟进里。`
+            : `已确认投递 ${count} 个了，系统会按顺序慢慢投，投出去后会出现在投递跟进里。`
       )
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : '投递没成功')
@@ -2616,7 +2641,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-black">找工作</h2>
-          <p className="mt-1 text-sm text-muted">所有找到的岗位都在这儿，能看到打分、状态，点进去看详情。</p>
+          <p className="mt-1 text-sm text-muted">还没投的岗位都在这儿，能看到打分、状态，点进去看详情。投出去的岗位不在这儿，搬去<a href="/monitor" className="font-bold text-primary hover:underline">投递跟进</a>了。</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="secondary" size="sm" onClick={() => { setShowRecycleBin(true); void loadRecycleBin() }}><Trash2 className="mr-1 h-4 w-4" />回收站（{recycleJobs.length}）</Button>
@@ -2633,6 +2658,9 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         showStatus
         showSource
         cityOptions={cityOptions}
+        statusOptions={Object.entries(STATUS_LABELS)
+          .filter(([value]) => !isAppliedJobStatus(value))
+          .map(([value, label]) => ({ value, label }))}
       />
       <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
         <Button variant="secondary" size="sm" disabled={!items.length} onClick={toggleCurrentPage}>
@@ -2664,11 +2692,14 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="text-sm font-black">投递队列</div>
-              <p className="mt-1 text-xs text-muted">展示四个平台的投递任务；投递进度与结果在投递记录里查看。</p>
+              <p className="mt-1 text-xs text-muted">展示四个平台的投递任务；投递进度与结果在左侧“投递跟进”里查看。</p>
             </div>
-            <span className="rounded-full bg-secondary px-3 py-1 text-xs font-black text-primary">
-              {deliveryTask.status === 'running' ? '处理中' : deliveryTask.status === 'completed' ? '已完成' : deliveryTask.status === 'failed' ? '失败' : deliveryTask.status}
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <Link to="/monitor" className="rounded-full bg-primary px-3 py-1 text-xs font-black text-primary-foreground">去投递跟进看看</Link>
+              <span className="rounded-full bg-secondary px-3 py-1 text-xs font-black text-primary">
+                {deliveryTask.status === 'running' ? '处理中' : deliveryTask.status === 'completed' ? '已完成' : deliveryTask.status === 'failed' ? '失败' : deliveryTask.status}
+              </span>
+            </div>
           </div>
           <div className="mt-3 rounded-xl border border-card-border bg-card px-3 py-2 text-sm">
             <div className="font-bold">{deliveryTask.logs?.[deliveryTask.logs.length - 1] || '队列已创建，等待执行'}</div>
@@ -2851,11 +2882,19 @@ function MonitorExecutionView({
   refresh,
   refreshing,
   lastRefreshedAt,
+  onCheckReplies,
+  tasks,
+  deliveryJobs,
 }: {
   history: HistoryItem[]
   refresh: () => Promise<void>
   refreshing: boolean
   lastRefreshedAt: Date | null
+  /** “再查一次 HR 回复”：复用首页同一启动流程，返回一句反馈给面板显示。 */
+  onCheckReplies?: () => Promise<string>
+  /** 投递任务列表：最近的投递任务快照 + 最近走过投递流程的岗位。 */
+  tasks: WorkbenchTask[]
+  deliveryJobs: DeliveryJob[]
 }) {
   const pendingReplies = uniqueLatestByJob(history.filter(item =>
     item.action === 'reply_pending' && !isReplyPendingResolved(item, history)
@@ -3001,7 +3040,8 @@ function MonitorExecutionView({
       <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-2xl font-black">投递跟进</h2>
-          <p className="mt-1 text-sm text-muted">投出去的岗位，HR 回了消息都在这儿处理。</p>
+          <p className="mt-1 text-sm text-muted">投出去的岗位，HR 回了消息都在这儿处理。全部已投出的岗位在下面「已投出的岗位」里，能按公司、职位、平台、时间找。</p>
+          <a href="#applied-jobs" className="mt-1 inline-block text-sm font-bold text-primary hover:underline">看全部已投出的岗位 ↓</a>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <span className="text-xs text-muted">
@@ -3014,6 +3054,7 @@ function MonitorExecutionView({
           <span className="rounded-full bg-secondary px-3 py-2 text-xs font-black text-primary">等你处理 {pendingItems.length}</span>
         </div>
       </div>
+      <DeliveryTaskList tasks={tasks} deliveryJobs={deliveryJobs} />
       <div className="mb-4 flex flex-wrap gap-2">
         {[
           { key: 'pending' as const, label: '等你处理', count: pendingItems.length },
@@ -3166,6 +3207,9 @@ function MonitorExecutionView({
             {activeMonitorFilter === 'replied' ? '最近 7 天还没有回复过谁。' : '现在没有要处理的事，HR 回了消息会来这儿。'}
           </div>
         )}
+      </div>
+      <div className="mt-4">
+        <AppliedJobsPanel onCheckReplies={onCheckReplies} />
       </div>
     </div>
   )

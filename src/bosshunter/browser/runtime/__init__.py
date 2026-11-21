@@ -432,6 +432,14 @@ def _chrome_debug_version(port: int) -> dict[str, Any] | None:
     return None
 
 
+# v33：我们拉起的工作浏览器实例的界面语言（与 app_window 那边的
+# _CHROME_UI_LANG_ARGS 同一个值、同一原因：--app 窗口与工作浏览器
+# 共用一个 Chrome 实例，先拉起实例的那次启动决定语言；--lang=zh-CN
+# 让 X 的 beforeunload 通用确认框变成中文，不再弹英文 Leave app?）。
+# 只影响我们自己的专用配置目录实例，不动用户日常用的 Chrome。
+_CHROME_UI_LANG_ARGS = ["--lang=zh-CN"]
+
+
 def _launch_kwargs() -> dict[str, Any]:
     """Detached-process kwargs shared by the proxy and the browser launch.
 
@@ -506,6 +514,7 @@ def launch_debuggable_browser(config: dict[str, Any] | None = None, target_url: 
         proc = subprocess.Popen(
             [
                 executable,
+                *_CHROME_UI_LANG_ARGS,
                 f"--remote-debugging-port={port}",
                 f"--user-data-dir={profile_dir}",
                 "--no-first-run",

@@ -196,6 +196,45 @@ class WebApiRouteTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             self.assertFalse(json.loads(body)["cleared"])
 
+    def test_workbench_returns_delivery_tasks_and_recent_delivery_jobs(self):
+        # v33 任务一：投递跟进页的“进行中任务”列表读这两个字段。
+        # tasks 是 task_runner 已有的快照（这里没跑任务，所以是空列表）；
+        # delivery_jobs 是库里最近走过投递流程的岗位 + 最近一次投递动作。
+        from bosshunter.db import update_job_last_error
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, {**_job("wb-sent"), "company": "已投公司"})
+                update_job_status(db, "wb-sent", "approved")
+                add_history(db, "wb-sent", "approved", "Web Dashboard 确认投递")
+                update_job_status(db, "wb-sent", "sent")
+                add_history(db, "wb-sent", "sent", "招呼语")
+                insert_job(db, {**_job("wb-error"), "company": "失败公司"})
+                update_job_status(db, "wb-error", "approved")
+                update_job_status(db, "wb-error", "error")
+                update_job_last_error(db, "wb-error", "对方暂时不接受新消息", "blocked")
+                add_history(db, "wb-error", "error", "对方暂时不接受新消息")
+                insert_job(db, {**_job("wb-ready"), "company": "没投公司"})
+                update_job_status(db, "wb-ready", "ready")
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/workbench")
+            self.assertTrue(status.startswith("200"), body)
+            payload = json.loads(body)
+            self.assertIn("tasks", payload)
+            self.assertIsInstance(payload["tasks"], list)
+            self.assertIn("delivery_jobs", payload)
+            by_id = {job["id"]: job for job in payload["delivery_jobs"]}
+            self.assertEqual(set(by_id), {"wb-sent", "wb-error"})
+            self.assertEqual(by_id["wb-sent"]["status"], "sent")
+            self.assertEqual(by_id["wb-sent"]["step_action"], "sent")
+            self.assertEqual(by_id["wb-error"]["status"], "error")
+            self.assertEqual(by_id["wb-error"]["last_error"], "对方暂时不接受新消息")
+
     def test_outsourcing_and_greeting_metadata_coexist_across_review_apis(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
@@ -974,6 +1013,148 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["all_total"], 4)
         self.assertEqual(payload["limit"], 15)
         self.assertEqual(payload["offset"], 0)
+
+    def test_job_search_excludes_applied_jobs_by_default(self):
+        # 已投出判定：sent / replied / resume_sent / needs_resume /
+        # follow_up_sent（db.APPLIED_STATUSES）。默认搜索（找工作页）
+        # 一个已投出的都不返回，连显式 status=sent 也拿不到；all_total
+        # 同样不含已投出岗位。
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for job_id, status_value in (
+                    ("still-here", "ready"),
+                    ("sent-one", "sent"),
+                    ("replied-one", "replied"),
+                    ("resume-one", "resume_sent"),
+                    ("needs-resume-one", "needs_resume"),
+                    ("followed-up-one", "follow_up_sent"),
+                ):
+                    insert_job(db, _job(job_id))
+                    update_job_score(db, job_id, 80, "匹配")
+                    update_job_status(db, job_id, status_value)
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/jobs/search?limit=15&offset=0")
+            payload = json.loads(body)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual([job["id"] for job in payload["items"]], ["still-here"])
+            self.assertEqual(payload["total"], 1)
+            self.assertEqual(payload["all_total"], 1)
+
+            status, _, body = self._request("/api/jobs/search?status=sent&limit=15&offset=0")
+            payload = json.loads(body)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(payload["items"], [])
+            self.assertEqual(payload["total"], 0)
+
+    def test_job_search_applied_only_returns_only_applied_jobs(self):
+        # 投递跟进页：applied_only=1 只返回已投出岗位；显式 status 在
+        # 已投出池内再筛；传未投出状态则返回空。
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for job_id, status_value in (
+                    ("not-sent", "ready"),
+                    ("sent-one", "sent"),
+                    ("replied-one", "replied"),
+                    ("resume-one", "resume_sent"),
+                ):
+                    insert_job(db, _job(job_id))
+                    update_job_score(db, job_id, 80, "匹配")
+                    update_job_status(db, job_id, status_value)
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/jobs/search?applied_only=1&limit=15&offset=0")
+            payload = json.loads(body)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertCountEqual(
+                [job["id"] for job in payload["items"]],
+                ["sent-one", "replied-one", "resume-one"],
+            )
+            self.assertEqual(payload["total"], 3)
+            self.assertEqual(payload["all_total"], 3)
+
+            status, _, body = self._request("/api/jobs/search?applied_only=1&status=sent&limit=15&offset=0")
+            payload = json.loads(body)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual([job["id"] for job in payload["items"]], ["sent-one"])
+
+            status, _, body = self._request("/api/jobs/search?applied_only=1&status=ready&limit=15&offset=0")
+            payload = json.loads(body)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(payload["items"], [])
+
+    def test_job_search_moves_job_when_status_flips_to_sent(self):
+        # 过渡态：确认投递时状态是 approved，还留在找工作页；真正投出
+        # （状态变 sent）那一刻才从找工作页消失、同时进入跟进页的池子。
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("moving-job"))
+                update_job_score(db, "moving-job", 80, "匹配")
+                update_job_status(db, "moving-job", "ready")
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            def search(applied_only: bool) -> list[str]:
+                query = "/api/jobs/search?limit=15&offset=0"
+                if applied_only:
+                    query += "&applied_only=1"
+                status, _, body = self._request(query)
+                self.assertTrue(status.startswith("200"), body)
+                return [job["id"] for job in json.loads(body)["items"]]
+
+            self.assertEqual(search(False), ["moving-job"])
+            self.assertEqual(search(True), [])
+
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                update_job_status(db, "moving-job", "approved")
+            finally:
+                db.close()
+            self.assertEqual(search(False), ["moving-job"])
+            self.assertEqual(search(True), [])
+
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                update_job_status(db, "moving-job", "sent")
+            finally:
+                db.close()
+            self.assertEqual(search(False), [])
+            self.assertEqual(search(True), ["moving-job"])
+
+    def test_job_search_accepts_updated_at_sort(self):
+        # 投递跟进页按最近一次状态变化排：updated_at 越新越靠前。
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for job_id in ("older-sent", "newer-sent"):
+                    insert_job(db, _job(job_id))
+                    update_job_score(db, job_id, 80, "匹配")
+                    update_job_status(db, job_id, "sent")
+                db.execute("UPDATE jobs SET updated_at = '2026-11-01 10:00:00' WHERE id = 'older-sent'")
+                db.execute("UPDATE jobs SET updated_at = '2026-11-21 10:00:00' WHERE id = 'newer-sent'")
+                db.commit()
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request(
+                "/api/jobs/search?applied_only=1&sort_by=updated_at&sort_order=desc&limit=15&offset=0"
+            )
+            payload = json.loads(body)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual([job["id"] for job in payload["items"]], ["newer-sent", "older-sent"])
 
     def test_job_search_hides_blocked_companies_before_pagination_without_deleting_records(self):
         with tempfile.TemporaryDirectory() as tmp:

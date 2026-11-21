@@ -11,8 +11,15 @@ interface JobSearchResponse {
   offset: number
 }
 
-export type JobSortKey = 'salary' | 'education' | 'score' | 'status' | 'hr_active' | 'created_at'
+export type JobSortKey = 'salary' | 'education' | 'score' | 'status' | 'hr_active' | 'created_at' | 'updated_at'
 export type JobSortOrder = 'asc' | 'desc'
+
+export interface JobSearchOptions {
+  /** 只查已投出岗位（后端 applied_only=1）：投递跟进页用；不传就是找工作页，查不到已投出岗位。 */
+  appliedOnly?: boolean
+  /** 轮询间隔毫秒，默认 5000；跟进页用 2000，让刚投出的岗位更快出现。 */
+  pollIntervalMs?: number
+}
 
 export function useJobSearch(
   filters: JobFilters,
@@ -20,7 +27,9 @@ export function useJobSearch(
   pageSize: number,
   sortBy: JobSortKey = 'created_at',
   sortOrder: JobSortOrder = 'desc',
+  options: JobSearchOptions = {},
 ) {
+  const { appliedOnly = false, pollIntervalMs = 5000 } = options
   const debouncedQuery = useDebouncedValue(filters.query, 250)
   const [items, setItems] = useState<Job[]>([])
   const [total, setTotal] = useState(0)
@@ -57,6 +66,7 @@ export function useJobSearch(
     filters.recruitmentType.forEach(value => params.append('recruitment_type', value))
     params.set('sort_by', sortBy)
     params.set('sort_order', sortOrder)
+    if (appliedOnly) params.set('applied_only', '1')
 
     let disposed = false
     let activeController: AbortController | null = null
@@ -88,7 +98,7 @@ export function useJobSearch(
 
     void load()
     // Refresh in place: background updates must keep the table, selection and page visible.
-    const timer = window.setInterval(() => void load(true), 5000)
+    const timer = window.setInterval(() => void load(true), pollIntervalMs)
     const refreshOnFocus = () => { void load(true) }
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible') void load(true)
@@ -102,7 +112,7 @@ export function useJobSearch(
       window.removeEventListener('focus', refreshOnFocus)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
-  }, [debouncedQuery, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.city, filters.education, filters.recruitmentType, page, pageSize, sortBy, sortOrder, revision])
+  }, [debouncedQuery, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.city, filters.education, filters.recruitmentType, page, pageSize, sortBy, sortOrder, revision, appliedOnly, pollIntervalMs])
 
   return { items, total, allTotal, cityOptions, loading, error, lastRefreshedAt, refresh }
 }

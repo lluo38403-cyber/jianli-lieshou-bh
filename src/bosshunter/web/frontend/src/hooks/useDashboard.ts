@@ -79,6 +79,8 @@ export interface WorkbenchTask {
   status: string
   logs: string[]
   error?: string
+  created_at?: string
+  updated_at?: string
   deadline_at?: string
   stop_reason?: string
   stop_requested: boolean
@@ -132,6 +134,24 @@ export interface VerificationHold {
   created_at: string
 }
 
+/** 最近走过投递流程的岗位（GET /api/workbench 的 delivery_jobs 字段）。
+ * 状态仍以 jobs.status 为准；step_* 是最近一次投递动作（确认 / 投出 /
+ * 手动标记已投 / 失败），只用来补“走到哪一步、什么时候”，不另起状态。 */
+export interface DeliveryJob {
+  id: string
+  company: string
+  title: string
+  source_platform?: 'boss' | 'zhilian' | '51job' | 'liepin' | string
+  status: string
+  last_error?: string | null
+  last_error_code?: string | null
+  updated_at?: string
+  url?: string
+  step_action?: 'approved' | 'sent' | 'manual_sent' | 'error' | string | null
+  step_detail?: string | null
+  step_created_at?: string | null
+}
+
 export interface VerificationState {
   open_hold: VerificationHold | null
   suspended_platforms: string[]
@@ -173,6 +193,10 @@ interface WorkbenchData {
   open_hold?: VerificationHold | null
   task: WorkbenchTask | null
   last_task: WorkbenchTask | null
+  /** 后端 GET /api/workbench 新增：最近的任务快照（新的在前），投递跟进页的任务列表读它。 */
+  tasks?: WorkbenchTask[]
+  /** 后端 GET /api/workbench 新增：最近走过投递流程的岗位 + 最近一次投递动作。 */
+  delivery_jobs?: DeliveryJob[]
   /** 后端 GET /api/workbench 新增：四平台登录状态（后端未提供时为空）。 */
   platform_login?: Partial<Record<string, PlatformLoginInfo>> | null
   /** 后端 GET /api/workbench 新增：最近一次 preflight 结果（后端未提供时为空）。 */
@@ -221,6 +245,8 @@ const emptyWorkbench: WorkbenchData = {
   open_hold: null,
   task: null,
   last_task: null,
+  tasks: [],
+  delivery_jobs: [],
 }
 
 type DashboardDataScope = 'workbench' | 'jobs' | 'monitor' | 'all'
@@ -275,7 +301,9 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     const greetingRevision = greetingRevisionRef.current
     setRefreshing(true)
     try {
-      const needsWorkbench = scope === 'all' || scope === 'workbench'
+      // 投递跟进页也要看任务和投递结果，所以 monitor 也读 workbench；
+      // 轮询间隔仍是 monitor 的 2 秒（下面 pollIntervalMs 不变）。
+      const needsWorkbench = scope === 'all' || scope === 'workbench' || scope === 'monitor'
       const needsHistory = scope === 'all' || scope === 'monitor'
       // 读请求走统一重试：本地服务没起来（联不上/5xx）时指数退避再试，
       // 每次尝试单独 8 秒超时；整个 fetchAll 仍有 15 秒的外层上限兜底。

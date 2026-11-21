@@ -500,6 +500,7 @@ class ApiExitTests(unittest.TestCase):
                 patch("bosshunter.web.server.time.sleep"),
                 patch("bosshunter.web.server.os._exit") as exit_mock,
                 patch("bosshunter.browser.runtime.shutdown_browser_resources") as shutdown,
+                patch("bosshunter.browser.runtime.clear_instance_file"),
             ):
                 target()
             runner.stop.assert_called_once_with("task-1", "用户退出应用程序")
@@ -525,6 +526,7 @@ class ApiExitTests(unittest.TestCase):
                 patch("bosshunter.web.server.time.sleep"),
                 patch("bosshunter.web.server.os._exit") as exit_mock,
                 patch("bosshunter.browser.runtime.shutdown_browser_resources") as shutdown,
+                patch("bosshunter.browser.runtime.clear_instance_file"),
             ):
                 target()
             runner.stop.assert_not_called()

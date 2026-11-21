@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import DashboardPage from './DashboardPage'
 import { UpdateProvider } from '@/hooks/useUpdate'
 import type { WorkbenchTask } from '@/hooks/useDashboard'
@@ -898,5 +899,74 @@ describe('DashboardPage manual update check (v29)', () => {
     fireEvent.click(button)
     expect(await screen.findByText('已经是最新版，不用换。', {}, { timeout: 5000 })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '再试一次' })).toBeNull()
+  })
+})
+
+describe('DashboardPage delivery follow-up (v33 task 1)', () => {
+  beforeEach(() => {
+    workbenchPayload = baseWorkbench()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockClear()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  function stubMonitorFetch() {
+    const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/workbench' && (!init?.method || init.method === 'GET')) return jsonResponse(workbenchPayload)
+      if (url.startsWith('/api/history')) return jsonResponse([])
+      if (url.startsWith('/api/jobs/search')) return jsonResponse({ items: [], total: 0, all_total: 0 })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fn)
+    return fn
+  }
+
+  it('shows the running delivery task and pending jobs on the monitor page', async () => {
+    workbenchPayload = baseWorkbench({
+      tasks: [
+        buildTask({ id: 'task-deliver', mode: 'deliver', label: '确认投递', status: 'running',
+          logs: ['招呼语发送结果：成功 2，失败 1，待下次发送 0（共 3）'],
+          metrics: { send_requested: 3, send_success: 2, send_failed: 1, send_deferred: 0 } }),
+      ],
+      delivery_jobs: [
+        { id: 'job-error', company: '失败公司', title: '测试岗位', source_platform: 'boss', status: 'error',
+          last_error: '对方暂时不接受新消息', step_action: 'error', step_created_at: '2026-11-21 15:02:00' },
+        { id: 'job-queued', company: '排队公司', title: '测试岗位', source_platform: 'boss', status: 'approved',
+          step_action: 'approved', step_created_at: '2026-11-21 15:03:00' },
+      ],
+    })
+    stubMonitorFetch()
+    render(<MemoryRouter><UpdateProvider><DashboardPage view="monitor" /></UpdateProvider></MemoryRouter>)
+    expect(await screen.findByRole('region', { name: '投递任务' })).toBeTruthy()
+    expect(screen.getByText('确认投递')).toBeTruthy()
+    expect(screen.getByText('投递中')).toBeTruthy()
+    expect(screen.getByText('共 3 个 · 已投出 2 个 · 没投出去 1 个 · 等下次 0 个')).toBeTruthy()
+    expect(screen.getByText('失败公司｜测试岗位')).toBeTruthy()
+    expect(screen.getByText('对方暂时不接受新消息')).toBeTruthy()
+    expect(screen.getByText('排队公司｜测试岗位')).toBeTruthy()
+    expect(screen.getByText('正在排队，等着投')).toBeTruthy()
+  })
+
+  it('points the jobs-page delivery card at the real monitor entry', async () => {
+    workbenchPayload = baseWorkbench({
+      task: buildTask({ id: 'task-deliver', mode: 'deliver', label: '确认投递', status: 'running', logs: ['正在投第 1 个'] }),
+      last_task: null,
+    })
+    const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/workbench' && (!init?.method || init.method === 'GET')) return jsonResponse(workbenchPayload)
+      if (url.startsWith('/api/jobs/search')) return jsonResponse({ items: [], total: 0, all_total: 0 })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fn)
+    render(<MemoryRouter><UpdateProvider><DashboardPage view="jobs" /></UpdateProvider></MemoryRouter>)
+    expect(await screen.findByText(/投递进度与结果在左侧“投递跟进”里查看/)).toBeTruthy()
+    expect(screen.queryByText(/投递记录里查看/)).toBeNull()
+    expect(screen.getByRole('link', { name: '去投递跟进看看' }).getAttribute('href')).toBe('/monitor')
   })
 })

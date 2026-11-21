@@ -8,11 +8,19 @@ interface ExitAppDialogProps {
 }
 
 /**
- * “退出程序”确认弹窗（v25）：文案用 lucky 原话。
+ * “退出程序”确认弹窗（v25，v33 精简文案）。
  * 是 → 先置位跳过 beforeunload（不然代码关窗会被自己的确认拦住），
- * 再调 POST /api/exit（后端先停任务、停 runtime、停我们拉的 Chrome
- * 再退出进程），最后关掉本窗口。否 → 只关弹窗，什么都不做。
+ * 再调 POST /api/exit（后端先停任务、停 runtime、停我们拉的 Chrome、
+ * 再扫安装目录残留，最后退出进程），最后关掉本窗口。否 → 只关弹窗，
+ * 什么都不做。
  * /api/exit 调不通（例如服务已经不在了）也照常关窗，不卡住。
+ * v33：文案只讲“点‘是’会发生什么”——立即终止所有进行中的任务；
+ * “之后安装文件夹就能直接删掉，不用重启”那句删了：它跟退出没关系，
+ * 反而让人困惑（删文件夹是另一回事，退出程序不用提它）。
+ * 窗口右上角 X 不走这个弹窗（网页拦不住 X，只能走 beforeunload
+ * 浏览器通用确认框，见 lib/closeConfirm）；X 点“离开”后后端监视
+ * 线程调的是同一套退出清理（server._perform_exit_cleanup），
+ * 确认后做的事与这里点“是”完全一样。
  */
 export function ExitAppDialog({ onStay }: ExitAppDialogProps) {
   const [exiting, setExiting] = useState(false)
@@ -49,7 +57,7 @@ export function ExitAppDialog({ onStay }: ExitAppDialogProps) {
       <div className="max-h-[calc(100dvh-2rem)] w-full max-w-sm overflow-y-auto rounded-2xl border border-card-border bg-card p-5 shadow-xl">
         <p className="text-sm font-black text-foreground">是否结束该应用程序，这可能会导致当前进行中的任务结束</p>
         <p className="mt-2 text-xs leading-5 text-muted">
-          点“是”会停掉进行中的任务，关掉浏览器运行组件和程序自己拉起的浏览器窗口，再退出程序；之后安装文件夹就能直接删掉，不用重启。
+          点“是”会立即终止所有进行中的任务，关掉浏览器运行组件和程序自己拉起的浏览器窗口，然后退出程序。
         </p>
         {error && (
           <p className="mt-3 rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">{error}</p>

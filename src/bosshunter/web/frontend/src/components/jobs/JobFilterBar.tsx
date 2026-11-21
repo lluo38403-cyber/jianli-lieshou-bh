@@ -18,6 +18,9 @@ interface JobFilterBarProps {
   showSource?: boolean
   cityOptions?: string[]
   compact?: boolean
+  /** 状态筛选项：不传就是全部状态。找工作页只传未投出状态，投递跟进页
+   * 只传已投出状态；后端分池会再拦一道，选项与后端不一致也漏不出去。 */
+  statusOptions?: Array<{ value: string; label: string }>
 }
 
 export function JobFilterBar({
@@ -31,6 +34,7 @@ export function JobFilterBar({
   showSource = false,
   cityOptions = [],
   compact = false,
+  statusOptions = Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label })),
 }: JobFilterBarProps) {
   const controlClass = cn('min-w-0', compact && 'h-7 px-2 text-xs')
   const update = (key: keyof JobFilters, value: string) => onChange({ ...filters, [key]: value })
@@ -82,7 +86,7 @@ export function JobFilterBar({
           aria-label="最高工资（千）"
         />
         {showStatus && (
-          <MultiSelect className={controlClass} compact={compact} value={filters.status} onChange={value => updateMulti('status', value)} placeholder="什么状态都行" options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))} />
+          <MultiSelect className={controlClass} compact={compact} value={filters.status} onChange={value => updateMulti('status', value)} placeholder="什么状态都行" options={statusOptions} />
         )}
         {showSource && (
           <MultiSelect className={controlClass} compact={compact} value={filters.sourcePlatform} onChange={value => updateMulti('sourcePlatform', value)} placeholder="哪个平台的都行" options={[

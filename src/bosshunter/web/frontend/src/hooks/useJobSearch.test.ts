@@ -88,3 +88,29 @@ describe('automatic job refresh', () => {
     expect(result.current.items[0].score).toBe(92)
   })
 })
+
+describe('applied jobs pool', () => {
+  it('requests only applied jobs with applied_only when the follow-up panel uses it', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(response(80)))
+    vi.stubGlobal('fetch', fetchMock)
+    const { unmount } = renderHook(() => useJobSearch(EMPTY_JOB_FILTERS, 0, 10, 'updated_at', 'desc', { appliedOnly: true, pollIntervalMs: 2000 }))
+    await act(async () => {})
+    const url = new URL(fetchMock.mock.calls[0][0], 'http://localhost')
+    expect(url.searchParams.get('applied_only')).toBe('1')
+    expect(url.searchParams.get('sort_by')).toBe('updated_at')
+    // 跟进页 2 秒一轮：刚投出的岗位最多 2 秒就会出现。
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    unmount()
+  })
+
+  it('does not send applied_only for the jobs pool', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(response(80)))
+    vi.stubGlobal('fetch', fetchMock)
+    const { unmount } = renderHook(() => useJobSearch(EMPTY_JOB_FILTERS, 0, 15))
+    await act(async () => {})
+    const url = new URL(fetchMock.mock.calls[0][0], 'http://localhost')
+    expect(url.searchParams.get('applied_only')).toBeNull()
+    unmount()
+  })
+})
