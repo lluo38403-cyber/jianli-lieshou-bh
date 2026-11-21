@@ -1,7 +1,8 @@
-import type { WorkbenchTask } from '@/hooks/useDashboard'
+import type { ScoringCurrentJob, WorkbenchTask } from '@/hooks/useDashboard'
 
 interface ScoringProgressProps {
   metrics?: Record<string, number | string>
+  progress?: { scoring_current?: ScoringCurrentJob[] }
   status: string
 }
 
@@ -10,11 +11,33 @@ function count(value: number | string | undefined): number {
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0
 }
 
+/** 在途岗位的尝试状态：二次复核、特殊重试（带原因）、第 X/Y 次重试。 */
+export function scoringAttemptSuffix(job: ScoringCurrentJob): string {
+  if (job.note) return `（${job.note}）`
+  if (typeof job.attempt === 'number' && job.attempt > 1) {
+    return typeof job.max_attempts === 'number' && job.max_attempts > 1
+      ? `（第 ${job.attempt}/${job.max_attempts} 次尝试）`
+      : `（第 ${job.attempt} 次尝试）`
+  }
+  return ''
+}
+
+/** “正在为第 X/N 份岗位打分：公司｜职位”，N 未知时不写份数。 */
+export function formatScoringCurrentJob(job: ScoringCurrentJob, total: number): string {
+  const prefix = total > 0 ? `正在为第 ${job.index}/${total} 份岗位打分` : '正在打分'
+  return `${prefix}：${job.company}｜${job.title}${scoringAttemptSuffix(job)}`
+}
+
 /** Counts processed jobs, including filtered and failed jobs, rather than API requests. */
-export function ScoringProgress({ metrics, status }: ScoringProgressProps) {
+export function ScoringProgress({ metrics, progress, status }: ScoringProgressProps) {
   const total = count(metrics?.ai_total)
   const completed = total > 0 ? Math.min(count(metrics?.ai_completed), total) : 0
   const percent = total > 0 ? Math.floor(completed * 100 / total) : undefined
+  const current = (progress?.scoring_current ?? []).filter((job) => job && typeof job.index === 'number')
+  const running = ['running', 'stopping'].includes(status)
+  const currentLine = running && current.length > 0
+    ? formatScoringCurrentJob(current[0], total) + (current.length > 1 ? `（同时还在打另外 ${current.length - 1} 个）` : '')
+    : ''
   const state = status === 'paused' ? '先停下了'
     : status === 'stopping' ? '正在停下'
     : status === 'stopped' ? '已经停了'
@@ -49,6 +72,7 @@ export function ScoringProgress({ metrics, status }: ScoringProgressProps) {
         <span className={count(metrics?.ai_failed) > 0 ? 'text-danger' : undefined}>没打好 {count(metrics?.ai_failed)} 个</span>
         <span>按岗位数算，重试的不重复算；接着打的时候显示这轮还剩多少。</span>
       </div>
+      {currentLine ? <p className="mt-2 truncate text-xs text-muted" title={currentLine}>{currentLine}</p> : null}
     </section>
   )
 }
@@ -56,5 +80,5 @@ export function ScoringProgress({ metrics, status }: ScoringProgressProps) {
 export function TaskScoringProgress({ task }: { task: WorkbenchTask | null }) {
   if (!task || (task.mode !== 'score' && task.mode !== 'rescore'
     && task.metrics?.ai_total === undefined && task.progress?.outcome !== 'scoring')) return null
-  return <ScoringProgress metrics={task.metrics} status={task.status} />
+  return <ScoringProgress metrics={task.metrics} progress={task.progress} status={task.status} />
 }

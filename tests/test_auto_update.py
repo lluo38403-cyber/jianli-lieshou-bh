@@ -112,7 +112,7 @@ class VersionCompareTests(unittest.TestCase):
 class UpdateStubHandler(BaseHTTPRequestHandler):
     """Stub for the relay update contract: /api/version + /download/latest."""
 
-    version_payload = {"version": "1.1.18", "size": 0, "sha256": "0" * 64, "notes": ""}
+    version_payload = {"version": "1.1.19", "size": 0, "sha256": "0" * 64, "notes": ""}
     zip_bytes = b""
     status = 200
     requests: list = []
@@ -167,7 +167,7 @@ class UpdateCheckTests(unittest.TestCase):
     def setUp(self):
         _reset_update_state()
         UpdateStubHandler.version_payload = {
-            "version": "1.1.18",
+            "version": "1.1.19",
             "size": 123,
             "sha256": hashlib.sha256(_make_zip()).hexdigest(),
             "notes": "更快更稳",
@@ -200,7 +200,7 @@ class UpdateCheckTests(unittest.TestCase):
         info = check_for_update(self._config())
         self.assertIsNotNone(info)
         assert info is not None
-        self.assertEqual(info["version"], "1.1.18")
+        self.assertEqual(info["version"], "1.1.19")
         self.assertEqual(info["current_version"], __version__)
         self.assertEqual(info["size"], 123)
         self.assertEqual(info["notes"], "更快更稳")
@@ -229,9 +229,9 @@ class UpdateCheckTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         for bad in (
             {"size": 1, "sha256": "a" * 64},
-            {"version": "1.1.18", "size": 1},
-            {"version": "1.1.18", "size": 1, "sha256": "not-a-hash"},
-            {"version": "1.1.18", "size": 1, "sha256": "a" * 64, "notes": 5},
+            {"version": "1.1.19", "size": 1},
+            {"version": "1.1.19", "size": 1, "sha256": "not-a-hash"},
+            {"version": "1.1.19", "size": 1, "sha256": "a" * 64, "notes": 5},
         ):
             with self.subTest(bad=bad):
                 UpdateStubHandler.version_payload = bad
@@ -355,7 +355,7 @@ class CheckFailureClassificationTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_bad_sha_is_classified(self):
-        payload = {"version": "1.1.18", "size": 1, "sha256": "not-a-hash", "notes": ""}
+        payload = {"version": "1.1.19", "size": 1, "sha256": "not-a-hash", "notes": ""}
         with mock.patch.object(
             updater.httpx, "get",
             return_value=self._fake_response(200, payload),
@@ -384,7 +384,7 @@ class CheckFailureClassificationTests(unittest.TestCase):
 
     def test_run_check_failure_keeps_known_info_and_reports_check_failed(self):
         info = {
-            "version": "1.1.18",
+            "version": "1.1.19",
             "current_version": __version__,
             "size": 123,
             "sha256": "a" * 64,
@@ -421,7 +421,7 @@ class CheckFailureClassificationTests(unittest.TestCase):
         run_check(dead, force=True)
         self.assertEqual(get_status()["reason_code"], "check_failed")
         payload = {
-            "version": "1.1.18", "size": 123,
+            "version": "1.1.19", "size": 123,
             "sha256": "a" * 64, "notes": "更快更稳",
         }
         with mock.patch.object(
@@ -437,7 +437,7 @@ class CheckFailureClassificationTests(unittest.TestCase):
 
     def test_run_check_without_token_stays_idle_and_keeps_info(self):
         info = {
-            "version": "1.1.18",
+            "version": "1.1.19",
             "current_version": __version__,
             "size": 123,
             "sha256": "a" * 64,
@@ -478,7 +478,7 @@ class UpdateDownloadTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.18",
+            "version": "1.1.19",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -506,7 +506,7 @@ class UpdateDownloadTests(unittest.TestCase):
 
     def _info(self):
         return {
-            "version": "1.1.18",
+            "version": "1.1.19",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -607,7 +607,7 @@ class UpdateDownloadTests(unittest.TestCase):
         bad = buf.getvalue()
         UpdateStubHandler.zip_bytes = bad
         UpdateStubHandler.version_payload = {
-            "version": "1.1.18",
+            "version": "1.1.19",
             "size": len(bad),
             "sha256": hashlib.sha256(bad).hexdigest(),
             "notes": "",
@@ -1480,11 +1480,11 @@ class UpdateScriptTests(unittest.TestCase):
             return False, waited
 
         # 第三次轮询报到旧版本：不等满，直接成功。
-        self.assertEqual(poll(["", "1.1.18", "1.1.15"], "1.1.15"), (True, 6))
+        self.assertEqual(poll(["", "1.1.19", "1.1.15"], "1.1.15"), (True, 6))
         # 一直没应答：等满 180 秒再判失败。
         self.assertEqual(poll([""] * 60, "1.1.15"), (False, 180))
         # 一直应答新版本：回滚没换回旧版，同样等满 180 秒判失败。
-        self.assertEqual(poll(["1.1.18"] * 60, "1.1.15"), (False, 180))
+        self.assertEqual(poll(["1.1.19"] * 60, "1.1.15"), (False, 180))
 
     def test_batch_health_poll_semantics(self):
         # bat 本体跑不了（Windows 批处理），这里把轮询的判定语义
@@ -1503,11 +1503,11 @@ class UpdateScriptTests(unittest.TestCase):
             return False, waited
 
         # 第三次轮询报到期望版本：不等满，直接成功。
-        self.assertEqual(poll(["", "1.1.15", "1.1.18"], "1.1.18"), (True, 6))
+        self.assertEqual(poll(["", "1.1.15", "1.1.19"], "1.1.19"), (True, 6))
         # 一直没应答：等满 180 秒再判失败。
-        self.assertEqual(poll([""] * 60, "1.1.18"), (False, 180))
+        self.assertEqual(poll([""] * 60, "1.1.19"), (False, 180))
         # 一直应答旧版本：同样等满 180 秒（旧版不算数）。
-        self.assertEqual(poll(["1.1.15"] * 60, "1.1.18"), (False, 180))
+        self.assertEqual(poll(["1.1.15"] * 60, "1.1.19"), (False, 180))
 
     def test_batch_validates_staging_and_purges_stale_internal(self):
         # 回归：旧 bat 不校验 staging、有错照换；且 robocopy /E /IS
@@ -1592,7 +1592,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.18"},
+                "info": {"version": "1.1.19"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1623,7 +1623,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.18"},
+                "info": {"version": "1.1.19"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1663,7 +1663,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.18"},
+                "info": {"version": "1.1.19"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1682,54 +1682,48 @@ class UpdateApplyTests(unittest.TestCase):
             self.assertEqual(argv[0:2], ["cmd.exe", "/c"])
             self.assertEqual(argv[3], str(staging))
             self.assertEqual(argv[4], "简历猎手.exe")
-            self.assertEqual(argv[6], "1.1.18")
+            self.assertEqual(argv[6], "1.1.19")
             self.assertEqual(argv[7], f"update-backup-{__version__}")
             self.assertEqual(argv[8], __version__)
 
-    def test_apply_passes_port_to_update_bat(self):
-        # M-41（v30）：bat 第 7 个参数必须是当前服务端口，bat 轮询
-        # /api/health 才问得对端口；非默认端口（web --port 8687）不
-        # 传端口，bat 会在 8686 上等 180 秒再误报 nostart。默认不传
-        # 时是 8686，旧行为不变。
+    def test_apply_passes_relaunch_port_to_update_bat(self):
+        # v32（run 44873002310 Retry）：bat 第 7 个参数必须是重开端口
+        # 8686，不是当前服务端口。bat 拉起 exe 时不带参数，启动器默认
+        # 跑 web --port 8686，重开的实例永远跑 8686；v31 传当前端口
+        # （M-41 的机制）是错的——CI 里服务跑 18686、重开的跑 8686，
+        # bat 在 18686 上等满 180 秒也等不到旧版，:fail_poll 误报
+        # nostart_old，stuck 永远写不出来。apply_update 不再接受端口
+        # 参数，bat 拿到的永远是 RELAUNCH_PORT。
         from unittest.mock import patch
 
-        def _run_apply(port_arg):
-            with tempfile.TemporaryDirectory() as tmp:
-                staging = Path(tmp) / "staging"
-                (staging / "_internal").mkdir(parents=True)
-                (staging / "简历猎手.exe").write_bytes(b"new-exe")
-                (staging / "_internal" / "app.bin").write_bytes(b"new-app")
-                updater._STATE.update({
-                    "status": "ready",
-                    "staging_dir": str(staging),
-                    "info": {"version": "1.1.18"},
-                })
-                install = Path(tmp) / "install"
-                install.mkdir()
-                (install / "简历猎手.exe").write_bytes(b"old-exe")
-                with (
-                    patch("bosshunter.updater._is_windows", return_value=True),
-                    patch("bosshunter.app_window.close_app_window", return_value=True),
-                    patch("bosshunter.browser.runtime.stop_runtime", return_value=True),
-                    patch("bosshunter.browser.runtime.stop_launched_browser", return_value=True),
-                    patch("bosshunter.updater._kill_install_dir_processes", return_value=True),
-                    patch("bosshunter.updater.subprocess.Popen") as popen,
-                ):
-                    if port_arg is None:
-                        apply_update(install, "简历猎手.exe")
-                    else:
-                        apply_update(install, "简历猎手.exe", port=port_arg)
-                popen.assert_called_once()
-                return popen.call_args.args[0]
-
-        argv = _run_apply(8687)
-        self.assertEqual(argv[9], "8687")
-        # 第 6 个参数仍是当前版本号，不能被端口顶掉。
-        self.assertEqual(argv[8], __version__)
-        argv = _run_apply(None)
-        self.assertEqual(argv[9], "8686")
-        argv = _run_apply("not-a-port")
-        self.assertEqual(argv[9], "8686")
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp) / "staging"
+            (staging / "_internal").mkdir(parents=True)
+            (staging / "简历猎手.exe").write_bytes(b"new-exe")
+            (staging / "_internal" / "app.bin").write_bytes(b"new-app")
+            updater._STATE.update({
+                "status": "ready",
+                "staging_dir": str(staging),
+                "info": {"version": "1.1.19"},
+            })
+            install = Path(tmp) / "install"
+            install.mkdir()
+            (install / "简历猎手.exe").write_bytes(b"old-exe")
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.app_window.close_app_window", return_value=True),
+                patch("bosshunter.browser.runtime.stop_runtime", return_value=True),
+                patch("bosshunter.browser.runtime.stop_launched_browser", return_value=True),
+                patch("bosshunter.updater._kill_install_dir_processes", return_value=True),
+                patch("bosshunter.updater.subprocess.Popen") as popen,
+            ):
+                apply_update(install, "简历猎手.exe")
+            popen.assert_called_once()
+            argv = popen.call_args.args[0]
+            self.assertEqual(argv[9], "8686")
+            self.assertEqual(argv[9], str(updater.RELAUNCH_PORT))
+            # 第 6 个参数仍是当前版本号，不能被端口顶掉。
+            self.assertEqual(argv[8], __version__)
 
     def test_apply_excludes_own_pid_when_killing_install_dir_processes(self):
         # 回归（v27，run 44707216190）：v24 的 apply_update 调
@@ -1748,7 +1742,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.18"},
+                "info": {"version": "1.1.19"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1782,7 +1776,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.18"},
+                "info": {"version": "1.1.19"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1809,7 +1803,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.18"},
+                "info": {"version": "1.1.19"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1833,7 +1827,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(Path(tmp) / "empty-staging"),
-                "info": {"version": "1.1.18"},
+                "info": {"version": "1.1.19"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1864,7 +1858,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.18"},
+                "info": {"version": "1.1.19"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1923,7 +1917,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.18"},
+                "info": {"version": "1.1.19"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1953,7 +1947,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.18"},
+                "info": {"version": "1.1.19"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -2108,7 +2102,7 @@ class UpdateRouteTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.18",
+            "version": "1.1.19",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "更快更稳",
@@ -2200,7 +2194,7 @@ class UpdateRouteTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             data = json.loads(body)
             self.assertTrue(data["update_available"])
-            self.assertEqual(data["version"], "1.1.18")
+            self.assertEqual(data["version"], "1.1.19")
             self.assertEqual(data["current_version"], __version__)
             self.assertEqual(data["notes"], "更快更稳")
 
@@ -2210,9 +2204,9 @@ class UpdateRouteTests(unittest.TestCase):
         # 后才能重新查到新版。
         with tempfile.TemporaryDirectory() as tmp:
             base = self._base_dir(tmp)
-            updater.write_pending_update(base, "1.1.18")
+            updater.write_pending_update(base, "1.1.19")
             updater.write_update_result(
-                base, {"status": "failed", "expected_version": "1.1.18", "reason_code": "copy"}
+                base, {"status": "failed", "expected_version": "1.1.19", "reason_code": "copy"}
             )
             original_get_install_dir = updater.get_install_dir
             updater.get_install_dir = lambda: base
@@ -2231,7 +2225,7 @@ class UpdateRouteTests(unittest.TestCase):
                 self.assertTrue(status.startswith("200"), body)
                 data = json.loads(body)
                 self.assertTrue(data["update_available"])
-                self.assertEqual(data["version"], "1.1.18")
+                self.assertEqual(data["version"], "1.1.19")
             finally:
                 updater.get_install_dir = original_get_install_dir
 
@@ -2515,7 +2509,7 @@ class UpdateCacheTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.18",
+            "version": "1.1.19",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -2693,7 +2687,7 @@ class UpdateCacheTests(unittest.TestCase):
             self.assertEqual(get_status()["status"], "ready", get_status())
             loaded = load_cached_update(install)
             assert loaded is not None
-            self.assertEqual(loaded["version"], "1.1.18")
+            self.assertEqual(loaded["version"], "1.1.19")
             self.assertTrue(Path(loaded["zip_path"]).is_file())
 
     def test_start_download_restores_from_cache_without_network(self):

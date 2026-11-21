@@ -7,7 +7,7 @@ from bosshunter.ai.scorer import get_scoring_concurrency
 
 
 class ScoringConfigTests(unittest.TestCase):
-    def test_default_scoring_concurrency_is_one(self):
+    def test_default_scoring_concurrency_is_three(self):
         # 显式使用隔离的临时配置，避免 load_config() 依赖 cwd 下的 config.yaml
         # （仓库根目录存在 scoring_concurrency: 3 的本地配置时该测试会误判失败）。
         with tempfile.TemporaryDirectory() as tmp:
@@ -16,8 +16,8 @@ class ScoringConfigTests(unittest.TestCase):
 
             config = load_config(path)
 
-        self.assertEqual(config["ai"]["scoring_concurrency"], 1)
-        self.assertEqual(get_scoring_concurrency(config), 1)
+        self.assertEqual(config["ai"]["scoring_concurrency"], 3)
+        self.assertEqual(get_scoring_concurrency(config), 3)
 
     def test_scoring_concurrency_is_clamped_to_one_through_three(self):
         self.assertEqual(get_scoring_concurrency({"ai": {"scoring_concurrency": 0}}), 1)

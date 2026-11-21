@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ScoringProgress } from './ScoringProgress'
 import { Button } from '@/components/ui/button'
+import { ModalPortal } from '@/components/ui/modal-portal'
 
 type ScoreScope = 'pending' | 'failed' | 'selected' | 'all_scored'
 
@@ -128,6 +129,16 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
     }
   }, [open, scope, limit, selectedJobIds.join(',')])
 
+  // 弹窗开着时背景页面不滚动：免得底层页面滚走、用户误以为弹窗不见了。
+  useEffect(() => {
+    if (!open) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [open])
+
   if (!open) return null
 
   const start = async () => {
@@ -169,10 +180,16 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
 
   const activeRun = runs.find(run => run.status === 'running' || run.status === 'paused')
 
+  // 定位：经 ModalPortal 挂到 body，fixed 才相对视口居中，不会被
+  // .animate-page-in 的 transform 拽到整页中部。
+  // 布局：之前面板没有 max-h 也没有内部滚动，内容一长（进行中的打分任务
+  // 列表）就会把“开始打分”顶出视口、上下都够不着；现在面板 flex 纵向分栏，
+  // 只有正文区滚动，按钮行固定在底部始终可见可点。
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-5">
-      <div className="w-full max-w-xl rounded-3xl border border-card-border bg-card p-6 shadow-2xl">
-        <div className="flex items-start justify-between gap-4">
+    <ModalPortal>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-5" role="dialog" aria-modal="true" aria-label="单独打分">
+      <div className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden rounded-3xl border border-card-border bg-card shadow-2xl">
+        <div className="flex shrink-0 items-start justify-between gap-4 px-6 pt-6">
           <div>
             <div className="text-xs font-black tracking-[0.18em] text-primary">给岗位打分</div>
             <h3 className="mt-1 text-2xl font-black">单独打分</h3>
@@ -180,7 +197,8 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
           </div>
           <Button variant="secondary" size="sm" onClick={onClose}>关闭</Button>
         </div>
-        <div className="mt-5 space-y-4">
+        <div data-testid="score-dialog-body" className="mt-5 min-h-0 flex-1 space-y-4 overflow-y-auto px-6 pb-4">
+        <div className="space-y-4">
           <label className="block text-xs font-bold text-muted">
             给哪些岗位打分
             <select value={scope} onChange={event => setScope(event.target.value as ScoreScope)} className="mt-1 w-full rounded-xl border border-card-border bg-surface px-3 py-2 text-sm text-foreground outline-none focus:border-primary">
@@ -212,13 +230,15 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
           ))}
           {runsError && <p className="text-sm text-danger" role="status">{runsError}</p>}
           {message && <div className="rounded-xl bg-secondary px-3 py-2 text-sm text-primary">{message}</div>}
-          <div className="flex justify-end gap-2">
-            <Button variant="secondary" onClick={onClose}>取消</Button>
-            <Button onClick={start} disabled={loading || !limitValid || !preview?.eligible_jobs || Boolean(activeRun)}>{loading ? '正在处理...' : '开始打分'}</Button>
-          </div>
+        </div>
+        </div>
+        <div data-testid="score-dialog-footer" className="flex shrink-0 justify-end gap-2 border-t border-card-border px-6 py-4">
+          <Button variant="secondary" onClick={onClose}>取消</Button>
+          <Button onClick={start} disabled={loading || !limitValid || !preview?.eligible_jobs || Boolean(activeRun)}>{loading ? '正在处理...' : '开始打分'}</Button>
         </div>
       </div>
     </div>
+    </ModalPortal>
   )
 }
 

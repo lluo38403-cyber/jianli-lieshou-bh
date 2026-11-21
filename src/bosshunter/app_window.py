@@ -147,6 +147,518 @@ def get_app_window_url() -> str | None:
     return _APP_WINDOW_URL
 
 
+# ---------------------------------------------------------------------------
+# 窗口尺寸与位置记忆（v32，lucky 2026-11-21 14:23 定）
+#
+# 现状核实：launch_app_window 之前完全不传 --window-size /
+# --window-position，窗口尺寸全由 Chrome 默认决定；--app 窗口与工作
+# 浏览器共用一个 Chrome 实例（v27），窗口标题就是页面 <title>。
+#
+# 记忆落点：
+# - 启动：launch_app_window 按“上次保存的几何（校验过）或默认几何”
+#   给新窗口加 --window-size/--window-position。Chrome 把 --app 交给
+#   已在跑的实例时会忽略这两个参数——那个窗口已有自己的尺寸，关窗
+#   时由监视线程保存，不挡开窗。
+# - 保存：关窗那一刻窗口已经没了，事后问不到尺寸，所以不能只在关窗
+#   时保存。watch_app_window_close 在监视循环里每隔几秒问一次当前
+#   窗口外框（Win32 EnumWindows 按标题找，优先匹配我们拉起的 Chrome
+#   进程），变了才写盘；崩溃/强杀也最多丢一个保存间隔内的最后一次
+#   调整。进程正常退出（atexit/SIGINT/SIGTERM）时 _install_shutdown_hooks
+#   的清理函数里也会再记一次（见 web/server.py）。
+# - 持久化：data/window-geometry.json（robocopy 换版 /XD data，不会被
+#   更新覆盖）。原子写（同目录 tmp + os.replace），损坏/缺字段绝不
+#   影响启动——读不懂就当没有记录，用默认几何。
+# - 非 Windows（Linux CI / macOS）：拿不到工作区、问不到窗口外框，
+#   全部函数返回 None/False，不加启动参数、不写文件、不抛异常。
+# - 已知口径差：GetWindowRect 是物理像素，Chrome --window-size 在
+#   Windows 缩放 ≠100% 时按 DIP 计，恢复尺寸在高缩放屏上可能有少量
+#   偏差；校验只保证窗口在可见屏幕内、可用，不保证逐像素一致。
+# ---------------------------------------------------------------------------
+
+WINDOW_GEOMETRY_FILENAME = "window-geometry.json"
+# 最小尺寸（按面板真实布局量出来的，不是拍脑袋）：
+# 侧边栏在 ≥768px 视口时是 240px（md:w-60），<768px 时是图标栏 64px；
+# 内容区是双列统计卡片 + 岗位列表，低于约 700px 内容宽就被挤成单列、
+# 横向局促；1024 - 240（侧边栏）- 48（main 两边内边距）= 736px 内容宽，
+# 刚好放得下双列卡片。高度 640：顶栏约 56 + 统计卡片约 110，剩下约
+# 430px 能看到几行岗位/监控内容；再矮就只剩顶栏加一两行，全是滚动。
+# 1920x1080 屏：工作区约 1920x1040，1/3 是 640x346，小于最小值，
+# 会被顶到 1024x640——这就是默认尺寸比“1/3”大的原因。
+WINDOW_MIN_WIDTH = 1024
+WINDOW_MIN_HEIGHT = 640
+# 校验“窗口还在屏幕上”的底线：至少这么大一块可见，用户才抓得到、
+# 拖得回。小于它就当跑出屏幕外，回退默认几何。
+_MIN_VISIBLE_WIDTH = 200
+_MIN_VISIBLE_HEIGHT = 120
+# 面板 --app 窗口的标题（页面 <title>）与启动页标题。
+_APP_WINDOW_TITLE = "简历猎手"
+_SPLASH_WINDOW_TITLE = "简历猎手正在启动"
+
+# 几何文件路径（run_server 起服务时经 set_window_geometry_path 配成
+# DATA_DIR/window-geometry.json；没配好时不保存、启动也不加参数）。
+_WINDOW_GEOMETRY_PATH = None
+# 监视循环里两次保存尝试之间的间隔（秒）：太密是无用功，太稀则崩溃
+# 时丢的调整太多；5 秒是折中。
+_GEOMETRY_SAVE_INTERVAL_SECONDS = 5.0
+
+
+def set_window_geometry_path(path) -> None:
+    """Set the window-geometry file path (DATA_DIR/window-geometry.json). Never raises."""
+    global _WINDOW_GEOMETRY_PATH
+    try:
+        _WINDOW_GEOMETRY_PATH = Path(path) if path is not None else None
+    except Exception:
+        _WINDOW_GEOMETRY_PATH = None
+
+
+def get_window_geometry_path():
+    """Return the configured window-geometry file path, or None when unset."""
+    return _WINDOW_GEOMETRY_PATH
+
+
+def _is_int(value) -> bool:
+    # bool 是 int 的子类，True/False 当宽高是脏数据，必须排除。
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _rect_overlap(a, b):
+    """Return the (width, height) of the intersection of two (x, y, w, h) rects."""
+    x = max(a[0], b[0])
+    y = max(a[1], b[1])
+    return (
+        max(0, min(a[0] + a[2], b[0] + b[2]) - x),
+        max(0, min(a[1] + a[3], b[1] + b[3]) - y),
+    )
+
+
+def _clamp_geometry_to_area(geometry: dict, area) -> dict:
+    """Clamp a geometry dict so it fits inside one work area (x, y, w, h).
+
+    宽高超出工作区就缩到工作区大小（但不低于最小值，除非工作区本身
+    就比最小值小——小屏上宁可占满工作区也不回默认）；位置超出就拉回
+    工作区内。调用前 geometry 必须已通过基础校验。
+    """
+    width = min(geometry["width"], area[2])
+    height = min(geometry["height"], area[3])
+    if area[2] >= WINDOW_MIN_WIDTH:
+        width = max(width, WINDOW_MIN_WIDTH)
+    if area[3] >= WINDOW_MIN_HEIGHT:
+        height = max(height, WINDOW_MIN_HEIGHT)
+    x = min(max(geometry["x"], area[0]), area[0] + max(0, area[2] - width))
+    y = min(max(geometry["y"], area[1]), area[1] + max(0, area[3] - height))
+    return {"x": x, "y": y, "width": width, "height": height}
+
+
+def get_monitor_work_areas():
+    """Return the work area (x, y, w, h) of every monitor, primary first.
+
+    Windows 上用 EnumDisplayMonitors + GetMonitorInfo 拿每块屏的 rcWork
+    （可用区域，已排除任务栏）；非 Windows 或任何一步失败返回 None。
+    顺序：主屏在第一位，其余按枚举顺序。永不抛异常。
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Rect(ctypes.Structure):
+            _fields_ = [
+                ("left", wintypes.LONG),
+                ("top", wintypes.LONG),
+                ("right", wintypes.LONG),
+                ("bottom", wintypes.LONG),
+            ]
+
+        class _MonitorInfo(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("rcMonitor", _Rect),
+                ("rcWork", _Rect),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        user32 = ctypes.windll.user32
+        areas = []
+        primary = []
+
+        def _enum_proc(hmonitor, _hdc, _rect, _data):
+            info = _MonitorInfo()
+            info.cbSize = ctypes.sizeof(_MonitorInfo)
+            if not user32.GetMonitorInfoW(hmonitor, ctypes.byref(info)):
+                return 1
+            work = (
+                info.rcWork.left,
+                info.rcWork.top,
+                info.rcWork.right - info.rcWork.left,
+                info.rcWork.bottom - info.rcWork.top,
+            )
+            if work[2] <= 0 or work[3] <= 0:
+                return 1
+            if info.dwFlags & 1:  # MONITORINFOF_PRIMARY
+                primary.append(work)
+            else:
+                areas.append(work)
+            return 1
+
+        callback = ctypes.WINFUNCTYPE(
+            wintypes.BOOL,
+            wintypes.HMONITOR,
+            wintypes.HDC,
+            ctypes.POINTER(_Rect),
+            wintypes.LPARAM,
+        )(_enum_proc)
+        if not user32.EnumDisplayMonitors(None, None, callback, 0):
+            return None
+        all_areas = primary + areas
+        return all_areas or None
+    except Exception:
+        return None
+
+
+def get_primary_work_area():
+    """Return the primary monitor's work area (x, y, w, h), or None.
+
+    先走 get_monitor_work_areas（主屏在第一位）；拿不到时退到
+    SystemParametersInfo(SPI_GETWORKAREA)。非 Windows 返回 None。
+    永不抛异常。
+    """
+    try:
+        areas = get_monitor_work_areas()
+        if areas:
+            return areas[0]
+    except Exception:
+        pass
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Rect(ctypes.Structure):
+            _fields_ = [
+                ("left", wintypes.LONG),
+                ("top", wintypes.LONG),
+                ("right", wintypes.LONG),
+                ("bottom", wintypes.LONG),
+            ]
+
+        rect = _Rect()
+        if not ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
+            return None
+        width = rect.right - rect.left
+        height = rect.bottom - rect.top
+        if width <= 0 or height <= 0:
+            return None
+        return (rect.left, rect.top, width, height)
+    except Exception:
+        return None
+
+
+def default_window_geometry(work_area) -> dict | None:
+    """Return the default geometry for a work area (x, y, w, h), or None.
+
+    口径（lucky 原话“宽高约为屏幕可用宽高的 1/3 缩放基准”）：
+    宽高各取工作区宽高的 1/3，再用最小尺寸顶上去（1920x1080 上
+    640x346 会被顶到 1024x640，见 WINDOW_MIN_WIDTH 的注释）；
+    工作区比最小值还小时就占满工作区；居中显示。work_area 为
+    None 时返回 None（调用方不加启动参数）。永不抛异常。
+    """
+    if work_area is None:
+        return None
+    try:
+        x0, y0, area_w, area_h = (int(v) for v in work_area)
+    except Exception:
+        return None
+    if area_w <= 0 or area_h <= 0:
+        return None
+    width = max(WINDOW_MIN_WIDTH, area_w // 3)
+    height = max(WINDOW_MIN_HEIGHT, area_h // 3)
+    width = min(width, area_w)
+    height = min(height, area_h)
+    x = x0 + max(0, (area_w - width) // 2)
+    y = y0 + max(0, (area_h - height) // 2)
+    return {"x": x, "y": y, "width": width, "height": height}
+
+
+def load_window_geometry(path=None):
+    """Load the saved window geometry, or None when there is none usable.
+
+    文件不存在、读不懂（损坏的 JSON）、不是 dict、字段缺失或类型不
+    对，都返回 None——调用方回退默认几何，绝不报错、不卡启动。
+    只做基础类型校验（四个字段都是 int、宽高为正）；屏幕范围校验
+    在 validate_window_geometry 里做（要知道当前各屏工作区）。
+    path 为空时用已配置的路径；都没配返回 None。
+    """
+    if path is None:
+        path = _WINDOW_GEOMETRY_PATH
+    if path is None:
+        return None
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        geometry = {
+            "x": data["x"],
+            "y": data["y"],
+            "width": data["width"],
+            "height": data["height"],
+        }
+    except Exception:
+        return None
+    if not all(_is_int(v) for v in geometry.values()):
+        return None
+    if geometry["width"] <= 0 or geometry["height"] <= 0:
+        return None
+    return geometry
+
+
+def validate_window_geometry(geometry, work_areas=None):
+    """Validate a saved geometry against the current monitors.
+
+    返回可用的几何（必要时把尺寸/位置钳进重叠最多的那块屏的工作区），
+    否则返回 None（调用方回退默认几何）：
+    - geometry 不是 dict / 字段缺失 / 类型不对 / 宽高非正 → None；
+    - 宽高小于最小尺寸 → None（lucky 要求：过小直接回默认，不硬顶）；
+    - 在任何一块屏的工作区上可见部分都小于 200x120 → None
+      （切屏/分辨率变化后窗体跑出屏幕外，回默认）；
+    - 位置在屏内、尺寸超出工作区 → 尺寸钳进工作区（保留用户尺寸意图）。
+    work_areas 为 None 时调 get_monitor_work_areas()；拿不到（非
+    Windows）时只做基础校验、原样返回。永不抛异常。
+    """
+    if not isinstance(geometry, dict):
+        return None
+    try:
+        checked = {
+            "x": geometry["x"],
+            "y": geometry["y"],
+            "width": geometry["width"],
+            "height": geometry["height"],
+        }
+    except Exception:
+        return None
+    if not all(_is_int(v) for v in checked.values()):
+        return None
+    if checked["width"] <= 0 or checked["height"] <= 0:
+        return None
+    if checked["width"] < WINDOW_MIN_WIDTH or checked["height"] < WINDOW_MIN_HEIGHT:
+        return None
+    if work_areas is None:
+        try:
+            work_areas = get_monitor_work_areas()
+        except Exception:
+            work_areas = None
+    if not work_areas:
+        return checked
+    rect = (checked["x"], checked["y"], checked["width"], checked["height"])
+    best_area = None
+    best_visible = 0
+    for area in work_areas:
+        try:
+            overlap_w, overlap_h = _rect_overlap(rect, area)
+        except Exception:
+            continue
+        visible = overlap_w * overlap_h
+        if visible > best_visible:
+            best_visible = visible
+            best_area = area
+    if best_area is None:
+        return None
+    overlap_w, overlap_h = _rect_overlap(rect, best_area)
+    if overlap_w < _MIN_VISIBLE_WIDTH or overlap_h < _MIN_VISIBLE_HEIGHT:
+        return None
+    return _clamp_geometry_to_area(checked, best_area)
+
+
+def resolve_window_geometry(work_areas=None, path=None):
+    """Return the geometry to launch the window with, or None.
+
+    优先用上次保存的（校验过：无效/越界/过小就丢掉）；没有可用记录
+    就用默认几何（工作区约 1/3、最小尺寸顶底、居中）。拿不到任何
+    工作区信息（非 Windows）时返回 None，调用方不加启动参数。
+    永不抛异常。
+    """
+    try:
+        if work_areas is None:
+            work_areas = get_monitor_work_areas()
+        if not work_areas:
+            return None
+        saved = load_window_geometry(path)
+        if saved is not None:
+            valid = validate_window_geometry(saved, work_areas)
+            if valid is not None:
+                return valid
+        return default_window_geometry(work_areas[0])
+    except Exception:
+        return None
+
+
+def window_size_args(geometry) -> list:
+    """Return Chrome --window-size/--window-position args for a geometry.
+
+    geometry 为 None 时返回 []。宽高/坐标不是 int 时也返回 []，
+    绝不把脏数据拼进启动参数。永不抛异常。
+    """
+    if not isinstance(geometry, dict):
+        return []
+    try:
+        x, y = geometry["x"], geometry["y"]
+        width, height = geometry["width"], geometry["height"]
+    except Exception:
+        return []
+    if not all(_is_int(v) for v in (x, y, width, height)):
+        return []
+    if width <= 0 or height <= 0:
+        return []
+    return [f"--window-size={width},{height}", f"--window-position={x},{y}"]
+
+
+def save_window_geometry(path, geometry) -> bool:
+    """Atomically save a window geometry dict. Return True on success.
+
+    只存 x/y/width/height 四个 int + version + saved_at；宽高非正、
+    类型不对、路径没给、写盘失败都返回 False，永不抛异常。写同目录
+    tmp 文件再 os.replace，保证文件损坏时旧文件还在、且读到的要么是
+    完整旧文件、要么是完整新文件（没有写一半的 JSON）。
+    path 为 None 时用已配置的路径；都没配返回 False。
+    """
+    if path is None:
+        path = _WINDOW_GEOMETRY_PATH
+    if path is None or not isinstance(geometry, dict):
+        return False
+    try:
+        checked = {
+            "x": geometry["x"],
+            "y": geometry["y"],
+            "width": geometry["width"],
+            "height": geometry["height"],
+        }
+    except Exception:
+        return False
+    if not all(_is_int(v) for v in checked.values()):
+        return False
+    if checked["width"] <= 0 or checked["height"] <= 0:
+        return False
+    try:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "x": checked["x"],
+            "y": checked["y"],
+            "width": checked["width"],
+            "height": checked["height"],
+            "saved_at": int(time.time()),
+        }
+        tmp_path = target.with_name(target.name + ".tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp_path, target)
+        return True
+    except Exception:
+        return False
+
+
+def _query_app_window_bounds():
+    """Return the current --app window's outer rect (x, y, w, h), or None.
+
+    只在 Windows 上工作：EnumWindows 找可见、未最小化、标题是
+    “简历猎手”（面板）或“简历猎手正在启动…”（启动页）的窗口；
+    有多个时优先匹配我们拉起的 Chrome 进程（_APP_WINDOW_PROC），
+    否则取第一个。拿不到（非 Windows、窗口已关、枚举失败）返回
+    None。永不抛异常。
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Rect(ctypes.Structure):
+            _fields_ = [
+                ("left", wintypes.LONG),
+                ("top", wintypes.LONG),
+                ("right", wintypes.LONG),
+                ("bottom", wintypes.LONG),
+            ]
+
+        user32 = ctypes.windll.user32
+        candidates = []  # (pid, x, y, w, h)
+        our_pid = None
+        try:
+            proc = _APP_WINDOW_PROC
+            if proc is not None and proc.poll() is None:
+                our_pid = proc.pid
+        except Exception:
+            our_pid = None
+
+        def _enum_proc(hwnd, _data):
+            try:
+                if not user32.IsWindowVisible(hwnd):
+                    return 1
+                if user32.IsIconic(hwnd):
+                    return 1
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length <= 0:
+                    return 1
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                title = buf.value or ""
+                if title != _APP_WINDOW_TITLE and not title.startswith(_SPLASH_WINDOW_TITLE):
+                    return 1
+                rect = _Rect()
+                if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                    return 1
+                width = rect.right - rect.left
+                height = rect.bottom - rect.top
+                if width <= 0 or height <= 0:
+                    return 1
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                candidates.append((pid.value, rect.left, rect.top, width, height))
+            except Exception:
+                pass
+            return 1
+
+        callback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(_enum_proc)
+        if not user32.EnumWindows(callback, 0):
+            return None
+        if not candidates:
+            return None
+        if our_pid is not None:
+            for pid, x, y, width, height in candidates:
+                if pid == our_pid:
+                    return (x, y, width, height)
+        _pid, x, y, width, height = candidates[0]
+        return (x, y, width, height)
+    except Exception:
+        return None
+
+
+def save_current_window_geometry(path=None, _query_bounds=None) -> bool:
+    """Query the live --app window and save its bounds. Return True on save.
+
+    问不到窗口（已关、非 Windows、枚举失败）或外框不合法时返回
+    False，什么都不写。永不抛异常。_query_bounds 只给测试注入。
+    """
+    try:
+        query = _query_bounds or _query_app_window_bounds
+        bounds = query()
+    except Exception:
+        return False
+    if bounds is None:
+        return False
+    try:
+        x, y, width, height = (int(v) for v in bounds)
+    except Exception:
+        return False
+    if width <= 0 or height <= 0:
+        return False
+    return save_window_geometry(path, {"x": x, "y": y, "width": width, "height": height})
+
+
 def is_our_service_alive(host: str = "127.0.0.1", port: int = 8686, timeout: float = 2.0) -> bool:
     """Return True when our own panel service already answers on host:port.
 
@@ -454,6 +966,17 @@ def launch_app_window(
                 f"--user-data-dir={profile_dir}",
                 f"--remote-debugging-port={debug_port}",
             ] + args[1:]
+        # v32：窗口尺寸与位置记忆——按上次保存的几何（校验过）或默认
+        # 几何给新窗口加 --window-size/--window-position；没有可用工作
+        # 区信息（非 Windows）或没拿到几何时不加参数，走 Chrome 默认，
+        # 不挡开窗。Chrome 把 --app 交给已在跑的实例时会忽略这两个
+        # 参数（那个窗口已有自己的尺寸，关窗时由监视线程保存）。
+        try:
+            _geom_args = window_size_args(resolve_window_geometry())
+        except Exception:
+            _geom_args = []
+        if _geom_args:
+            args = args[:-1] + _geom_args + args[-1:]
         try:
             proc = subprocess.Popen(args, **kwargs)
         except OSError:
@@ -635,6 +1158,9 @@ def watch_app_window_close(
     _tab_watch_seconds: float = 60.0,
     _splash_url: str | None = None,
     _service_alive=None,
+    _get_window_bounds=None,
+    _save_geometry=None,
+    _geometry_save_interval: float = _GEOMETRY_SAVE_INTERVAL_SECONDS,
 ) -> bool:
     """Watch the held --app window; call on_close() once the user closes it.
 
@@ -660,6 +1186,10 @@ def watch_app_window_close(
     _service_alive（测试注入）：无参可调用，返回服务是否应答过
     /api/health；默认按面板地址实时问 /api/health。on_close 里抛
     异常只记日志、不让监视线程崩掉。永不抛异常。
+    _get_window_bounds/_save_geometry/_geometry_save_interval（v32，
+    测试注入）：窗口外框查询/保存/保存间隔；默认每 5 秒问一次当前
+    --app 窗口外框、变了才写盘（关窗那一刻窗口已没，事后问不到，
+    只能靠生前定期保存）。
     """
     clock = _clock or time.monotonic
     sleep = _sleep or time.sleep
@@ -706,6 +1236,24 @@ def watch_app_window_close(
             service_alive = None
         seen_panel = False
         seen_healthy = False
+
+        # v32：窗口尺寸与位置记忆的保存端。关窗那一刻窗口已经没了，
+        # 事后问不到尺寸，只能靠监视循环里定期记（默认每 5 秒问一次
+        # 当前窗口外框，变了才写盘；崩溃也最多丢一个间隔内的最后一次
+        # 调整）。几何路径没配好时不问不存；_get_window_bounds /
+        # _save_geometry 只给测试注入。失败一律静默，绝不影响关窗监视。
+        if _save_geometry is not None:
+            _geometry_saver = _save_geometry
+        elif get_window_geometry_path() is not None:
+            _geometry_saver = lambda bounds: save_window_geometry(  # noqa: E731
+                get_window_geometry_path(),
+                {"x": bounds[0], "y": bounds[1], "width": bounds[2], "height": bounds[3]},
+            )
+        else:
+            _geometry_saver = None
+        _geometry_query = _get_window_bounds or _query_app_window_bounds
+        _last_geometry_save_at: float | None = None
+        _last_saved_bounds = None
 
         def _fire(require_tab: bool) -> bool:
             # v29 铁律：只在“标签页确实出现过、后来又消失、且服务
@@ -782,6 +1330,25 @@ def watch_app_window_close(
                         if _fire(require_tab=True):
                             return True
                         return False
+            # v32：定期记一次当前窗口尺寸/位置（见上面 _geometry_saver
+            # 的注释）。窗口已关时问不到，返回 None 就跳过，不写盘。
+            if _geometry_saver is not None:
+                _now = clock()
+                if (
+                    _last_geometry_save_at is None
+                    or _now - _last_geometry_save_at >= _geometry_save_interval
+                ):
+                    _last_geometry_save_at = _now
+                    try:
+                        _bounds = _geometry_query()
+                    except Exception:
+                        _bounds = None
+                    if _bounds is not None and _bounds != _last_saved_bounds:
+                        try:
+                            if _geometry_saver(_bounds):
+                                _last_saved_bounds = _bounds
+                        except Exception:
+                            pass
             sleep(poll_interval)
     except Exception as exc:
         _logger.warning("watch_app_window_close: 监视失败：%s", exc)

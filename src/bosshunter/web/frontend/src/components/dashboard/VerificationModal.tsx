@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { ModalPortal } from '@/components/ui/modal-portal'
 import { PLATFORM_LABELS } from '@/lib/platforms'
 import type { VerificationHold } from '@/hooks/useDashboard'
 
@@ -47,9 +48,15 @@ export function VerificationModal({ hold, onContinue, onStop, canStop }: Verific
     }
   }
 
+  // 定位：经 ModalPortal 挂到 body，fixed 才相对视口居中，不会被
+  // .animate-page-in 的 transform 拽到整页中部、滚到底才看得见。
+  // 布局：面板 flex 纵向分栏，只有正文区滚动，“继续投递 / 停止投递”
+  // 固定在底部，验证链接再长也不会把按钮顶出视口。
   return (
+    <ModalPortal>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="alertdialog" aria-modal="true" aria-label="平台安全验证">
-      <div className="w-full max-w-md rounded-2xl border border-border bg-card p-5 shadow-2xl">
+      <div className="flex max-h-[calc(100dvh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-border bg-card p-5 shadow-2xl">
+        <div data-testid="verification-modal-body" className="min-h-0 flex-1 overflow-y-auto">
         <h2 className="text-base font-bold">触发平台安全验证</h2>
         <p className="mt-2 text-sm leading-6 text-muted">
           {platformName}弹出了安全验证，投递已经停下来了，不会继续硬投。请在浏览器里手动完成验证（滑块、短信都行），验证通过后点下面的“继续投递”。
@@ -64,7 +71,8 @@ export function VerificationModal({ hold, onContinue, onStop, canStop }: Verific
             没成功：{error}。可以再点一次；如果一直不行，先去浏览器里确认验证是不是真的通过了。
           </p>
         ) : null}
-        <div className="mt-5 flex flex-col gap-2">
+        </div>
+        <div data-testid="verification-modal-footer" className="mt-5 flex shrink-0 flex-col gap-2 border-t border-card-border pt-4">
           <Button onClick={() => void handleContinue()} disabled={busy}>
             {busy ? '正在继续…' : '我已完成验证，继续投递'}
           </Button>
@@ -76,5 +84,6 @@ export function VerificationModal({ hold, onContinue, onStop, canStop }: Verific
         </div>
       </div>
     </div>
+    </ModalPortal>
   )
 }

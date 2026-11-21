@@ -9,11 +9,12 @@ import { useAuth } from '@/hooks/useAuth'
 import { AuthStatusBar } from '@/components/dashboard/AuthStatusBar'
 import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
 import { Button } from '@/components/ui/button'
+import { ModalPortal } from '@/components/ui/modal-portal'
 import { START_ONBOARDING_EVENT } from '@/components/onboarding/OnboardingTour'
 import { AnimatedNumber } from '@/components/AnimatedNumber'
 import { JobsTable } from '@/components/dashboard/JobsTable'
 import { RecycleBinPanel } from '@/components/dashboard/RecycleBinPanel'
-import { TaskScoringProgress } from '@/components/dashboard/ScoringProgress'
+import { TaskScoringProgress, formatScoringCurrentJob } from '@/components/dashboard/ScoringProgress'
 import { ScoreJobsDialog } from '@/components/dashboard/ScoreJobsDialog'
 import { CollectJobsDialog } from '@/components/dashboard/CollectJobsDialog'
 import { VerificationModal } from '@/components/dashboard/VerificationModal'
@@ -79,6 +80,12 @@ function currentTaskStage(task: WorkbenchTask) {
   if (session) {
     const phase = ({ collecting: '正在找', waiting_round: '歇一会儿', waiting_quota: '等明天额度', waiting_risk: '先冷静一下', waiting_retry: '等它恢复', waiting_user: '等你处理', finished: '这轮结束了' } as Record<string, string>)[session.phase] || session.phase
     return `第 ${session.round} 轮 · ${phase}${session.reason_code ? ` · ${session.reason_code}` : ''}${session.next_wake_at ? ` · 最早恢复 ${new Date(session.next_wake_at).toLocaleString()}` : ''}`
+  }
+  const scoringCurrent = task.progress?.scoring_current
+  if (scoringCurrent?.length && ['running', 'stopping'].includes(task.status)) {
+    const total = task.metrics?.ai_total
+    const line = formatScoringCurrentJob(scoringCurrent[0], typeof total === 'number' ? total : 0)
+    return scoringCurrent.length > 1 ? `${line}（同时还在打另外 ${scoringCurrent.length - 1} 个）` : line
   }
   if (task.progress?.outcome === 'scoring' && ['running', 'stopping'].includes(task.status)) {
     const completed = task.metrics?.ai_completed
@@ -2125,10 +2132,15 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
     }
   }
 
+  // 定位：经 ModalPortal 挂到 body，fixed 才相对视口居中，不会被
+  // .animate-page-in 的 transform 拽到整页中部。
+  // 布局：之前整个面板一个 overflow-y-auto 在滚，顶部的“关闭”按钮会跟着内容
+  // 滚出视口；现在面板 flex 纵向分栏，标题栏固定在顶部，只有正文区滚动。
   return (
+    <ModalPortal>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6">
-      <div className="max-h-[86vh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-card-border bg-card p-6 shadow-2xl">
-        <div className="mb-4 flex items-start justify-between gap-4">
+      <div className="flex max-h-[86vh] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-card-border bg-card shadow-2xl">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-card-border px-6 pb-4 pt-6">
           <div>
             <div className="text-xs font-black tracking-[0.18em] text-primary">岗位详情</div>
             <h3 className="mt-1 flex flex-wrap items-center gap-2 text-2xl font-black"><span>{job.company}｜{job.title}</span><OutsourcingBadge job={job} /></h3>
@@ -2136,6 +2148,7 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
           </div>
           <Button variant="secondary" size="sm" onClick={onClose}>关闭</Button>
         </div>
+        <div data-testid="job-detail-body" className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-4">
         <InterviewPreparation key={job.id} job={job} />
         <div className="grid gap-3 text-sm lg:grid-cols-2">
           <InfoBlock label="HR" value={[job.hr_name, job.hr_title].filter(Boolean).join(' · ') || '-'} />
@@ -2187,8 +2200,10 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
           <div className="text-sm font-black">JD</div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{job.jd || '-'}</p>
         </div>
+        </div>
       </div>
     </div>
+    </ModalPortal>
   )
 }
 
@@ -2580,13 +2595,17 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
           onPermanentDelete={requestPermanentDelete}
         />
         {permanentDeleteIds.length > 0 && (
+          <ModalPortal>
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true">
-            <div className="w-full max-w-lg rounded-3xl border border-danger-border bg-card p-6 shadow-2xl">
+            <div className="flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-danger-border bg-card shadow-2xl">
+              <div data-testid="permanent-delete-body" className="min-h-0 flex-1 overflow-y-auto p-6">
               <div className="flex items-start gap-3"><AlertTriangle className="mt-0.5 h-6 w-6 shrink-0 text-danger" /><div><h3 className="text-xl font-black">真的要彻底删掉吗</h3><p className="mt-2 text-sm leading-6 text-muted">这 {permanentDeleteIds.length} 个岗位和它们的记录会彻底删掉，找不回来。已经投过、有来往记录的删不掉。</p></div></div>
               <label className="mt-5 flex cursor-pointer items-start gap-3 rounded-2xl border border-danger-border bg-danger-soft p-3 text-sm font-bold"><input type="checkbox" checked={permanentDeleteAcknowledged} onChange={event => setPermanentDeleteAcknowledged(event.target.checked)} className="mt-0.5 h-4 w-4 accent-danger" /><span>我想好了，删掉吧，删了就找不回来了。</span></label>
-              <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" size="sm" onClick={() => setPermanentDeleteIds([])}>取消</Button><Button variant="destructive" size="sm" disabled={!permanentDeleteAcknowledged} onClick={() => void confirmPermanentDelete()}>彻底删除</Button></div>
+              </div>
+              <div className="flex shrink-0 justify-end gap-3 border-t border-card-border px-6 py-4"><Button variant="secondary" size="sm" onClick={() => setPermanentDeleteIds([])}>取消</Button><Button variant="destructive" size="sm" disabled={!permanentDeleteAcknowledged} onClick={() => void confirmPermanentDelete()}>彻底删除</Button></div>
             </div>
           </div>
+          </ModalPortal>
         )}
       </div>
     )

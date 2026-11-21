@@ -1,6 +1,7 @@
 """AI Scorer - Match jobs against resume using Claude API."""
 
 import json
+import queue
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
@@ -262,14 +263,24 @@ def _format_salary_k(value: float) -> str:
     return str(int(value)) if value.is_integer() else str(value)
 
 
-def _build_review_prompt(job: dict, resume: str, first: ScoreResult, config: dict | None = None) -> str:
+def _build_review_prompt(
+    job: dict,
+    resume: str,
+    first: ScoreResult,
+    config: dict | None = None,
+    *,
+    prompt: str | None = None,
+) -> str:
     first_result = {
         "components": first.components,
         "caps": list(first.caps),
         "reason": first.summary_reason,
         "missing": first.missing,
     }
-    return _build_scoring_prompt(job, resume, config) + REVIEW_PROMPT_SUFFIX.format(
+    # 复核 Prompt = 首次评分 Prompt + 复核后缀：调用方已建好首次 Prompt
+    # 时直接复用，不重建（含完整简历与 JD 的拼接只做一次）。
+    base = prompt if prompt is not None else _build_scoring_prompt(job, resume, config)
+    return base + REVIEW_PROMPT_SUFFIX.format(
         first_result=json.dumps(first_result, ensure_ascii=False),
     )
 
@@ -581,6 +592,22 @@ def sanitize_score_trace(value: object) -> dict | None:
     }
 
 
+def _report_attempt(config: dict, job_id: str, attempt: int | None, max_attempts: int | None, note: str = "") -> None:
+    """Report one AI call attempt from a worker thread.
+
+    只往 ``config["_workbench_score_attempt"]`` 挂的队列里放事件，不直接
+    碰进度回调：进度上报只在 score_jobs 主线程做，避免工作线程与主线
+    程同时改任务状态。回调异常不得影响评分本身。
+    """
+    callback = config.get("_workbench_score_attempt")
+    if not callable(callback):
+        return
+    try:
+        callback(str(job_id), attempt, max_attempts, note)
+    except Exception:
+        pass
+
+
 def _report_progress(
     config: dict,
     completed: int,
@@ -588,16 +615,23 @@ def _report_progress(
     scored: int,
     filtered: int,
     failed: int,
+    *,
+    current: list[dict] | None = None,
 ) -> None:
     callback = config.get("_workbench_score_progress")
     if callable(callback):
-        callback({
+        payload = {
             "completed": completed,
             "total": total,
             "scored": scored,
             "filtered": filtered,
             "failed": failed,
-        })
+        }
+        # 在途岗位只在确实有岗位正在打分时附加：首条 0/N 进度保持原有
+        # 五字段不变；在途清空时传 []，消费方据此清除旧的在途显示。
+        if current is not None:
+            payload["current"] = [dict(entry) for entry in current]
+        callback(payload)
 
 
 def _report_checkpoint(
@@ -631,13 +665,23 @@ def _request_score(
     resume: str,
     config: dict,
     max_attempts: int,
+    *,
+    prompt: str | None = None,
 ) -> ScoreOutcome:
-    """Request and validate one primary assessment without touching the database."""
+    """Request and validate one primary assessment without touching the database.
+
+    ``prompt`` 由调用方（_score_job_with_ai）每岗位只构建一次后传入：
+    首次调用、失败重试、截断/降 Token/减预留等特殊重试都复用同一份
+    Prompt，不重复拼接完整简历与 JD。直接调用时不传则现场构建。
+    """
     ai_cfg = config.get("ai", {}) if isinstance(config.get("ai"), dict) else {}
+    if prompt is None:
+        prompt = _build_scoring_prompt(job, resume, config)
     response: str | None = None
     saw_error = False
     try:
-        response = _call_claude(_build_scoring_prompt(job, resume, config), config)
+        _report_attempt(config, job.get("id") or "", 1, max_attempts)
+        response = _call_claude(prompt, config)
     except AIRequestError as exc:
         saw_error = True
         if exc.kind == "output_truncated":
@@ -648,7 +692,8 @@ def _request_score(
                 configured_tokens = 8192
             retry_tokens = min(max(configured_tokens * 2, 512), 65536)
             try:
-                response = _call_claude(_build_scoring_prompt(job, resume, config), config, retry_tokens)
+                _report_attempt(config, job.get("id") or "", None, None, "截断后重试")
+                response = _call_claude(prompt, config, retry_tokens)
             except AIRequestError as retry_exc:
                 saw_error = True
                 if retry_exc.kind == "empty_response":
@@ -662,7 +707,8 @@ def _request_score(
         elif exc.kind == "output_limit":
             _notify(config, f"{job['company']}｜{job['title']} 正在降低输出 Token 上限后重试评分。")
             try:
-                response = _call_claude(_build_scoring_prompt(job, resume, config), config, 128)
+                _report_attempt(config, job.get("id") or "", None, None, "降输出上限重试")
+                response = _call_claude(prompt, config, 128)
             except AIRequestError as retry_exc:
                 saw_error = True
                 if retry_exc.kind == "empty_response":
@@ -678,7 +724,8 @@ def _request_score(
             except (TypeError, ValueError):
                 retry_tokens = 1024
             try:
-                response = _call_claude(_build_scoring_prompt(job, resume, config), config, retry_tokens)
+                _report_attempt(config, job.get("id") or "", None, None, "减预留后重试")
+                response = _call_claude(prompt, config, retry_tokens)
             except AIRequestError as retry_exc:
                 saw_error = True
                 if retry_exc.kind == "empty_response":
@@ -705,7 +752,8 @@ def _request_score(
             f"{job['company']}｜{job['title']} 未返回完整评分，正在重试（{attempt}/{max_attempts}）。",
         )
         try:
-            response = _call_claude(_build_scoring_prompt(job, resume, config), config)
+            _report_attempt(config, job.get("id") or "", attempt, max_attempts)
+            response = _call_claude(prompt, config)
         except AIRequestError as retry_exc:
             saw_error = True
             if retry_exc.kind in {"token_quota", "rate_limit", "auth", "network", "request_failed"}:
@@ -736,7 +784,9 @@ def _score_job_with_ai(
     一次内容都没返回、且确实未配置 API Key 时，才用本地规则评分兜底，
     而不是把岗位记为失败；配了 Key 或传输层返回了内容/抛错时，走正常流程。
     """
-    outcome = _request_score(job, resume, config, max_attempts)
+    # 每岗位的评分 Prompt 只构建一次：首次评分各次尝试与二次复核共用。
+    prompt = _build_scoring_prompt(job, resume, config)
+    outcome = _request_score(job, resume, config, max_attempts, prompt=prompt)
     first = outcome.result
     if first is None or outcome.pause_reason:
         if (
@@ -799,7 +849,8 @@ def _score_job_with_ai(
         return outcome
 
     try:
-        response = _call_claude(_build_review_prompt(job, resume, first, config), config)
+        _report_attempt(config, job.get("id") or "", None, None, "二次复核")
+        response = _call_claude(_build_review_prompt(job, resume, first, config, prompt=prompt), config)
     except AIRequestError as exc:
         if ai_failure_falls_back(config):
             _notify(config, f"{job['company']}｜{job['title']} 二次复核未完成（{get_ai_service_label(config)}不可用），保留第一次评分。")
@@ -826,6 +877,21 @@ def score_jobs(
     rescore_filtered: bool = False,
 ) -> tuple[int, int]:
     """Score every unscored pending job; previously scored jobs keep their result."""
+    # 打分尝试事件（工作线程写）与进度上报（主线程读）解耦：工作线程只往
+    # 队列放事件，主循环每 100ms 排空并上报，避免两线程同时改任务状态。
+    # config 浅拷贝后挂回调，不动调用方传入的字典。
+    config = dict(config)
+    attempt_events: queue.SimpleQueue[dict] = queue.SimpleQueue()
+
+    def _report_attempt_event(job_id: str, attempt: int | None, max_attempts: int | None, note: str = "") -> None:
+        attempt_events.put({
+            "job_id": str(job_id),
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "note": note,
+        })
+
+    config["_workbench_score_attempt"] = _report_attempt_event
     db = get_db()
     try:
         resume = _load_resume(config)
@@ -877,6 +943,57 @@ def score_jobs(
             console=console
         ) as progress:
             task = progress.add_task(f"评分中 (0/{len(pending_jobs)})", total=len(pending_jobs))
+            # 在途岗位：index 是提交顺序（第 X/N 份中的 X），attempt/note 由
+            # 工作线程的尝试事件更新，主线程排空队列后刷新上报。
+            in_flight: dict[str, dict] = {}
+            in_flight_order: list[str] = []
+            ai_index = 0
+
+            def _current_entries() -> list[dict]:
+                return [dict(in_flight[job_id]) for job_id in in_flight_order if job_id in in_flight]
+
+            def _refresh_cli_description() -> None:
+                current = _current_entries()
+                suffix = ""
+                if current:
+                    first = current[0]
+                    suffix = f" 正在打：{first['company']}｜{first['title']}"
+                    if len(current) > 1:
+                        suffix += f"（另有 {len(current) - 1} 个同时在打）"
+                progress.update(
+                    task,
+                    description=f"评分中 ({processed}/{len(pending_jobs)}) [预筛淘汰{prefiltered}]{suffix}",
+                )
+
+            def _drain_attempt_events() -> None:
+                changed = False
+                while True:
+                    try:
+                        event = attempt_events.get_nowait()
+                    except queue.Empty:
+                        break
+                    entry = in_flight.get(str(event.get("job_id") or ""))
+                    if entry is None:
+                        continue
+                    if event.get("attempt") is not None:
+                        entry["attempt"] = event["attempt"]
+                    if event.get("max_attempts") is not None:
+                        entry["max_attempts"] = event["max_attempts"]
+                    if event.get("note"):
+                        entry["note"] = str(event["note"])
+                    changed = True
+                if changed:
+                    _report_progress(
+                        config,
+                        processed,
+                        len(pending_jobs),
+                        scored,
+                        filtered,
+                        failed,
+                        current=_current_entries(),
+                    )
+                    _refresh_cli_description()
+
             ai_jobs: list[dict] = []
             for job in pending_jobs:
                 if stop_event is not None and stop_event.is_set():
@@ -889,11 +1006,8 @@ def score_jobs(
                     filtered += 1
                     prefiltered += 1
                     processed += 1
-                    progress.update(
-                        task,
-                        advance=1,
-                        description=f"评分中 ({processed}/{len(pending_jobs)}) [预筛淘汰{prefiltered}]",
-                    )
+                    progress.update(task, advance=1)
+                    _refresh_cli_description()
                     _report_progress(
                         config,
                         processed,
@@ -911,12 +1025,34 @@ def score_jobs(
             job_iter = iter(ai_jobs)
 
             def submit_next() -> bool:
+                nonlocal ai_index
                 try:
                     next_job = next(job_iter)
                 except StopIteration:
                     return False
+                ai_index += 1
+                job_id = str(next_job["id"])
+                in_flight[job_id] = {
+                    "index": ai_index,
+                    "company": str(next_job.get("company") or ""),
+                    "title": str(next_job.get("title") or ""),
+                    "attempt": 1,
+                    "max_attempts": max_attempts,
+                    "note": "",
+                }
+                in_flight_order.append(job_id)
                 future = executor.submit(_score_job_with_ai, next_job, resume, config, max_attempts)
                 futures[future] = next_job
+                _report_progress(
+                    config,
+                    processed,
+                    len(pending_jobs),
+                    scored,
+                    filtered,
+                    failed,
+                    current=_current_entries(),
+                )
+                _refresh_cli_description()
                 return True
 
             for _ in range(min(concurrency, len(ai_jobs))):
@@ -928,6 +1064,7 @@ def score_jobs(
                     interrupted = True
                     break
                 done, _ = wait(futures, timeout=0.1, return_when=FIRST_COMPLETED)
+                _drain_attempt_events()
                 if not done:
                     continue
                 for future in done:
@@ -977,13 +1114,19 @@ def score_jobs(
                         completed_job = True
 
                     if completed_job:
+                        in_flight.pop(str(job["id"]), None)
                         processed += 1
-                        progress.update(
-                            task,
-                            advance=1,
-                            description=f"评分中 ({processed}/{len(pending_jobs)}) [预筛淘汰{prefiltered}]",
+                        progress.update(task, advance=1)
+                        _report_progress(
+                            config,
+                            processed,
+                            len(pending_jobs),
+                            scored,
+                            filtered,
+                            failed,
+                            current=_current_entries(),
                         )
-                        _report_progress(config, processed, len(pending_jobs), scored, filtered, failed)
+                        _refresh_cli_description()
                         mark_completed(str(job["id"]))
 
                     if outcome.pause_reason:
@@ -998,6 +1141,18 @@ def score_jobs(
                 for future in futures:
                     future.cancel()
                 executor.shutdown(wait=False, cancel_futures=True)
+                if in_flight:
+                    # 中断/暂停后不再有在途岗位：发一次空在途，消费方清除旧显示。
+                    in_flight.clear()
+                    _report_progress(
+                        config,
+                        processed,
+                        len(pending_jobs),
+                        scored,
+                        filtered,
+                        failed,
+                        current=[],
+                    )
             else:
                 executor.shutdown(wait=True)
 

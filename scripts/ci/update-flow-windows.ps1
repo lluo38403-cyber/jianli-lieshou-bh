@@ -68,6 +68,12 @@ $ReadyTimeoutSeconds = 900
 # （v24 重跑实测：单 job 下完 240 秒，另两 job 300 秒时只到 26-27%）；
 # 300 秒只够单 job，不够三 job 并行。超时是测试参数，不是产品要求。
 $RestartTimeoutSeconds = 180
+# 600 秒：等 bat 退出/自删再读最终结论的上限（v32，run 44873002310
+# Retry 的教训：旧版 restart 一起来就读，读到的是后端提前写的通用
+# unknown，bat 的 cmd.exe 还在 180 秒轮询里）。旧 bat 最坏约 8 分钟
+# （180 秒新版轮询 + 60 秒重试 + 180 秒旧版轮询 + 等待/拷贝），
+# 600 秒留了余量；超时明确失败，不静默通过、也不读半截结论。
+$BatExitTimeoutSeconds = 600
 
 $tempDir = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
 $logOut = Join-Path $tempDir 'updateflow-exe-out.log'
@@ -133,6 +139,23 @@ function Show-StuckProcesses {
   } catch {
     Write-Host "  stuck-proc: 查简历猎手.exe 失败：$($_.Exception.Message)"
   }
+}
+
+function Wait-BatExit {
+  # v32：update-result.json 的最终结论由 bat 退出定义——bat 写完
+  # verdict 才自删 update.bat（所有终局路径都经 :fail_exit 或
+  # applied 自删），文件还在 = 结论还没落定，读到的可能是后端
+  # 提前写的通用结论（run 44873002310 Retry：06:05:09 读到
+  # unknown，bat 的 cmd.exe PID 1200 还在 180 秒轮询里）。
+  # 等文件消失再读；超时返回 $false，调用方明确失败，不静默通过。
+  param([int]$TimeoutSeconds = $BatExitTimeoutSeconds)
+  $batPath = Join-Path $ExeDir 'update.bat'
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    if (-not (Test-Path $batPath)) { return $true }
+    Start-Sleep -Seconds 2
+  }
+  return (-not (Test-Path $batPath))
 }
 
 function Show-BatDiagnostics {
@@ -902,14 +925,26 @@ try {
     $resultPath = Join-Path $ExeDir 'update-result.json'
     $pendingPath = Join-Path $ExeDir 'update-pending.json'
     if ($script:expectVerdict -eq 'failed') {
-      # 回滚结果：bat 写 failed/copy 或 failed/stuck，重开的旧版核对
-      # pending 后会把 verdict 重写一遍（带中文 reason、不带 reason_code），
-      # 所以只要求两者至少其一在场且对得上：reason 文案须是 copy
-      # 对应的“换文件的时候出问题了”或 stuck 对应的“主程序关不掉”，
-      # reason_code 在场时须是 copy 或 stuck。stuck 也算数的原因：
-      # v24 的 bat 在拷文件前先探锁，看门狗 1 秒内就会重拉占位进程，
-      # 锁永远清不掉，bat 在 :fail_stuck 就停了，根本到不了 robocopy；
-      # 两种都是安全回滚（旧版还在、缓存包留着、能直接重试）。
+      # 回滚结果：先等 bat 退出/自删再读最终结论（v32，run 44873002310
+      # Retry 的教训：restart 一起来就读，读到的是后端提前写的通用
+      # unknown，bat 还在 180 秒轮询里）。bat 写最终 verdict
+      # （failed/copy 或 failed/stuck，只有 reason_code），重开的旧版
+      # 核对 pending 后会把 verdict 重写一遍（补中文 reason 和
+      # actual_version，原因码不变），所以读之前两件事都要到：bat 已
+      # 自删（结论落定）+ pending 已消费（后端已重写）。reason 文案须
+      # 是 copy 对应的“换文件的时候出问题了”或 stuck 对应的
+      # “主程序关不掉”，reason_code 在场时须是 copy 或 stuck。
+      # stuck 也算数的原因：v24 的 bat 在拷文件前先探锁，看门狗 1 秒内
+      # 就会重拉占位进程，锁永远清不掉，bat 在 :fail_stuck 就停了，
+      # 根本到不了 robocopy；两种都是安全回滚（旧版还在、缓存包留着、
+      # 能直接重试）。
+      if (-not (Wait-BatExit)) {
+        Show-UpdateLogTail
+        Show-UpdateResult
+        Show-StuckProcesses
+        Show-BatDiagnostics
+        throw "stage=result bat 在 $BatExitTimeoutSeconds 秒内没退出（update.bat 还在），读到的不是最终结论"
+      }
       $verdict = $null
       $deadline = (Get-Date).AddSeconds(60)
       while ((Get-Date) -lt $deadline) {
@@ -938,6 +973,16 @@ try {
       }
       Write-Host 'stage=result OK：回滚 verdict 为 failed/copy 或 failed/stuck，update-pending.json 已消费'
     } else {
+      # 成功结果同样先等 bat 自删：后端可能在 bat 写 applied 之前就
+      # 靠重探写了 ok，但终局性由 bat 退出定义——bat 没退，文件就还
+      # 不是最终结论（v32，与 failed 分支同理）。
+      if (-not (Wait-BatExit)) {
+        Show-UpdateLogTail
+        if ($Scenario -ne 'Main') { Show-LockDiagnostics }
+        Show-StuckProcesses
+        Show-BatDiagnostics
+        throw "stage=result bat 在 $BatExitTimeoutSeconds 秒内没退出（update.bat 还在），读到的不是最终结论"
+      }
       $verdict = $null
       $deadline = (Get-Date).AddSeconds(30)
       while ((Get-Date) -lt $deadline) {
@@ -1153,6 +1198,14 @@ try {
     Measure-Stage 'result2' {
       $resultPath = Join-Path $ExeDir 'update-result.json'
       $pendingPath = Join-Path $ExeDir 'update-pending.json'
+      # 第二遍同样先等 bat 自删再读最终结论（v32，与 result 同理）。
+      if (-not (Wait-BatExit)) {
+        Show-UpdateLogTail
+        Show-LockDiagnostics
+        Show-StuckProcesses
+        Show-BatDiagnostics
+        throw "stage=result2 bat 在 $BatExitTimeoutSeconds 秒内没退出（update.bat 还在），读到的不是最终结论"
+      }
       $verdict = $null
       $deadline = (Get-Date).AddSeconds(30)
       while ((Get-Date) -lt $deadline) {

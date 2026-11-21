@@ -40,4 +40,42 @@ describe('ScoringProgress', () => {
     expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('40')
     expect(screen.getByRole('progressbar').getAttribute('aria-valuetext')).not.toContain('评分中')
   })
+
+  it('shows the job currently being scored while running', () => {
+    render(<ScoringProgress
+      status="running"
+      metrics={{ ai_total: 10, ai_completed: 1 }}
+      progress={{ scoring_current: [
+        { index: 2, company: '测试公司', title: 'AI 产品经理', attempt: 1, max_attempts: 2 },
+        { index: 3, company: '另一家', title: '后端工程师', attempt: 1, max_attempts: 2 },
+      ] }}
+    />)
+    expect(screen.getByText(/正在为第 2\/10 份岗位打分：测试公司｜AI 产品经理/)).toBeTruthy()
+    expect(screen.getByText(/同时还在打另外 1 个/)).toBeTruthy()
+  })
+
+  it('shows retry and review states on the current job', () => {
+    const { rerender } = render(<ScoringProgress
+      status="running"
+      metrics={{ ai_total: 5, ai_completed: 0 }}
+      progress={{ scoring_current: [{ index: 1, company: '测试公司', title: 'AI 产品经理', attempt: 2, max_attempts: 2 }] }}
+    />)
+    expect(screen.getByText(/第 2\/2 次尝试/)).toBeTruthy()
+    rerender(<ScoringProgress
+      status="running"
+      metrics={{ ai_total: 5, ai_completed: 0 }}
+      progress={{ scoring_current: [{ index: 1, company: '测试公司', title: 'AI 产品经理', note: '二次复核' }] }}
+    />)
+    expect(screen.getByText(/二次复核/)).toBeTruthy()
+  })
+
+  it('hides the current job line once the run is no longer active', () => {
+    render(<ScoringProgress
+      status="completed"
+      metrics={{ ai_total: 5, ai_completed: 5 }}
+      progress={{ scoring_current: [{ index: 5, company: '测试公司', title: 'AI 产品经理' }] }}
+    />)
+    expect(screen.queryByText(/正在为第/)).toBeNull()
+    expect(screen.getByText(/这轮打完了/)).toBeTruthy()
+  })
 })

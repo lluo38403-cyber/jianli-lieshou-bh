@@ -91,11 +91,12 @@ it('shows only the active platform tab and keeps the start buttons in a fixed bo
     return new Response(JSON.stringify(data), { status: 200 })
   }))
   const start = vi.fn(async (_options: Record<string, unknown>) => ({ ok: true }))
-  const { container } = render(<CollectJobsDialog open activeTask={null} onClose={vi.fn()} onStart={start} />)
+  render(<CollectJobsDialog open activeTask={null} onClose={vi.fn()} onStart={start} />)
   await screen.findByDisplayValue('AI')
   // 窄弹窗：max-w-2xl，且一次只配当前 Tab 的平台。
-  expect(container.querySelector('.max-w-2xl')).toBeTruthy()
-  expect(container.querySelector('.max-w-4xl')).toBeNull()
+  // v32：弹窗经 ModalPortal 挂到 body，不在 render container 里，改查 document。
+  expect(document.querySelector('.max-w-2xl')).toBeTruthy()
+  expect(document.querySelector('.max-w-4xl')).toBeNull()
   expect(screen.getAllByPlaceholderText('产品经理, 产品运营')).toHaveLength(1)
   expect(screen.queryByDisplayValue('运营')).toBeNull()
   fireEvent.click(screen.getByRole('tab', { name: '智联' }))

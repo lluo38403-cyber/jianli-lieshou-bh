@@ -281,7 +281,10 @@ DEFAULTS: dict[str, Any] = {
         "timeout_seconds": 180,
         "scoring_max_tokens": 8192,
         "scoring_max_attempts": 2,
-        "scoring_concurrency": 1,
+        # v32：默认 3 路并发打分（上限仍为 3，用户可在配置里改回 1）。
+        # 批量打分耗时主要由 AI 往返串行等待决定，并发 3 时 30 份约 3 倍提速；
+        # 限流/鉴权/额度失败仍按原有逻辑暂停整批或回落本地规则，不放宽风控。
+        "scoring_concurrency": 3,
         "scoring_second_review": False,
         "greeting_max_tokens": 8192,
         "greeting_review_max_tokens": 4096,

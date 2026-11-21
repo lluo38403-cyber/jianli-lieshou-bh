@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, RefreshCw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { ModalPortal } from '@/components/ui/modal-portal'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -377,8 +378,13 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   }
 
   return (
+    // 定位：经 ModalPortal 挂到 body，fixed 才相对视口居中，不会被
+    // .animate-page-in 的 transform 拽到整页中部。
+    // 布局本身已是对的（面板 max-h-[85vh] 纵向分栏、正文区滚动、底部按钮
+    // sticky），这次只改挂载位置，不动布局与任何业务逻辑。
     // 全屏模态：z-[60] 高于右下角更新卡片（z-50，无遮罩）和验证弹窗（z-50），
     // 不管挂载顺序如何都盖在最上面；更新卡片只是被暂时盖住，关掉弹窗后还在，能继续点。
+    <ModalPortal>
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-label="找新岗位">
       <div ref={panelRef} tabIndex={-1} className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-card-border bg-card shadow-2xl focus:outline-none">
         <div className="flex items-start justify-between gap-4 px-6 pt-6">
@@ -515,5 +521,6 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         <div className="sticky bottom-0 flex shrink-0 flex-wrap justify-end gap-2 border-t border-card-border bg-card px-6 py-3"><Button variant="secondary" onClick={onClose} disabled={starting} title={starting ? '正在开始，稍等一下就能关' : undefined}>取消</Button><Button onClick={() => void start()} disabled={Boolean(activeTask) || starting} title={activeTask ? '现在有任务在跑，先停下再开始' : undefined}>{starting ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" />正在开始…</span> : mode === 'full' ? '开始自动找工作' : '重新采集'}</Button></div>
       </div>
     </div>
+    </ModalPortal>
   )
 }

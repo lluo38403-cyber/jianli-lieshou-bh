@@ -520,6 +520,7 @@ def _record_collect_progress(task: WorkbenchTask, state: dict) -> None:
 
 
 def _record_score_progress(task: WorkbenchTask, state: dict) -> None:
+	previous_completed = task.metrics.get("ai_completed")
 	task.metrics.update({
 		"ai_completed": int(state.get("completed") or 0),
 		"ai_total": int(state.get("total") or 0),
@@ -527,6 +528,19 @@ def _record_score_progress(task: WorkbenchTask, state: dict) -> None:
 		"ai_filtered": int(state.get("filtered") or 0),
 		"ai_failed": int(state.get("failed") or 0),
 	})
+	# 在途岗位（第 X/N 份、公司｜职位、重试状态）只进 task.progress 供前
+	# 端轮询展示，不写日志；完成数没变的上报（提交/重试事件）也不写日志，
+	# 否则每提交一次、每重试一次就多一行重复的进度日志。
+	if "current" in state:
+		current = state.get("current")
+		if isinstance(current, list):
+			task.progress["scoring_current"] = deepcopy(current)
+		else:
+			task.progress.pop("scoring_current", None)
+	else:
+		task.progress.pop("scoring_current", None)
+	if task.metrics.get("ai_completed") == previous_completed:
+		return
 	_log(
 		task,
 		f"AI 评分进度 {state['completed']}/{state['total']}：通过 {state['scored']}，过滤 {state['filtered']}，失败 {state['failed']}",
@@ -1590,13 +1604,13 @@ def api_update_apply():
 				raise updater.UpdateError("新版本还没下好，先等它下载完。")
 			payload_root = _restage_from_cached_zip(cached)
 			updater._set_status(staging_dir=str(payload_root), zip_path=cached["zip_path"])
-		# M-41：把当前服务端口传给 bat——面板可能跑在非默认端口上
-		# （web --port），bat 轮询 /api/health 必须问这个端口；
-		# SERVER_PORT 是请求实际到达的端口，即本服务监听的端口。
+		# v32：bat 轮询问的是重开端口（RELAUNCH_PORT = 8686），不再传
+		# 当前服务端口——bat 拉起 exe 时不带参数，重开的实例永远跑
+		# 8686；v31 传 SERVER_PORT 是错的（CI 里 18686、重开的 8686，
+		# bat 在旧端口上等满 180 秒误报 nostart_old）。
 		updater.apply_update(
 			install_dir,
 			updater.get_exe_name(),
-			port=request.environ.get("SERVER_PORT"),
 		)
 	except updater.UpdateError as exc:
 		return _json_response({"error": exc.user_message}, 400)
@@ -4961,8 +4975,23 @@ def _install_shutdown_hooks(data_dir: Path, port: int) -> None:
 	if _SHUTDOWN_HOOKS_INSTALLED:
 		return
 	_SHUTDOWN_HOOKS_INSTALLED = True
+	# v32：窗口尺寸与位置记忆——几何文件落 data/（换版不覆盖），
+	# 退出清理时先记一次当前窗口外框（窗口还开着时问得到；已关时
+	# 问不到就跳过，监视线程的定期保存已记过）。
+	try:
+		from bosshunter import app_window as _app_window
+
+		_app_window.set_window_geometry_path(data_dir / "window-geometry.json")
+	except Exception:
+		pass
 
 	def _cleanup() -> None:
+		try:
+			from bosshunter import app_window as _app_window
+
+			_app_window.save_current_window_geometry()
+		except Exception:
+			pass
 		try:
 			from bosshunter.browser.runtime import clear_instance_file, shutdown_browser_resources
 
@@ -4991,6 +5020,14 @@ def _run_server_impl(host: str = "127.0.0.1", port: int = 8686, open_browser: bo
 	"""Start the web server."""
 	_clear_startup_failure_marker()
 	_startup_log(f"启动开始：{host}:{port}")
+	# v32：窗口尺寸与位置记忆——先配好几何文件路径，再开窗（复用分支
+	# 的 launch_app_window 在下面直接开窗，配晚了就赶不上这次启动）。
+	try:
+		from bosshunter import app_window as _app_window
+
+		_app_window.set_window_geometry_path(DATA_DIR / "window-geometry.json")
+	except Exception:
+		pass
 	if not (FRONTEND_DIR / "index.html").is_file():
 		_fail_startup_visible(
 			"前端资源未构建：请在 src/bosshunter/web/frontend 下执行 "
@@ -5191,6 +5228,19 @@ def _run_server_impl(host: str = "127.0.0.1", port: int = 8686, open_browser: bo
 			# 同一个更新（否则用户会看到重复循环提示）；换成了或没
 			# 换过，才照常查新版。
 			install_dir = updater.get_install_dir()
+			if install_dir is not None:
+				# v32：bat 还活着时 reconcile 会让位（pending 不消费、
+				# 不写结论），等它退出再核对——守护线程里等，不挡启动；
+				# 最多等 10 分钟，bat 的合法耗时到顶约 8 分钟（180 秒
+				# 新版轮询 + 60 秒重试 + 180 秒旧版轮询 + 等待/拷贝），
+				# 超了就按老路走（reconcile 仍会让位、跳过本次检查，
+				# 等下次检查再由 bat 文件的 15 分钟过期阀门接手）。
+				_deadline = time.monotonic() + 600
+				while (
+					updater.is_update_in_progress(install_dir)
+					and time.monotonic() < _deadline
+				):
+					time.sleep(5)
 			if install_dir is not None and updater.reconcile_pending_update(install_dir, port=port):
 				return
 			from bosshunter.updater import run_check

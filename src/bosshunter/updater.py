@@ -78,6 +78,19 @@ UPDATE_PENDING_FILENAME = "update-pending.json"
 UPDATE_RESULT_FILENAME = "update-result.json"
 EXE_NAME = "简历猎手.exe"
 
+# bat 重开 exe 时不带参数：启动器默认跑 `web`、端口 8686（launcher.py 的
+# `args = sys.argv[1:] or ["web"]`，main.py 里 --port 默认 8686），所以 bat
+# 里所有 /api/health 轮询问的都是这个重开端口——绝不是更新前的服务端口。
+# v31 传当前端口是错的（M-41 的机制错了，意图没错）：CI 里服务跑 18686、
+# 重开的跑 8686，bat 在 18686 上等 180 秒等不到旧版，:fail_poll 误报
+# nostart_old；非默认端口的用户同样会被误判。bat 第 7 个参数就是这个端口。
+RELAUNCH_PORT = 8686
+
+# bat 还活着的最长合法耗时：更新 bat 的轮询到顶约 8 分钟（180 秒新版轮询
+# + 60 秒重试 + 180 秒旧版轮询 + 等待/拷贝），这里留到 15 分钟；超过即
+# 视为 bat 已死、文件是残留，消费 pending 时不再让位——不永久卡住。
+_BAT_ALIVE_MAX_SECONDS = 900
+
 # Machine-readable failure codes the batch file writes into
 # update-result.json. They stay ASCII on purpose: update.bat is written
 # as UTF-8 without BOM and cmd.exe on a Chinese Windows box reads it
@@ -563,9 +576,12 @@ def build_update_script() -> str:
     The batch file takes seven arguments at launch: staging dir, exe
     file name, pid of the process to wait for, expected new version,
     backup directory name, current (old) version, and the port the
-    service listens on (seventh argument, defaults to 8686 when the
-    caller passes nothing — the panel may run on a non-default port
-    via `web --port`, and the health polls must ask that port).
+    relaunched instance listens on (seventh argument, always 8686 —
+    the batch file starts the exe with no arguments and the launcher
+    defaults to `web` on 8686, so the relaunched instance is always
+    there; the pre-update service port must never be passed here, see
+    apply_update — v31 did, and the batch waited the full 180 s on the
+    wrong port and reported a false nostart_old instead of stuck).
     It waits for the given pid to exit (up to
     60 wait rounds of ~1-2s each, then force-kills the whole process
     tree), makes sure no other copy of the exe is still running (a
@@ -756,9 +772,11 @@ def build_update_script() -> str:
         'set "BACKUP=%~5"\r\n'
         'set "CURRENT=%~6"\r\n'
         'set "PORT=%~7"\r\n'
-        'rem 第 7 个参数是当前服务端口（M-41）：面板可能跑在非默认端口上\r\n'
-        'rem （web --port），轮询必须问那个端口；没传就默认 8686，\r\n'
-        'rem 手跑旧参数的 bat 也能用。\r\n'
+        'rem 第 7 个参数是重开后的服务端口：bat 拉起 exe 时不带参数，\r\n'
+        'rem 启动器默认跑 web --port 8686，重开的实例永远跑 8686，轮询\r\n'
+        'rem 必须问这个端口；没传就默认 8686。传更新前的端口是错的\r\n'
+        'rem （v31：服务跑 18686、重开的跑 8686，bat 在 18686 上等满\r\n'
+        'rem 180 秒也等不到旧版，:fail_poll 误报 nostart_old）。\r\n'
         'if "%PORT%"=="" set "PORT=8686"\r\n'
         'set "INSTALL_DIR=%~dp0"\r\n'
         'rem dp0 自带末尾反斜杠：INSTALL_DIR 传给 robocopy 时，末尾反斜杠会把收尾引号转义掉，开关全被吞进路径里、robocopy 瞬间报错（v16 到 v17 全流程测试 run 44625451318：等待已修好，换文件 0.22 秒失败回滚）。先去掉末尾反斜杠，之后拼路径都显式加反斜杠。\r\n'
@@ -1047,12 +1065,41 @@ def _update_health_port(port: Any = None) -> int:
     return 8686
 
 
+def _bat_is_alive(install_dir: str | Path) -> bool:
+    """True when the update batch file is still there and fresh.
+
+    bat 写完 verdict 才自删（所有终局路径都经 :fail_exit 或 applied 自删），
+    所以 update.bat 还在 = bat 还没写完结论。只认 15 分钟内的文件：bat 的
+    合法耗时到顶约 8 分钟，超过即视为 bat 已死、文件是残留（被杀掉的 bat
+    不会自删），不再让位。纯读文件状态，不加锁、不跨进程探查、不拖慢启动。
+    """
+    try:
+        stamp = (Path(install_dir) / "update.bat").stat().st_mtime
+    except OSError:
+        return False
+    return (time.time() - stamp) < _BAT_ALIVE_MAX_SECONDS
+
+
+def is_update_in_progress(install_dir: str | Path) -> bool:
+    """True when an update is still mid-flight (pending + live bat).
+
+    启动线程用它等 bat 退出再核对；pending 与 bat 两者缺一不可——
+    bat 没拉起来时 apply_update 会清 pending（update.bat 残留不算数），
+    没有 pending 时更谈不上进行中。
+    """
+    if not (Path(install_dir) / UPDATE_PENDING_FILENAME).is_file():
+        return False
+    return _bat_is_alive(install_dir)
+
+
 def consume_pending_update(install_dir: str | Path, port: Any = None) -> dict | None:
     """Consume update-pending.json left by apply_update.
 
     Returns the verdict dict (status "ok" or "failed" plus the plain
-    reason) or None when no update was pending. The verdict is also
-    written to update-result.json so later boots still know.
+    reason), {"status": "in_progress"} while the batch file is still
+    alive (the verdict is not final yet — pending is left untouched
+    for a later call), or None when no update was pending. The verdict
+    is also written to update-result.json so later boots still know.
 
     ``port`` is the port the local service listens on (M-44): when the
     bat wrote failed/nostart (or no result at all) the verdict is
@@ -1065,6 +1112,24 @@ def consume_pending_update(install_dir: str | Path, port: Any = None) -> dict | 
     pending_path = Path(install_dir) / UPDATE_PENDING_FILENAME
     if not pending_path.is_file():
         return None
+    if _bat_is_alive(install_dir):
+        # v32（run 44873002310 Retry）：bat 还活着时，后端不写最终结论。
+        # bat 写 verdict 是它自删前的最后一步，update.bat 还在 = 结论还没
+        # 落定；这时写 failed/unknown 会抢在 bat 的具体原因码（stuck/copy）
+        # 前面，两处写同一个文件撞上。pending 不消费、不写结果文件、不
+        # rescue——留给 bat 写完、自删之后的那次核对。
+        try:
+            _pending = json.loads(pending_path.read_text(encoding="utf-8"))
+        except Exception:
+            _pending = {}
+        _expected = _pending.get("expected_version") if isinstance(_pending, dict) else None
+        return {
+            "status": "in_progress",
+            "expected_version": _expected if isinstance(_expected, str) else "",
+            "actual_version": __version__,
+            "reason": "",
+            "reason_code": "",
+        }
     try:
         pending = json.loads(pending_path.read_text(encoding="utf-8"))
     except Exception:
@@ -1145,6 +1210,10 @@ def reconcile_pending_update(install_dir: str | Path, port: Any = None) -> bool:
     """
     pending = consume_pending_update(install_dir, port=port)
     if pending is not None:
+        if pending["status"] == "in_progress":
+            # bat 还在换文件/等重开：结论没落定，不报失败、也不弹更新，
+            # 等 bat 退出后的下次核对再定。状态原样不动（启动时是 idle）。
+            return True
         if pending["status"] == "ok":
             return False
         _set_status(
@@ -1870,7 +1939,7 @@ def _kill_install_dir_processes(install_dir: str | Path, exclude_pid: int | None
     return True
 
 
-def apply_update(install_dir: str | Path, exe_name: str, port: int = 8686) -> Path:
+def apply_update(install_dir: str | Path, exe_name: str) -> Path:
     """Prepare the swap: backup, write update.bat, launch it detached.
 
     Only valid when a release is staged (status "ready") and only on
@@ -1879,13 +1948,18 @@ def apply_update(install_dir: str | Path, exe_name: str, port: int = 8686) -> Pa
     responsible for exiting this process right after (see
     request_restart). Returns the batch file path.
 
-    ``port`` is the port this service listens on (M-41): the bat polls
-    /api/health on that port while waiting for the new (or rolled-back)
-    version; a non-default port must reach the bat or it polls 8686
-    forever and reports a false nostart. Invalid values fall back to
-    8686.
+    The bat polls /api/health on RELAUNCH_PORT while waiting for the
+    new (or rolled-back) version: it relaunches the exe with no
+    arguments, and the launcher defaults to `web` on port 8686, so the
+    relaunched instance always listens there — never on the pre-update
+    service port. v31 passed the current port (M-41) and that was
+    wrong: in the CI flow the service runs on 18686 but the relaunched
+    instance is on 8686, so the bat waited the full 180 s on 18686 and
+    reported a false nostart_old instead of stuck (run 44873002310
+    Retry); a user on a non-default port would be misjudged the same
+    way. That is why apply_update takes no port at all — the relaunch
+    port is a product constant, not a caller choice.
     """
-    port = _coerce_port(port)
     with _STATE_LOCK:
         status = _STATE.get("status")
         staging_dir = _STATE.get("staging_dir")
@@ -1993,12 +2067,14 @@ def apply_update(install_dir: str | Path, exe_name: str, port: int = 8686) -> Pa
         # /api/health 等这个版本出现，才算旧版真的回来了；等不到
         # 写 failed/nostart_old。只对从本版起的更新生效（更新跑的
         # 是旧版的 bat，旧版 bat 没有这段核实）。
-        # bat 第 7 个参数是当前服务端口（M-41）：bat 轮询 /api/health
-        # 必须问这个端口，默认 8686 会把非默认端口的更新误判成
-        # nostart。
+        # bat 第 7 个参数是重开端口（RELAUNCH_PORT = 8686）：bat 拉起
+        # exe 时不带参数，重开的实例永远跑 8686，轮询必须问这个端口。
+        # 传更新前的服务端口是错的（v31 的 M-41 机制）：CI 里服务跑
+        # 18686、重开的跑 8686，bat 在 18686 上等满 180 秒也等不到，
+        # :fail_poll 误报 nostart_old，stuck 永远写不出来。
         subprocess.Popen(
             ["cmd.exe", "/c", str(bat_path), str(staging_dir), exe_name, str(os.getpid()),
-             expected_version, backup_name, __version__, str(port)],
+             expected_version, backup_name, __version__, str(RELAUNCH_PORT)],
             creationflags=flags,
             close_fds=True,
             stdin=subprocess.DEVNULL,

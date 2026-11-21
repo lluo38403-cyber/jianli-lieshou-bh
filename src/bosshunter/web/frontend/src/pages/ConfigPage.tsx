@@ -4,6 +4,7 @@ import { useUpdateContext, formatUpdateNotes, formatUpdateSize } from '@/hooks/u
 import { UpdateModal } from '@/components/dashboard/UpdateModal'
 import { CHECK_UPDATE_EVENT } from '@/lib/updateEvents'
 import { Button } from '@/components/ui/button'
+import { ModalPortal } from '@/components/ui/modal-portal'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -819,8 +820,12 @@ export default function ConfigPage() {
         </SectionCard>
         <UpdateModal update={update} manualCheckSignal={manualUpdateSignal} />
 
-        {/* 底部固定保存栏：与顶部保存栏共用同一 saveConfig 与 dirty 状态 */}
-        <div className="fixed bottom-0 left-0 right-0 z-20 border-t border-card-border bg-card/95 px-4 py-3 backdrop-blur">
+        {/* 底部固定保存栏：与顶部保存栏共用同一 saveConfig 与 dirty 状态。
+            经 ModalPortal 挂到 body：原来 fixed bottom-0 在 .animate-page-in
+            （带 transform）里面，参照变成整页容器，保存栏沉到页底、滚到底才
+            看得见；挂到 body 后才真正贴在视口底部。 */}
+        <ModalPortal>
+        <div data-testid="config-save-bar" className="fixed bottom-0 left-0 right-0 z-20 border-t border-card-border bg-card/95 px-4 py-3 backdrop-blur">
           <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
             <span className="text-xs text-muted">
               {dirty ? '改了还没保存' : '设置都保存好了'}
@@ -828,6 +833,7 @@ export default function ConfigPage() {
             <Button size="sm" onClick={saveConfig} disabled={saving || !dirty}><Save className="w-3 h-3 mr-1" />{saving ? '保存中…' : '保存设置'}</Button>
           </div>
         </div>
+        </ModalPortal>
     </div>
   )
 }

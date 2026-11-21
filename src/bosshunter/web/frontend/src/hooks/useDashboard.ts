@@ -62,6 +62,16 @@ interface TopCompany {
   job_count: number
 }
 
+/** 打分进行中正在打的岗位：index 是提交顺序（第 X/N 份中的 X）。 */
+export interface ScoringCurrentJob {
+  index: number
+  company: string
+  title: string
+  attempt?: number | null
+  max_attempts?: number | null
+  note?: string
+}
+
 export interface WorkbenchTask {
   id: string
   mode: 'full' | 'collect' | 'score' | 'rescore' | 'greet' | 'monitor' | 'deliver'
@@ -73,7 +83,7 @@ export interface WorkbenchTask {
   stop_reason?: string
   stop_requested: boolean
   metrics?: Record<string, number | string>
-  progress?: CollectionProgress & { conflict_ids?: string[] }
+  progress?: CollectionProgress & { conflict_ids?: string[]; scoring_current?: ScoringCurrentJob[] }
 }
 
 export interface CollectionPlatformProgress {

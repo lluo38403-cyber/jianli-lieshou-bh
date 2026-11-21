@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { formatUpdateNotes, formatUpdateSize, getUpdateErrorCopy, type UpdateState } from '@/hooks/useUpdate'
 import { Button } from '@/components/ui/button'
+import { ModalPortal } from '@/components/ui/modal-portal'
 
 /** “跳过此版本”记在这里：只存版本号字符串，下次启动见到同一版就不再弹。 */
 export const SKIPPED_UPDATE_VERSION_KEY = 'jianli-lieshou-skipped-update-version'
@@ -100,13 +101,19 @@ export function UpdateModal({ update, manualCheckSignal = 0, onOpenChange }: Upd
               ? errorCopy?.title || error || '这次没换上，稍后再试。'
               : null
 
+  // 定位：经 ModalPortal 挂到 body（见 modal-portal.tsx），fixed bottom-4
+  // 才真正相对视口右下角，不会被 .animate-page-in 的 transform 拽到页底。
+  // 布局：卡片 flex 纵向分栏，只有正文区滚动，按钮行固定在底部不跟内容走，
+  // 内容再长“前往下载 / 立即更新”也始终可见可点。
   return (
+    <ModalPortal>
     <div
       data-testid="update-modal"
       role="dialog"
       aria-label="有新版本了"
-      className="fixed inset-x-4 bottom-4 z-50 max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl border border-primary/30 bg-card p-4 shadow-xl sm:inset-x-auto sm:bottom-4 sm:right-4 sm:w-[26rem] sm:max-w-[calc(100vw-2rem)]"
+      className="fixed inset-x-4 bottom-4 z-50 flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden rounded-2xl border border-primary/30 bg-card p-4 shadow-xl sm:inset-x-auto sm:bottom-4 sm:right-4 sm:w-[26rem] sm:max-w-[calc(100vw-2rem)]"
     >
+      <div data-testid="update-modal-body" className="min-h-0 flex-1 overflow-y-auto">
       <div className="flex items-start justify-between gap-2">
         <p className="text-base font-semibold text-foreground">有新版本了</p>
         <button
@@ -153,8 +160,9 @@ export function UpdateModal({ update, manualCheckSignal = 0, onOpenChange }: Upd
           />
         </div>
       )}
+      </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
+      <div data-testid="update-modal-footer" className="mt-4 flex shrink-0 flex-wrap items-center gap-2 border-t border-card-border pt-3">
         {phase === 'idle' || phase === 'checking' ? (
           <Button data-testid="update-modal-download" onClick={() => void update.start()} disabled={checking}>
             前往下载
@@ -203,8 +211,9 @@ export function UpdateModal({ update, manualCheckSignal = 0, onOpenChange }: Upd
             稍后再说
           </Button>
         )}
+        <p className="mt-1 w-full text-xs text-muted">更新时你的设置和投递记录都不会动，换完自动重新打开。</p>
       </div>
-      <p className="mt-3 text-xs text-muted">更新时你的设置和投递记录都不会动，换完自动重新打开。</p>
     </div>
+    </ModalPortal>
   )
 }
