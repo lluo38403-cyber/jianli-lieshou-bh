@@ -1,10 +1,9 @@
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Briefcase, Home, LogOut, Radar, Settings } from 'lucide-react'
+import { Briefcase, Home, Radar, Settings } from 'lucide-react'
 import { useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { requestManualUpdateCheck } from '@/lib/updateEvents'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
-import { ExitAppDialog } from './ExitAppDialog'
 
 const navItems = [
   { to: '/', icon: Home, label: '首页' },
@@ -28,8 +27,6 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
   const [pendingTo, setPendingTo] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savingBeforeLeave, setSavingBeforeLeave] = useState(false)
-  /** “退出程序”确认弹窗（v25）：只在侧边栏底部设这一处入口。 */
-  const [showExitDialog, setShowExitDialog] = useState(false)
 
   // 切页拦截：只有“在设置页、有未保存修改、要去别的页”时才拦；
   // 没改动、去的就是当前页、或根本不在设置页时，直接正常跳转。
@@ -156,23 +153,10 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
         ))}
       </nav>
 
-      <div className="space-y-3 border-t border-white/10 px-2 py-4 md:px-4">
-        {pendingReplies > 0 && (
+      {pendingReplies > 0 && (
+        <div className="space-y-3 border-t border-white/10 px-2 py-4 md:px-4">
           <p className="hidden text-center text-[11px] leading-5 text-amber-300 md:block">有 {pendingReplies} 条 HR 消息等你处理</p>
-        )}
-        <button
-          type="button"
-          data-testid="sidebar-exit-app"
-          onClick={() => setShowExitDialog(true)}
-          title="结束所有任务和后台程序并退出"
-          className="flex w-full items-center justify-center gap-3 rounded-xl px-1 py-3 text-[10px] text-white/60 transition-all duration-200 hover:-translate-y-px hover:bg-white/10 hover:text-white md:justify-start md:px-3 md:text-sm"
-        >
-          <LogOut className="h-4 w-4" />
-          <span className="hidden md:inline">退出程序</span>
-        </button>
-      </div>
-      {showExitDialog && (
-        <ExitAppDialog onStay={() => setShowExitDialog(false)} />
+        </div>
       )}
       {pendingTo !== null && (
         <UnsavedChangesDialog

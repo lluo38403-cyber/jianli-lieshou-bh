@@ -22,9 +22,10 @@ function MainLayout() {
   // v34：点 --app 窗口右上角 X 不再弹任何确认框——前端不注册
   // beforeunload，X 直接关窗；关闭清理全部走后端关窗监视线程
   // （watch_app_window_close → _perform_exit_cleanup：先停进行中
-  // 任务，再停 runtime / 我们拉的 Chrome，最后退出进程，与
-  // “退出程序”点“是”同一套）。代码关窗（更新换版、“退出程序”
-  // 点“是”后的 window.close()）也不需要再绕过什么，直接关就行。
+  // 任务，再停 runtime / 我们拉的 Chrome，最后退出进程）。
+  // 代码关窗（更新换版后的 window.close()）也不需要再绕过什么，
+  // 直接关就行。v36：左下角“退出程序”入口已去掉，退出只剩
+  // 右上角 X 这一条路。
   return (
     <UpdateProvider>
     <UnsavedChangesProvider>

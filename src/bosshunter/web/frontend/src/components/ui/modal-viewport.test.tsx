@@ -6,7 +6,6 @@ import { VerificationModal } from '@/components/dashboard/VerificationModal'
 import { ScoreJobsDialog } from '@/components/dashboard/ScoreJobsDialog'
 import { CollectJobsDialog } from '@/components/dashboard/CollectJobsDialog'
 import { UnsavedChangesDialog } from '@/components/layout/UnsavedChangesDialog'
-import { ExitAppDialog } from '@/components/layout/ExitAppDialog'
 import type { UpdateState } from '@/hooks/useUpdate'
 import type { VerificationHold } from '@/hooks/useDashboard'
 
@@ -185,8 +184,8 @@ describe('ModalPortal：弹窗逃出带 transform 的祖先，fixed 重新相对
     expect(dialog.className).toContain('fixed')
   })
 
-  it('滚动到底部后“设置还没保存”与“退出程序”确认框仍在视口内居中', () => {
-    const { rerender } = render(
+  it('滚动到底部后“设置还没保存”确认框仍在视口内居中', () => {
+    render(
       <ScrolledPage>
         <UnsavedChangesDialog saving={false} error={null} onSaveAndLeave={vi.fn()} onDiscardAndLeave={vi.fn()} onStay={vi.fn()} />
       </ScrolledPage>,
@@ -194,14 +193,5 @@ describe('ModalPortal：弹窗逃出带 transform 的祖先，fixed 重新相对
     const unsaved = screen.getByRole('dialog', { name: '设置还没保存' })
     expect(unsaved.parentElement).toBe(document.body)
     expect(unsaved.className).toContain('fixed')
-
-    rerender(
-      <ScrolledPage>
-        <ExitAppDialog onStay={vi.fn()} />
-      </ScrolledPage>,
-    )
-    const exit = screen.getByRole('dialog', { name: '退出应用程序' })
-    expect(exit.parentElement).toBe(document.body)
-    expect(exit.className).toContain('fixed')
   })
 })
