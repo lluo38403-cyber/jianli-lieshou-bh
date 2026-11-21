@@ -335,21 +335,22 @@ class WebApiRouteTests(unittest.TestCase):
         token = headers.get("Set-Cookie", "").split(";")[0].split("=", 1)[1]
         return f"bh_admin_session={token}"
 
-    def test_user_config_post_cannot_change_greeting_fields(self):
-        # 用户端提交招呼语字段：请求成功，但字段不生效、不落盘，改走管理员面板。
+    def test_user_config_post_can_change_greeting_switch_but_not_other_greeting_fields(self):
+        # 用户端提交招呼语开关：开关生效并落盘；固定文案与偏好仍不生效、不落盘，改走管理员面板。
         with tempfile.TemporaryDirectory() as tmp:
             server.set_base_dir(Path(tmp))
             server._write_config({"profile": {"greeting_preference": "不要问问题"}})
             status, _, body = self._request("/api/config", "POST", {
-                "profile": {"ai_greeting_enabled": False, "fixed_greeting": "您好，我想了解这个岗位。", "greeting_preference": "随便问"},
+                "profile": {"ai_greeting_enabled": True, "fixed_greeting": "您好，我想了解这个岗位。", "greeting_preference": "随便问"},
             })
             self.assertTrue(status.startswith("200"), body)
             status, _, body = self._request("/api/config")
             profile = json.loads(body)["profile"]
-            self.assertNotIn("ai_greeting_enabled", profile)
+            self.assertIs(profile["ai_greeting_enabled"], True)
             self.assertNotIn("fixed_greeting", profile)
             self.assertNotIn("greeting_preference", profile)
             saved = server.load_config(server.CONFIG_PATH)["profile"]
+            self.assertIs(saved["ai_greeting_enabled"], True)
             self.assertEqual(saved["greeting_preference"], "不要问问题")
             # 用户提交的固定文案没写进去，留的是默认文案。
             self.assertNotEqual(saved["fixed_greeting"], "您好，我想了解这个岗位。")
@@ -2925,7 +2926,7 @@ class WebApiRouteTests(unittest.TestCase):
 
             with patch("bosshunter.ai.greeter.generate_greetings", side_effect=fake_generate), \
             patch("bosshunter.ai.greeter._get_resume_summary", return_value="简历摘要"), \
-                 patch.object(server, "load_config", return_value={}), \
+                 patch.object(server, "load_config", return_value={"profile": {"ai_greeting_enabled": True, "fixed_greeting": "固定文案"}}), \
                  patch.object(server, "task_runner", runner):
                 status, _, body = self._request(
                     "/api/workbench/greetings",
@@ -3002,7 +3003,7 @@ class WebApiRouteTests(unittest.TestCase):
 
             with patch("bosshunter.ai.greeter.generate_greetings", side_effect=failing_generate), \
             patch("bosshunter.ai.greeter._get_resume_summary", return_value="简历摘要"), \
-                 patch.object(server, "load_config", return_value={}), \
+                 patch.object(server, "load_config", return_value={"profile": {"ai_greeting_enabled": True, "fixed_greeting": "固定文案"}}), \
                  patch.object(server, "task_runner", runner):
                 status, _, body = self._request(
                     "/api/workbench/greetings",
@@ -3054,7 +3055,7 @@ class WebApiRouteTests(unittest.TestCase):
 
             with patch("bosshunter.ai.greeter.generate_greetings", side_effect=paused_generate), \
             patch("bosshunter.ai.greeter._get_resume_summary", return_value="简历摘要"), \
-                 patch.object(server, "load_config", return_value={}), \
+                 patch.object(server, "load_config", return_value={"profile": {"ai_greeting_enabled": True, "fixed_greeting": "固定文案"}}), \
                  patch.object(server, "task_runner", runner):
                 status, _, body = self._request(
                     "/api/workbench/greetings",
@@ -3101,7 +3102,7 @@ class WebApiRouteTests(unittest.TestCase):
 
             with patch("bosshunter.ai.greeter.generate_greetings", side_effect=partial_paused_generate), \
             patch("bosshunter.ai.greeter._get_resume_summary", return_value="简历摘要"), \
-                 patch.object(server, "load_config", return_value={}), \
+                 patch.object(server, "load_config", return_value={"profile": {"ai_greeting_enabled": True, "fixed_greeting": "固定文案"}}), \
                  patch.object(server, "task_runner", runner):
                 status, _, body = self._request(
                     "/api/workbench/greetings",
@@ -3121,8 +3122,9 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(any("本轮提前结束" in message for message in result["logs"]))
         self.assertTrue(any("rate_limit" in message for message in result["logs"]))
 
-    def test_greet_task_fails_fast_without_resume(self):
-        # 审计 P1 回归：缺简历属于配置阻断，任务必须 failed 并携带原因，不得伪装成 completed。
+    def test_greet_task_falls_back_to_fixed_greeting_without_resume(self):
+        # v34 附加项（用户要求）：缺简历不再让任务 failed——预检只记日志，
+        # 生成照常走（generate_greetings 内按固定招呼语回落），任务完成。
         runner = WorkbenchTaskRunner({"greet": server._execute_greet})
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
@@ -3135,8 +3137,8 @@ class WebApiRouteTests(unittest.TestCase):
             server.set_base_dir(base_dir)
 
             with patch("bosshunter.ai.greeter._get_resume_summary", return_value=""), \
-                 patch("bosshunter.ai.greeter.generate_greetings") as generate, \
-                 patch.object(server, "load_config", return_value={}), \
+                 patch("bosshunter.ai.greeter.generate_greetings", return_value=1) as generate, \
+                 patch.object(server, "load_config", return_value={"profile": {"ai_greeting_enabled": True, "fixed_greeting": "固定文案"}}), \
                  patch.object(server, "task_runner", runner):
                 status, _, body = self._request(
                     "/api/workbench/greetings",
@@ -3148,9 +3150,11 @@ class WebApiRouteTests(unittest.TestCase):
 
         payload = json.loads(body)
         self.assertTrue(status.startswith("200"), payload)
-        self.assertEqual(result["status"], "failed")
-        self.assertIn("无法读取简历", result["error"])
-        generate.assert_not_called()
+        self.assertEqual(result["status"], "completed")
+        self.assertIsNone(result["error"])
+        generate.assert_called_once()
+        self.assertEqual(result["metrics"]["greet_generated"], 1)
+        self.assertTrue(any("改用固定招呼语" in message for message in result["logs"]))
 
     def test_save_generated_greeting_rejects_allowed_status_transition(self):
         # 审计 P2 回归：approved→error 等允许状态间的并发变化必须拒绝，不能写回 ready。
@@ -3369,7 +3373,7 @@ class WebApiRouteTests(unittest.TestCase):
 
             with patch("bosshunter.ai.greeter.generate_greetings", side_effect=fake_generate), \
                  patch("bosshunter.ai.greeter._get_resume_summary", return_value="简历摘要"), \
-                 patch.object(server, "load_config", return_value={}), \
+                 patch.object(server, "load_config", return_value={"profile": {"ai_greeting_enabled": True, "fixed_greeting": "固定文案"}}), \
                  patch.object(server, "task_runner", runner):
                 status, _, body = self._request(
                     "/api/workbench/greetings",
@@ -3406,7 +3410,7 @@ class WebApiRouteTests(unittest.TestCase):
 
             with patch("bosshunter.ai.greeter.generate_greetings", side_effect=fake_generate), \
             patch("bosshunter.ai.greeter._get_resume_summary", return_value="简历摘要"), \
-                 patch.object(server, "load_config", return_value={}), \
+                 patch.object(server, "load_config", return_value={"profile": {"ai_greeting_enabled": True, "fixed_greeting": "固定文案"}}), \
                  patch.object(server, "task_runner", runner):
                 status, _, body = self._request(
                     "/api/workbench/greetings",
@@ -3451,7 +3455,7 @@ class WebApiRouteTests(unittest.TestCase):
 
             with patch("bosshunter.ai.greeter.generate_greetings", side_effect=fake_generate), \
             patch("bosshunter.ai.greeter._get_resume_summary", return_value="简历摘要"), \
-                 patch.object(server, "load_config", return_value={}), \
+                 patch.object(server, "load_config", return_value={"profile": {"ai_greeting_enabled": True, "fixed_greeting": "固定文案"}}), \
                  patch.object(server, "task_runner", runner):
                 status, _, body = self._request(
                     "/api/workbench/greetings",
@@ -4890,6 +4894,7 @@ class WebApiRouteTests(unittest.TestCase):
             config = {
                 "_workbench_greeting_activity": server.greeting_activity.claim,
                 "_workbench_regenerate": True,
+                "profile": {"ai_greeting_enabled": True},
                 "ai": {"greeting_max_iterations": 0},
             }
             with (
@@ -4926,6 +4931,7 @@ class WebApiRouteTests(unittest.TestCase):
             config = {
                 "_workbench_greeting_activity": server.greeting_activity.claim,
                 "_workbench_job_ids": ["choose-only"],
+                "profile": {"ai_greeting_enabled": True},
                 "ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 1},
                 "throttle": {"daily_limit": 10},
             }
@@ -5024,7 +5030,7 @@ class WebApiRouteTests(unittest.TestCase):
                         current.close()
                     return "后台生成的草稿"
 
-                config = {"ai": {"greeting_max_iterations": 0}}
+                config = {"profile": {"ai_greeting_enabled": True}, "ai": {"greeting_max_iterations": 0}}
                 with (
                     patch("bosshunter.ai.greeter._get_resume_summary", return_value="真实简历摘要"),
                     patch("bosshunter.ai.greeter._call_claude", side_effect=fake_ai),

@@ -161,7 +161,7 @@ def test_review_receives_user_preferences():
     '您好，我做过公众号和社群运营，想应聘这个岗位。',
 ])
 def test_business_suggestion_is_optional_and_does_not_trigger_regeneration(greeting):
-    config = {'profile': {'greeting_preference': '自然简短，有依据时带业务建议'}}
+    config = {'profile': {'ai_greeting_enabled': True, 'greeting_preference': '自然简短，有依据时带业务建议'}}
     with (
         patch.object(greeter, 'get_db', return_value=MagicMock()),
         patch.object(greeter, 'get_jobs_by_status', return_value=[{
@@ -214,7 +214,7 @@ def test_url_rejection_feedback_does_not_leak_to_next_job():
 
 
 def test_no_question_mismatch_is_saved_as_advice_not_failure():
-    config = {'profile': {'greeting_preference': '不提问'}}
+    config = {'profile': {'ai_greeting_enabled': True, 'greeting_preference': '不提问'}}
     greeting = '您好，方便聊聊吗？'
     with (
         patch.object(greeter, 'get_db', return_value=MagicMock()),

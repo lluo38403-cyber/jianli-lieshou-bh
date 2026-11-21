@@ -387,8 +387,11 @@ def _serialize_job(item, *, config=None):
 
 
 # 用户端看不到、也改不了的字段：整个 ai 区 + 招呼语相关的 profile 字段
-# （招呼语开关/固定文案/偏好属于 AI 功能，由管理员面板管理）。
+# （固定文案/偏好属于 AI 功能，由管理员面板管理）。招呼语开关本身
+# 例外：投递设置页（ConfigPage）与管理员面板共用这一个开关，双向
+# 同步、单一事实来源，所以用户端接口要返回它、保存时也要认用户提交值。
 _ADMIN_MANAGED_PROFILE_FIELDS = ("ai_greeting_enabled", "fixed_greeting", "greeting_preference")
+_USER_EDITABLE_PROFILE_FIELDS = ("ai_greeting_enabled",)
 
 
 def _redact_config_for_response(config):
@@ -403,6 +406,8 @@ def _redact_config_for_response(config):
 	profile_cfg = redacted.get("profile")
 	if isinstance(profile_cfg, dict):
 		for field in _ADMIN_MANAGED_PROFILE_FIELDS:
+			if field in _USER_EDITABLE_PROFILE_FIELDS:
+				continue
 			profile_cfg.pop(field, None)
 	return redacted
 
@@ -422,8 +427,9 @@ def _sanitize_config_for_write(data):
 	"""Remove browser-only fields; user submissions cannot change AI settings.
 
 	用户端提交的 ``ai`` 整个丢弃（提供方/模型/凭证一律不接受），已保存的
-	AI 配置原样保留；招呼语字段与 ``admin`` 同样只认服务端已保存的值。
-	AI 设置改走管理员面板（``/api/admin/config``）。
+	AI 配置原样保留；固定文案与招呼语偏好同样只认服务端已保存的值。
+	招呼语开关例外：它是投递设置页与管理员面板共用的开关，用户提交的
+	布尔值生效。AI 设置改走管理员面板（``/api/admin/config``）。
 	"""
 	cleaned = remove_retired_collection_settings(deepcopy(data))
 	existing = load_config(CONFIG_PATH)
@@ -433,13 +439,30 @@ def _sanitize_config_for_write(data):
 	cleaned["auth"] = deepcopy(existing.get("auth", {}))
 	cleaned.pop("admin", None)
 	profile_cfg = cleaned.get("profile")
-	if isinstance(profile_cfg, dict):
-		existing_profile = existing.get("profile", {})
-		for field in _ADMIN_MANAGED_PROFILE_FIELDS:
-			if existing_profile.get(field) is not None:
-				profile_cfg[field] = existing_profile[field]
-			else:
-				profile_cfg.pop(field, None)
+	if not isinstance(profile_cfg, dict):
+		profile_cfg = {}
+		cleaned["profile"] = profile_cfg
+	existing_profile = existing.get("profile", {})
+	if not isinstance(existing_profile, dict):
+		existing_profile = {}
+	# 用户端可能只提交部分配置：没提交的 profile 字段沿用服务端已保存的值，
+	# 而不是丢掉整段 profile；提交了的字段以提交值为准（招呼语字段除外，下方处理）。
+	for key, value in existing_profile.items():
+		profile_cfg.setdefault(key, value)
+	for field in _ADMIN_MANAGED_PROFILE_FIELDS:
+		if field in _USER_EDITABLE_PROFILE_FIELDS:
+			# 投递设置页的开关：用户提交的布尔值生效；没提交或
+			# 不是布尔值时保留服务端已保存的值，不静默改回。
+			if not isinstance(profile_cfg.get(field), bool):
+				if existing_profile.get(field) is not None:
+					profile_cfg[field] = existing_profile[field]
+				else:
+					profile_cfg.pop(field, None)
+			continue
+		if existing_profile.get(field) is not None:
+			profile_cfg[field] = existing_profile[field]
+		else:
+			profile_cfg.pop(field, None)
 	return cleaned
 
 
@@ -1145,13 +1168,14 @@ def _execute_greet(task: WorkbenchTask, config: dict) -> None:
 	config["_workbench_log"] = lambda message: _log(task, message)
 	config["_workbench_greeting_activity"] = greeting_activity.claim
 	selected_job_ids = [str(job_id) for job_id in config.get("_workbench_job_ids", []) if str(job_id)]
-	# 启动前预检简历：缺简历属于配置阻断，直接让任务失败并携带原因，
-	# 而不是进入生成流程后静默返回 0、被误报为 completed。
+	# 启动前预检简历：v34 起无简历不再阻断任务——generate_greetings 内
+	# 会按固定招呼语回落、队列继续；这里只记一条日志，不再抛错。
+	# 配置错误（greeting_config_error，如开关关闭且固定文案为空）
+	# 仍是真阻断，保持抛错。
 	if error := greeting_config_error(config):
 		raise ValueError(error)
-	if config.get("profile", {}).get("ai_greeting_enabled", True) and not _get_resume_summary(config):
-		_log(task, "无法读取简历，任务未启动：请先在配置面板上传简历后重试")
-		raise RuntimeError("无法读取简历：请先在配置面板上传简历后重试")
+	if config.get("profile", {}).get("ai_greeting_enabled", False) and not _get_resume_summary(config):
+		_log(task, "未读到简历，本轮招呼语改用固定招呼语；上传简历后可恢复智能定制")
 	if not selected_job_ids:
 		_log(task, "未选择任何岗位，任务未启动")
 		raise ValueError("未选择任何岗位：请通过「生成打招呼用语」选择岗位后重试")
@@ -1699,8 +1723,8 @@ def api_exit():
 	先回包，再在后台线程里走统一清理（停任务 → 停 runtime/我们拉的
 	Chrome → 安装目录扫尾 → 清实例文件），最后退出进程。更新流程不走
 	这里，走自己的 apply_update + request_restart，两条退出路径不冲突；
-	关 --app 窗口点 X 也不走这里，走 beforeunload 确认 + 关窗监视线程
-	（确认后调同一套 _perform_exit_cleanup）。
+	关 --app 窗口点 X 也不走这里：v34 起 X 直接关窗、不弹任何确认框，
+	关窗监视线程调同一套 _perform_exit_cleanup。
 	"""
 	def _exit() -> None:
 		time.sleep(1.5)  # 让 HTTP 回包先发出去
@@ -5268,14 +5292,13 @@ def _run_server_impl(host: str = "127.0.0.1", port: int = 8686, open_browser: bo
 
 	if open_browser:
 		def _watch_app_close():
-			# v25：关 --app 窗口先经 beforeunload 确认（浏览器通用确认
-			# 框，见前端 closeConfirm；v33 起我们拉起的 Chrome 实例带
-			# --lang=zh-CN，通用框是中文，不再是英文 Leave app?）；用户点
-			# “离开”后句柄退出，这里走与 /api/exit 同一套退出清理
-			# _perform_exit_cleanup（停任务 → 停 runtime/我们拉的 Chrome →
-			# 安装目录扫尾 → 清实例文件）再退出进程。更新换版时监视线程
-			# 自己会跳过（updater._UPDATE_APPLYING 置位）。Bottle 没有干净的
-			# 停服务句柄，清理完直接退出进程就是停服务。
+			# v34：关 --app 窗口不再弹任何确认框（前端不再注册
+			# beforeunload，X 直接关窗）；句柄退出后这里走与 /api/exit
+			# 同一套退出清理 _perform_exit_cleanup（停任务 → 停 runtime/
+			# 我们拉的 Chrome → 安装目录扫尾 → 清实例文件）再退出进程。
+			# 更新换版时监视线程自己会跳过（updater._UPDATE_APPLYING
+			# 置位）。Bottle 没有干净的停服务句柄，清理完直接退出进程
+			# 就是停服务。
 			try:
 				from bosshunter.app_window import watch_app_window_close
 

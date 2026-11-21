@@ -434,8 +434,9 @@ def _chrome_debug_version(port: int) -> dict[str, Any] | None:
 
 # v33：我们拉起的工作浏览器实例的界面语言（与 app_window 那边的
 # _CHROME_UI_LANG_ARGS 同一个值、同一原因：--app 窗口与工作浏览器
-# 共用一个 Chrome 实例，先拉起实例的那次启动决定语言；--lang=zh-CN
-# 让 X 的 beforeunload 通用确认框变成中文，不再弹英文 Leave app?）。
+# 共用一个 Chrome 实例，先拉起实例的那次启动决定语言；v34 起 X 的
+# beforeunload 通用确认框已经去掉，--lang=zh-CN 留着只为让这个专用
+# 实例的 Chrome 界面保持中文）。
 # 只影响我们自己的专用配置目录实例，不动用户日常用的 Chrome。
 _CHROME_UI_LANG_ARGS = ["--lang=zh-CN"]
 

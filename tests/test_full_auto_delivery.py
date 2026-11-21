@@ -45,6 +45,9 @@ NO_KEY_CONFIG = {
         "salary_max": 30,
         "job_types": ["全职"],
         "posted_days": 7,
+        # 无 Key 用户默认关闭智能定制打招呼，走固定文案（与配置默认值一致）。
+        "ai_greeting_enabled": False,
+        "fixed_greeting": "您好，我对贵公司的这个岗位很感兴趣，简历已附上，期待与您进一步沟通，谢谢！",
     },
     "search": {"keywords": ["Python 后端"]},
     "ai": {},

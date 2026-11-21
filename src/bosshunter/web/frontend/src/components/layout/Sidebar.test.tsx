@@ -107,7 +107,6 @@ describe('Sidebar exit app', () => {
       )).toBe(true)
     })
     await vi.waitFor(() => expect(closeSpy).toHaveBeenCalled())
-    expect(window.__jlSkipCloseConfirm).toBe(true)
   })
 
   it('v33：确认文案只讲点“是”会发生什么，不提删安装文件夹', async () => {

@@ -169,9 +169,10 @@ describe('useUpdate', () => {
     await waitFor(() => expect(reloadMock).toHaveBeenCalled(), { timeout: 8000 })
   })
 
-  it('apply in standalone mode skips the close confirm before window.close', async () => {
-    // v25：更新换版的代码关窗必须绕过 beforeunload 确认，否则换版
-    // 会卡住等用户点。standalone（--app 窗口）才走 window.close()。
+  it('apply in standalone mode closes the window directly (v34: no close confirm to skip)', async () => {
+    // v34：前端不再注册 beforeunload，更新换版的代码关窗直接
+    // window.close()，不需要再绕过确认；换版流程本身由后端
+    // updater._UPDATE_APPLYING 守卫，不会被关窗监视线程抢跑。
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.startsWith('/api/update/check')) return jsonResponse(NEW_VERSION)
@@ -189,21 +190,16 @@ describe('useUpdate', () => {
       removeEventListener: vi.fn(),
     }))
     Object.defineProperty(window, 'matchMedia', { value: matchMediaMock, configurable: true })
-    try {
-      const { result } = renderHook(() => useUpdate())
-      await waitFor(() => expect(result.current.info?.version).toBe('1.0.2'))
-      await act(async () => {
-        await result.current.start()
-      })
-      await waitFor(() => expect(result.current.phase).toBe('ready'), { timeout: 5000 })
-      await act(async () => {
-        await result.current.apply()
-      })
-      expect(window.__jlSkipCloseConfirm).toBe(true)
-      expect(closeMock).toHaveBeenCalled()
-    } finally {
-      delete window.__jlSkipCloseConfirm
-    }
+    const { result } = renderHook(() => useUpdate())
+    await waitFor(() => expect(result.current.info?.version).toBe('1.0.2'))
+    await act(async () => {
+      await result.current.start()
+    })
+    await waitFor(() => expect(result.current.phase).toBe('ready'), { timeout: 5000 })
+    await act(async () => {
+      await result.current.apply()
+    })
+    expect(closeMock).toHaveBeenCalled()
   })
 })
 

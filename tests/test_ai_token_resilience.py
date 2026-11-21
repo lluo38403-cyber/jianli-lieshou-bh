@@ -1024,7 +1024,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
             patch("bosshunter.ai.greeter.add_history"),
         ):
             count = greeter.generate_greetings(
-                {"ai": {"greeting_max_attempts": 2, "greeting_max_iterations": 0}}
+                {"profile": {"ai_greeting_enabled": True}, "ai": {"greeting_max_attempts": 2, "greeting_max_iterations": 0}}
             )
 
         self.assertEqual(count, 0)
@@ -1056,6 +1056,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
             ):
                 count = greeter.generate_greetings(
                     {
+                        "profile": {"ai_greeting_enabled": True},
                         "ai": {"greeting_max_attempts": 1, "greeting_max_iterations": 0},
                         "_workbench_log": logs.append,
                     },
@@ -1087,7 +1088,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
 
         db = MagicMock()
         jobs = [_job("quota-paused")]
-        config = {"ai": {"greeting_max_attempts": 1, "greeting_max_iterations": 0}}
+        config = {"profile": {"ai_greeting_enabled": True}, "ai": {"greeting_max_attempts": 1, "greeting_max_iterations": 0}}
 
         with (
             patch("bosshunter.ai.greeter.get_db", return_value=db),
@@ -1108,20 +1109,24 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         self.assertIn("quota", pause_reason)
         update_greeting.assert_not_called()
 
-    def test_missing_resume_records_pause_reason(self):
-        # 审计 P1 回归：缺简历必须写入 pause_reason，供后台任务按零产出失败语义上报。
+    def test_missing_resume_falls_back_to_fixed_greeting(self):
+        # v34 附加项（用户要求）：缺简历不再阻断——自动降级走固定招呼语，
+        # 整批照常生成，不写 pause_reason、不调 AI。
         db = MagicMock()
-        config = {"ai": {"greeting_max_iterations": 0}}
+        config = {"profile": {"ai_greeting_enabled": True}, "ai": {"greeting_max_iterations": 0}}
 
         with (
             patch("bosshunter.ai.greeter.get_db", return_value=db),
             patch("bosshunter.ai.greeter.get_jobs_by_status", return_value=[_job("no-resume")]),
             patch("bosshunter.ai.greeter._get_resume_summary", return_value=""),
+            patch("bosshunter.ai.greeter._call_claude") as ai,
+            patch("bosshunter.ai.greeter.save_generated_greeting_preview", return_value=True),
         ):
             count = greeter.generate_greetings(config)
 
-        self.assertEqual(count, 0)
-        self.assertIn("无法读取简历", config["_workbench_greeting_report"].get("pause_reason", ""))
+        self.assertEqual(count, 1)
+        ai.assert_not_called()
+        self.assertNotIn("pause_reason", config["_workbench_greeting_report"])
 
     def test_preserve_failure_reports_conflict(self):
         # 审计 P2 回归：mark_existing_greeting_ready CAS 失败必须计入 conflict_ids，不得静默。
@@ -1129,7 +1134,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         existing = _job("preserve-conflict")
         existing["status"] = "ready"
         existing["greeting"] = "已有招呼语"
-        config = {"ai": {}}
+        config = {"profile": {"ai_greeting_enabled": True}, "ai": {}}
 
         with (
             patch("bosshunter.ai.greeter.get_db", return_value=db),
@@ -1148,7 +1153,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
     def test_empty_job_ids_list_processes_nothing(self):
         # 审计 P3 回归：显式传入空列表 = 处理零个岗位，不得退回"全部 approved"。
         db = MagicMock()
-        config = {"ai": {}}
+        config = {"profile": {"ai_greeting_enabled": True}, "ai": {}}
 
         with (
             patch("bosshunter.ai.greeter.get_db", return_value=db),
@@ -1197,6 +1202,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         ):
             count = greeter.generate_greetings(
                 {
+                    "profile": {"ai_greeting_enabled": True},
                     "ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 2},
                     "_workbench_log": logs.append,
                 }
@@ -1213,6 +1219,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         new_job = _job("new")
         logs: list[str] = []
         config = {
+            "profile": {"ai_greeting_enabled": True},
             "ai": {"greeting_max_iterations": 0},
             "_workbench_log": logs.append,
         }
@@ -1256,7 +1263,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
             patch("bosshunter.ai.greeter.save_generated_greeting_preview", return_value=True) as save_preview,
         ):
             count = greeter.generate_greetings(
-                {"ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 1}}
+                {"profile": {"ai_greeting_enabled": True}, "ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 1}}
             )
 
         self.assertEqual(count, 1)
@@ -1284,6 +1291,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
             patch("bosshunter.ai.greeter.save_generated_greeting_preview", return_value=True) as save_preview,
         ):
             count = greeter.generate_greetings({
+                "profile": {"ai_greeting_enabled": True},
                 "ai": {
                     "greeting_max_iterations": 2,
                     "greeting_style_suggestions": False,
@@ -1312,6 +1320,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
             patch("bosshunter.ai.greeter.save_generated_greeting_preview", return_value=True) as save_preview,
         ):
             count = greeter.generate_greetings({
+                "profile": {"ai_greeting_enabled": True},
                 "ai": {
                     "greeting_style_suggestions": True, "greeting_max_iterations": 1,
                     "greeting_auto_apply_style": True,
@@ -1358,6 +1367,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         ):
             count = greeter.generate_greetings(
                 {
+                    "profile": {"ai_greeting_enabled": True},
                     "ai": {
                         "greeting_max_attempts": 2,
                         "greeting_max_iterations": 0,
@@ -1391,6 +1401,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         ):
             count = greeter.generate_greetings(
                 {
+                    "profile": {"ai_greeting_enabled": True},
                     "ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 1},
                     "_workbench_log": logs.append,
                 }
@@ -1423,6 +1434,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         ):
             count = greeter.generate_greetings(
                 {
+                    "profile": {"ai_greeting_enabled": True},
                     "ai": {"greeting_max_iterations": 0},
                     "_workbench_log": logs.append,
                 }
@@ -1454,6 +1466,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         ):
             count = greeter.generate_greetings(
                 {
+                    "profile": {"ai_greeting_enabled": True},
                     "ai": {"greeting_max_iterations": 0},
                     "_workbench_log": logs.append,
                 }
@@ -1483,7 +1496,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
             patch("bosshunter.ai.greeter.add_history") as add_history,
         ):
             count = greeter.generate_greetings(
-                {"ai": {"greeting_max_attempts": 2, "greeting_max_iterations": 0}}
+                {"profile": {"ai_greeting_enabled": True}, "ai": {"greeting_max_attempts": 2, "greeting_max_iterations": 0}}
             )
 
         self.assertEqual(count, 1)
@@ -1515,6 +1528,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         ):
             count = greeter.generate_greetings(
                 {
+                    "profile": {"ai_greeting_enabled": True},
                     "ai": {"greeting_max_attempts": 2, "greeting_max_iterations": 0},
                     "_workbench_log": logs.append,
                 }
@@ -1534,6 +1548,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         jobs = [_job("status-race")]
         logs: list[str] = []
         config = {
+            "profile": {"ai_greeting_enabled": True},
             "ai": {"greeting_max_iterations": 0},
             "_workbench_log": logs.append,
         }
@@ -1559,6 +1574,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         job = {**_job("regenerate-existing"), "status": "error", "greeting": "旧招呼语"}
         db.execute.return_value.fetchall.side_effect = [[job], []]
         config = {
+            "profile": {"ai_greeting_enabled": True},
             "ai": {"greeting_max_iterations": 0},
             "_workbench_regenerate": True,
         }
@@ -1586,7 +1602,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
             ],
             [],
         ]
-        config: dict = {"ai": {"greeting_max_iterations": 0}}
+        config: dict = {"profile": {"ai_greeting_enabled": True}, "ai": {"greeting_max_iterations": 0}}
 
         with (
             patch("bosshunter.ai.greeter.get_db", return_value=db),
@@ -1622,7 +1638,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
             patch("bosshunter.ai.greeter.save_generated_greeting_preview", return_value=True) as save_preview,
         ):
             count = greeter.generate_greetings(
-                {"ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 1}, "_workbench_log": logs.append}
+                {"profile": {"ai_greeting_enabled": True}, "ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 1}, "_workbench_log": logs.append}
             )
 
         self.assertEqual(count, 2)

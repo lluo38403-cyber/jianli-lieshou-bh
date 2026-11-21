@@ -12,8 +12,13 @@ which only ever kills a copy of `sleep` it started itself):
   name, and always excludes our own PID;
 - the window-close watcher (_on_close) calls the same shared cleanup
   as /api/exit;
-- both Chrome launch sites pass --lang=zh-CN so the beforeunload
-  dialog is Chinese instead of English "Leave app?".
+- v34: the window-close watcher runs the FULL shared cleanup (not a
+  mocked stand-in): active task stopped first, then browser resources
+  shut down, then the instance file cleared, then the process exits —
+  with no beforeunload confirmation anywhere in the path;
+- both Chrome launch sites pass --lang=zh-CN (kept for the Chrome UI
+  language of our own instance; v34 removed the beforeunload dialog
+  it used to translate).
 """
 
 import json
@@ -234,6 +239,61 @@ class WatchCloseUsesSharedCleanupTests(unittest.TestCase):
             # 出了 with 块就是真的退出进程，pytest 当场结束。
             on_close()
         cleanup.assert_called_once_with()
+        exit_mock.assert_called_once_with(0)
+
+    def test_window_close_runs_full_cleanup_stopping_active_task_first(self):
+        """v34：X 直接关窗、不弹确认框；监视线程调到的 _on_close 必须走
+        与 /api/exit 同一套全套清理（先停进行中任务 → 停 runtime →
+        清实例文件），最后退出进程。这里不 mock _perform_exit_cleanup
+        本身，只 mock 它的每一步，验证删掉 beforeunload 后整条清理
+        链不断、顺序不错。"""
+        from bosshunter import app_window
+        from bosshunter.web import server
+
+        stage_before = app_window.get_splash_stage()
+        self.addCleanup(lambda: app_window.set_splash_stage(stage_before))
+        with (
+            patch("bosshunter.updater.cleanup_stale_update_processes"),
+            patch("bosshunter.updater.ensure_desktop_shortcut"),
+            patch("bosshunter.app_window.is_our_service_alive", return_value=False),
+            patch("bosshunter.app_window.launch_splash_window", return_value=(Mock(), None)),
+            patch("bosshunter.collection_session_store.list_sessions", return_value=[]),
+            patch("bosshunter.browser.runtime.set_data_dir"),
+            patch("bosshunter.browser.runtime.cleanup_stale_browser_resources"),
+            patch("bosshunter.browser.runtime.write_instance_file"),
+            patch("bosshunter.web.server._install_shutdown_hooks"),
+            patch("bosshunter.web.server.threading.Thread") as thread_cls,
+            patch("bosshunter.web.server.start_login_patrol"),
+            patch.object(server, "app") as app,
+        ):
+            server.run_server(host="127.0.0.1", port=8686, open_browser=True)
+        targets = {
+            c.kwargs["target"].__name__: c.kwargs["target"]
+            for c in thread_cls.call_args_list
+        }
+        self.assertIn("_watch_app_close", targets)
+        order = []
+        runner = Mock()
+        runner.status.return_value = {"active": {"id": "task-1"}}
+        runner.stop.side_effect = lambda *a, **k: order.append("stop")
+        with (
+            patch("bosshunter.app_window.watch_app_window_close") as watch,
+            patch("bosshunter.web.server.task_runner", runner),
+            patch("bosshunter.browser.runtime.shutdown_browser_resources",
+                  side_effect=lambda: order.append("shutdown")),
+            patch("bosshunter.browser.runtime.clear_instance_file",
+                  side_effect=lambda *a, **k: order.append("clear")),
+            patch("bosshunter.updater.get_install_dir", return_value=None),
+            patch("bosshunter.web.server.os._exit") as exit_mock,
+        ):
+            targets["_watch_app_close"]()
+            watch.assert_called_once()
+            on_close = watch.call_args.args[0]
+            # on_close 必须在 patch 上下文里调：它最后调 os._exit(0)，
+            # 出了 with 块就是真的退出进程，pytest 当场结束。
+            on_close()
+        self.assertEqual(order, ["stop", "shutdown", "clear"])
+        runner.stop.assert_called_once_with("task-1", "用户退出应用程序")
         exit_mock.assert_called_once_with(0)
 
 

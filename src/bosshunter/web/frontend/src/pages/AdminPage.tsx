@@ -324,11 +324,11 @@ export default function AdminPage() {
           </div>
           <Switch
             aria-label="AI 生成招呼语"
-            checked={profile.ai_greeting_enabled ?? true}
+            checked={profile.ai_greeting_enabled ?? false}
             onChange={value => setProfile({ ...profile, ai_greeting_enabled: value })}
           />
         </div>
-        {(profile.ai_greeting_enabled ?? true) === false && (
+        {(profile.ai_greeting_enabled ?? false) === false && (
           <Field label="固定招呼语">
             <textarea
               aria-label="固定招呼语"
@@ -342,7 +342,7 @@ export default function AdminPage() {
             <p className="mt-1 text-xs text-muted">保存后，新生成时原样使用，不调用 AI。已有文案保留，可逐条编辑。</p>
           </Field>
         )}
-        {(profile.ai_greeting_enabled ?? true) && (
+        {(profile.ai_greeting_enabled ?? false) && (
           <Field label="招呼语偏好">
             <textarea
               value={profile.greeting_preference || ''}
@@ -355,7 +355,7 @@ export default function AdminPage() {
             <p className="mt-1 text-xs text-muted">仅补充语气和内容偏好，不能覆盖真实简历与安全规则。</p>
           </Field>
         )}
-        {(profile.ai_greeting_enabled ?? true) && (
+        {(profile.ai_greeting_enabled ?? false) && (
           <div className="rounded-2xl border border-primary/20 bg-surface-muted p-4">
             <div className="flex items-center justify-between gap-4">
               <div>

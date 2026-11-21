@@ -32,7 +32,7 @@ def test_excessive_output_is_kept_without_quality_retry():
 
 
 def test_style_length_hint_does_not_trigger_rewrite_when_disabled():
-    greeting = "内容策划与复盘。" * 12
+    greeting = "内容策划与复盘。" * 13  # 104 字：超过 60-100 字建议上限，触发精简提示但不改写。
     db = MagicMock()
     job = {"id": "one", "title": "运营", "company": "示例", "salary": "", "status": "approved"}
     with (
@@ -42,10 +42,10 @@ def test_style_length_hint_does_not_trigger_rewrite_when_disabled():
         patch.object(greeter, "_call_claude", return_value=greeting) as call,
         patch.object(greeter, "save_generated_greeting_preview", return_value=True) as save,
     ):
-        assert greeter.generate_greetings({"ai": {"greeting_style_suggestions": False}}) == 1
+        assert greeter.generate_greetings({"profile": {"ai_greeting_enabled": True}, "ai": {"greeting_style_suggestions": False}}) == 1
     assert call.call_count == 1
     assert save.call_args.kwargs["selected_greeting"] == greeting
-    assert any("40-90字" in issue for issue in save.call_args.kwargs["style_issues"])
+    assert any("60-100字" in issue for issue in save.call_args.kwargs["style_issues"])
 
 
 def test_low_quality_long_draft_is_saved_without_rewrite_or_version_selection(tmp_path):
@@ -58,7 +58,7 @@ def test_low_quality_long_draft_is_saved_without_rewrite_or_version_selection(tm
     db.close()
     greeting = "我做过内容策划。" * 40 + "方便聊聊吗？"
     config = {
-        "profile": {"greeting_preference": "不提问"},
+        "profile": {"ai_greeting_enabled": True, "greeting_preference": "不提问"},
         "ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 100, "greeting_auto_apply_style": True},
     }
     with (

@@ -113,6 +113,32 @@ it('has no AI settings section on the user page', async () => {
   expect(screen.queryByText('招呼语质量提醒')).toBeNull()
 })
 
+it('shows the smart greeting switch off by default and saves it with the config', async () => {
+  let saved: Record<string, any> = { profile: {}, throttle: {} }
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    let body: unknown = {}
+    if (String(input) === '/api/config') {
+      if (init?.method === 'POST') { saved = JSON.parse(String(init.body)); body = { success: true } }
+      else body = saved
+    }
+    if (String(input).startsWith('/api/cities')) body = { cities: [] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
+  const greetingSwitch = await screen.findByRole('switch', { name: '智能定制打招呼（结合岗位与简历优化）' })
+  expect(greetingSwitch.getAttribute('aria-checked')).toBe('false')
+  fireEvent.click(greetingSwitch)
+  expect(greetingSwitch.getAttribute('aria-checked')).toBe('true')
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  await screen.findByText('设置已经保存了')
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+  expect(saved.profile.ai_greeting_enabled).toBe(true)
+  // 开关只改开关本身：不带固定文案与偏好字段（仍由管理员面板管）。
+  expect(saved.profile.fixed_greeting).toBeUndefined()
+  expect(saved.profile.greeting_preference).toBeUndefined()
+})
+
 it('has only one city picker and BOSS cities still sync to target_cities', async () => {
   let saved: Record<string, any> = {}
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

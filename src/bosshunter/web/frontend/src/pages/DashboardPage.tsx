@@ -2638,12 +2638,12 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
 
   return (
     <div className="animate-fade-up rounded-3xl border border-card-border bg-card p-5">
-      <div className="mb-4 flex items-center justify-between">
-        <div>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
           <h2 className="text-2xl font-black">找工作</h2>
           <p className="mt-1 text-sm text-muted">还没投的岗位都在这儿，能看到打分、状态，点进去看详情。投出去的岗位不在这儿，搬去<a href="/monitor" className="font-bold text-primary hover:underline">投递跟进</a>了。</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="secondary" size="sm" onClick={() => { setShowRecycleBin(true); void loadRecycleBin() }}><Trash2 className="mr-1 h-4 w-4" />回收站（{recycleJobs.length}）</Button>
           <BriefcaseBusiness className="h-6 w-6 text-primary" />
         </div>

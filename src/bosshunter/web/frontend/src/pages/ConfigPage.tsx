@@ -614,6 +614,13 @@ export default function ConfigPage() {
               </div>
               <Switch checked={config.throttle?.silent_mode ?? false} onChange={v => updateConfig('throttle.silent_mode', v)} aria-label="静默模式" />
             </div>
+            <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
+              <div>
+                <label className="text-xs text-foreground">智能定制打招呼（结合岗位与简历优化）</label>
+                <p className="mt-1 text-xs text-muted">默认关闭；开启后结合岗位与简历定制打招呼，生成失败时用固定文案继续投。</p>
+              </div>
+              <Switch checked={config.profile?.ai_greeting_enabled ?? false} onChange={v => updateConfig('profile.ai_greeting_enabled', v)} aria-label="智能定制打招呼（结合岗位与简历优化）" />
+            </div>
             <p className="text-xs text-muted">什么时候都能投，不用挑时间；每天的数量和分数门槛会帮你控制节奏。</p>
           </div>
         </SectionCard>

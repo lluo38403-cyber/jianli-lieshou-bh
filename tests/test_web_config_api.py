@@ -34,7 +34,10 @@ class WebConfigApiTests(unittest.TestCase):
 
 		redacted = server._redact_config_for_response(config)
 
-		for field in ("ai_greeting_enabled", "fixed_greeting", "greeting_preference"):
+		# 招呼语开关是投递设置页与管理员面板共用的唯一开关，用户端
+		# 接口要返回它；固定文案与偏好仍由管理员面板管理，继续脱敏。
+		self.assertIs(redacted["profile"]["ai_greeting_enabled"], False)
+		for field in ("fixed_greeting", "greeting_preference"):
 			self.assertNotIn(field, redacted["profile"])
 		self.assertEqual(redacted["profile"]["education"], "本科")
 
@@ -88,7 +91,7 @@ class WebConfigApiTests(unittest.TestCase):
 		for platform in ("boss", "zhilian", "51job"):
 			self.assertEqual(cleaned["platforms"][platform]["search"], {})
 
-	def test_sanitize_config_drops_posted_ai_and_admin_and_keeps_saved_values(self):
+	def test_sanitize_config_drops_posted_ai_and_admin_but_accepts_greeting_switch(self):
 		with tempfile.TemporaryDirectory() as tmp:
 			config_path = Path(tmp) / "config.yaml"
 			config_path.write_text(
@@ -135,9 +138,27 @@ class WebConfigApiTests(unittest.TestCase):
 		self.assertNotIn("evil-zhipu-key", str(cleaned))
 		self.assertNotIn("admin", cleaned)
 		self.assertEqual(cleaned["profile"]["education"], "硕士")
-		self.assertTrue(cleaned["profile"]["ai_greeting_enabled"])
+		# 招呼语开关是投递设置页与管理员面板共用的开关：用户提交的
+		# 布尔值生效；固定文案与偏好仍只认服务端已保存的值。
+		self.assertFalse(cleaned["profile"]["ai_greeting_enabled"])
 		self.assertEqual(cleaned["profile"]["fixed_greeting"], "saved fixed greeting")
 		self.assertEqual(cleaned["profile"]["greeting_preference"], "saved preference")
+
+	def test_sanitize_config_ignores_non_bool_greeting_switch_and_keeps_saved_value(self):
+		with tempfile.TemporaryDirectory() as tmp:
+			config_path = Path(tmp) / "config.yaml"
+			config_path.write_text(
+				yaml.dump({"profile": {"ai_greeting_enabled": True, "fixed_greeting": "saved fixed greeting"}}, sort_keys=False),
+				encoding="utf-8",
+			)
+
+			with patch.object(server, "CONFIG_PATH", config_path):
+				cleaned = server._sanitize_config_for_write({
+					"profile": {"ai_greeting_enabled": "yes", "fixed_greeting": "evil greeting"},
+				})
+
+		self.assertTrue(cleaned["profile"]["ai_greeting_enabled"])
+		self.assertEqual(cleaned["profile"]["fixed_greeting"], "saved fixed greeting")
 
 	def test_sanitize_config_preserves_saved_greeting_fields_when_user_post_omits_them(self):
 		with tempfile.TemporaryDirectory() as tmp:

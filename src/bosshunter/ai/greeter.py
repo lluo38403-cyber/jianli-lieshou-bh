@@ -48,7 +48,7 @@ GREETING_PROMPT = """以求职者身份，写一条在{platform}发给HR的简�
 {greeting_preference}
 
 ## 要求
-1. 建议40-90字、最多3个短句，写“岗位切入点＋一项真实经历/结果”。JD提供具体产品或业务场景、且与我的经历相关时，优先带一句克制、可尝试的产品/业务建议，再自然接真实自荐；信息不足或用户不希望提建议时只写来意和经历，不硬编建议。建议只能作为设想，不能断言对方业务有问题或保证效果。可用普通问候开头，说完就停，不复述JD、不凑字数；为保留事实含义可适当超出建议字数，但全文不得超过300字符（含标点）。
+1. 建议60-100字、最多3个短句，写“岗位切入点＋一项真实经历/结果”。JD提供具体产品或业务场景、且与我的经历相关时，优先带一句克制、可尝试的产品/业务建议，再自然接真实自荐；信息不足或用户不希望提建议时只写来意和经历，不硬编建议。建议只能作为设想，不能断言对方业务有问题或保证效果。可用普通问候开头，说完就停，不复述JD、不凑字数；为保留事实含义可适当超出建议字数，但全文不得超过300字符（含标点）。
 2. {question_rule}
 3. 像本人发私信：用具体动作和结果，建议保持商量语气，不总结行业规律、不教HR做业务。不写“关键在于、最难的是、不是…而是…”等金句，不用“赋能、闭环、抓手、有体感、自己扛、现成打法”等包装词或刻意口语，不硬补邀约、口号及承诺。
 4. 不得捏造我没有的经历、头衔或身份，不把JD当成我的经历；只概括背景中的事实，不夸大成果或职级，保留所用数据的真实周期。毕业年份、届别和在读状态只用明确事实，不推断。
@@ -84,7 +84,7 @@ REVIEW_PROMPT = """请评估以下{platform}招呼语的质量。
 1. 自然度：是否像普通求职者发的简短私信；“您好”等普通问候不扣分，说教、行业金句和故作熟络应扣分
 2. 相关性：是否针对该岗位突出匹配点；有依据、克制的产品/业务建议可与真实经历结合，不得仅因没有建议扣分或要求补写
 3. 差异化：是否有具体且相关的个人经历支撑；不奖励猎奇开头、夸张承诺或华丽辞藻
-4. 克制度：是否只讲一个匹配点，避免项目名和术语堆叠、固定作品集落款和求职套话；40-90字是建议，不为凑字数或省字删除必要事实
+4. 克制度：是否只讲一个匹配点，避免项目名和术语堆叠、固定作品集落款和求职套话；60-100字是建议，不为凑字数或省字删除必要事实
 
 请严格按JSON格式输出，不要输出其他内容：
 {{"naturalness": 8, "relevance": 7, "differentiation": 6, "restraint": 8, "avg": 7.25, "critique": "改进建议（20字内）"}}
@@ -325,8 +325,8 @@ def _greeting_style_issues(
     issues = []
     if greeting.count("项目") > 1:
         issues.append("不要反复强调项目，整条消息最多出现一次“项目”")
-    if len(greeting) > 90:
-        issues.append("建议精简到40-90字，只保留一个匹配点，不删事实所需的限定信息")
+    if len(greeting) > 100:
+        issues.append("建议精简到60-100字，只保留一个匹配点，不删事实所需的限定信息")
 
     first_sentence = re.split(r"[。！？]", greeting, maxsplit=1)[0]
     if any(phrase in first_sentence for phrase in (
@@ -635,7 +635,7 @@ DEFAULT_FIXED_GREETING = "您好，我对贵公司的这个岗位很感兴趣，
 
 def greeting_config_error(config: dict) -> str:
     profile = config.get("profile", {})
-    enabled = profile.get("ai_greeting_enabled", True)
+    enabled = profile.get("ai_greeting_enabled", False)
     fixed = profile.get("fixed_greeting", "")
     if not isinstance(enabled, bool):
         return "AI 招呼语开关必须为开启或关闭"
@@ -664,7 +664,7 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
         }
         _notify(config, error, error=True)
         return 0
-    ai_enabled = config.get("profile", {}).get("ai_greeting_enabled", True) and get_ai_service(config) != "local"
+    ai_enabled = config.get("profile", {}).get("ai_greeting_enabled", False) and get_ai_service(config) != "local"
     fixed_greeting = config.get("profile", {}).get("fixed_greeting", "").strip() or DEFAULT_FIXED_GREETING
     db = get_db(db_path)
     if job_ids is None:
@@ -743,12 +743,13 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
 
     resume_summary = _get_resume_summary(config) if ai_enabled else ""
     if ai_enabled and not resume_summary:
-        console.print("[red]无法读取简历[/red]")
-        # 缺简历属于服务级阻断：写入 pause_reason 让后台任务按零产出失败语义上报，
-        # 而不是伪装成"完成，产出 0"。
-        config["_workbench_greeting_report"]["pause_reason"] = "无法读取简历：请先在配置面板上传简历后重试"
-        db.close()
-        return 0
+        # v34：无简历不再阻断——按用户要求自动无感降级：本轮直接按固定
+        # 招呼语走（ai_enabled 就地关掉，后面循环走固定文案、不调 AI、
+        # 不做质量检查），队列继续、不写 pause_reason；只记一条通知，
+        # 说明智能定制没生效、上传简历后可恢复（不静默：用户能在通知
+        # 里看到为什么这轮没走智能定制）。
+        _notify(config, "未读到简历，本轮招呼语改用固定招呼语；上传简历后可恢复智能定制。")
+        ai_enabled = False
     graduation_context = _parse_graduation_context(resume_summary)
     if graduation_context:
         resume_summary = f"{graduation_context}\n\n{resume_summary}"

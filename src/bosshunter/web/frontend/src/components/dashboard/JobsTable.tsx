@@ -113,7 +113,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
     <button
       type="button"
       onClick={() => onSortChange(key)}
-      className="inline-flex items-center gap-1 font-bold hover:text-primary"
+      className="inline-flex items-center gap-1 whitespace-nowrap font-bold hover:text-primary"
       title={`按${label}排`}
     >
       {label}<span className="text-[10px]">{sortBy === key ? (sortOrder === 'asc' ? '↑' : '↓') : '↕'}</span>
@@ -122,26 +122,29 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between">
+      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
         <CardTitle>岗位列表</CardTitle>
         <span className="text-xs text-muted">{total} 个岗位</span>
       </CardHeader>
       <CardContent className="p-0">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          {/* 响应式布局约定：各列只定最小宽 + 伸缩权重，不强行压扁。
+              表格总最小宽 1260px；窗口比它窄时这里横向滚动，列宽、
+              表头与数据列始终对齐，操作按钮不被挤出或重叠。 */}
+          <table className="w-full min-w-[1260px] text-sm">
             <thead>
               <tr className="border-b border-card-border bg-secondary text-xs text-muted">
-                <th className="w-10 px-3 py-3 text-center font-bold">选</th>
-                <th className="px-4 py-3 text-left font-bold">公司</th>
-                <th className="px-4 py-3 text-left font-bold">岗位</th>
-                <th className="px-4 py-3 text-left font-bold">城市</th>
-                <th className="px-4 py-3 text-left">{sortableHeader('工资', 'salary')}</th>
-                <th className="px-4 py-3 text-left">{sortableHeader('学历 · 校招社招', 'education')}</th>
-                <th className="px-4 py-3 text-left">{sortableHeader('打分', 'score')}</th>
-                <th className="px-4 py-3 text-left">{sortableHeader('状态', 'status')}</th>
-                <th className="px-4 py-3 text-left">{sortableHeader('HR 活跃吗', 'hr_active')}</th>
-                <th className="px-4 py-3 text-left">{sortableHeader('时间', 'created_at')}</th>
-                {hasActions && <th className="min-w-[210px] px-3 py-3 text-center font-bold">能做什么</th>}
+                <th className="w-10 min-w-10 px-3 py-3 text-center font-bold">选</th>
+                <th className="min-w-[170px] px-4 py-3 text-left font-bold">公司</th>
+                <th className="min-w-[150px] px-4 py-3 text-left font-bold">岗位</th>
+                <th className="min-w-[84px] whitespace-nowrap px-4 py-3 text-left font-bold">城市</th>
+                <th className="min-w-[92px] whitespace-nowrap px-4 py-3 text-left">{sortableHeader('工资', 'salary')}</th>
+                <th className="min-w-[150px] whitespace-nowrap px-4 py-3 text-left">{sortableHeader('学历 · 校招社招', 'education')}</th>
+                <th className="min-w-[52px] whitespace-nowrap px-4 py-3 text-left">{sortableHeader('打分', 'score')}</th>
+                <th className="min-w-[84px] whitespace-nowrap px-4 py-3 text-left">{sortableHeader('状态', 'status')}</th>
+                <th className="min-w-[120px] whitespace-nowrap px-4 py-3 text-left">{sortableHeader('HR 活跃吗', 'hr_active')}</th>
+                <th className="min-w-[76px] whitespace-nowrap px-4 py-3 text-left">{sortableHeader('时间', 'created_at')}</th>
+                {hasActions && <th className="min-w-[240px] px-3 py-3 text-center font-bold">能做什么</th>}
               </tr>
             </thead>
             <tbody>
@@ -167,53 +170,53 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                           className="h-4 w-4 accent-primary"
                         />
                       </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <span className="max-w-[160px] truncate font-black text-foreground">{job.company}</span>
-                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${job.source_platform === 'boss' || !job.source_platform ? 'bg-secondary text-primary' : 'bg-info-soft text-info'}`}>
+                      <td className="min-w-[170px] px-4 py-3">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="max-w-[160px] truncate font-black text-foreground" title={job.company}>{job.company}</span>
+                          <span className={`shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-black ${job.source_platform === 'boss' || !job.source_platform ? 'bg-secondary text-primary' : 'bg-info-soft text-info'}`}>
                             {PLATFORM_SHORT_LABELS[job.source_platform || 'boss'] || 'BOSS'}
                           </span>
                           <OutsourcingBadge job={job} />
                           {job.company_size && (
-                            <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] font-bold text-muted">{job.company_size}</span>
+                            <span className="shrink-0 whitespace-nowrap rounded-full bg-surface px-2 py-0.5 text-[10px] font-bold text-muted">{job.company_size}</span>
                           )}
                         </div>
                       </td>
-                      <td className="max-w-[220px] truncate px-4 py-3 font-bold text-foreground">{job.title}</td>
-                      <td className="px-4 py-3 text-muted">{job.city || '没认出来'}</td>
-                      <td className="px-4 py-3 text-muted">{job.salary || '-'}</td>
+                      <td className="max-w-[220px] truncate whitespace-nowrap px-4 py-3 font-bold text-foreground" title={job.title}>{job.title}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-muted">{job.city || '没认出来'}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-muted">{job.salary || '-'}</td>
                       <td className="px-4 py-3 text-xs">
-                        <div className="font-bold text-foreground">{job.education || '学历没认出来'}</div>
-                        <div className="mt-1 text-muted">这份工作是：{job.employment_type === 'internship' ? '实习' : job.employment_type === 'full_time' ? '全职' : job.employment_type === 'part_time' ? '兼职' : '还没弄清'}</div>
-                        {job.employment_review && <div className="mt-1 text-amber-600">{job.employment_review}</div>}
-                        <div className="mt-1 text-muted">{job.recruitment_type === 'campus' ? '校招' : job.recruitment_type === 'experienced' ? '社招' : '还没弄清是哪种'}</div>
+                        <div className="truncate whitespace-nowrap font-bold text-foreground" title={job.education || '学历没认出来'}>{job.education || '学历没认出来'}</div>
+                        <div className="mt-1 truncate whitespace-nowrap text-muted" title={`这份工作是：${job.employment_type === 'internship' ? '实习' : job.employment_type === 'full_time' ? '全职' : job.employment_type === 'part_time' ? '兼职' : '还没弄清'}`}>这份工作是：{job.employment_type === 'internship' ? '实习' : job.employment_type === 'full_time' ? '全职' : job.employment_type === 'part_time' ? '兼职' : '还没弄清'}</div>
+                        {job.employment_review && <div className="mt-1 truncate whitespace-nowrap text-amber-600" title={job.employment_review}>{job.employment_review}</div>}
+                        <div className="mt-1 truncate whitespace-nowrap text-muted" title={job.recruitment_type === 'campus' ? '校招' : job.recruitment_type === 'experienced' ? '社招' : '还没弄清是哪种'}>{job.recruitment_type === 'campus' ? '校招' : job.recruitment_type === 'experienced' ? '社招' : '还没弄清是哪种'}</div>
                       </td>
-                      <td className="px-4 py-3">
-                        <span className={`font-mono font-black ${getScoreColor(job.score)}`}>{job.score || '-'}</span>
+                      <td className="whitespace-nowrap px-4 py-3">
+                        <span className={`font-mono font-black tabular-nums ${getScoreColor(job.score)}`}>{job.score || '-'}</span>
                       </td>
-                      <td className="px-4 py-3">
-                        <Badge variant={statusVariant(job.status) as any}>{getStatusLabel(job.status)}</Badge>
+                      <td className="whitespace-nowrap px-4 py-3">
+                        <Badge variant={statusVariant(job.status) as any} className="whitespace-nowrap">{getStatusLabel(job.status)}</Badge>
                       </td>
-                      <td className="px-4 py-3 text-xs text-muted">{job.hr_active || '不知道 HR 活跃不活跃'}</td>
-                      <td className="px-4 py-3 text-xs text-muted">
-                        <div className="flex items-center gap-2">
+                      <td className="whitespace-nowrap px-4 py-3 text-xs text-muted"><span className="block max-w-[140px] truncate whitespace-nowrap" title={job.hr_active || '不知道 HR 活跃不活跃'}>{job.hr_active || '不知道 HR 活跃不活跃'}</span></td>
+                      <td className="whitespace-nowrap px-4 py-3 text-xs text-muted">
+                        <div className="flex items-center gap-2 whitespace-nowrap">
                           {timeAgo(job.created_at)}
                           {isExpanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                         </div>
                       </td>
                       {hasActions && (
-                        <td className="px-3 py-3" onClick={event => event.stopPropagation()}>
+                        <td className="min-w-[240px] px-3 py-3" onClick={event => event.stopPropagation()}>
                           <div className="flex flex-wrap items-center justify-center gap-1.5">
                             {isExternalPlatform && jobUrl && (
-                              <a href={jobUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-card-border px-2 py-1.5 text-[11px] font-bold text-primary hover:bg-secondary">
+                              <a href={jobUrl} target="_blank" rel="noopener noreferrer" className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-card-border px-2 py-1.5 text-[11px] font-bold text-primary hover:bg-secondary">
                                 <ExternalLink className="h-3.5 w-3.5" />去平台看看
                               </a>
                             )}
                             {isExternalPlatform && !jobUrl && (
-                              <span className="rounded-lg bg-warning-soft px-2 py-1.5 text-[11px] font-bold text-warning">这个链接打不开</span>
+                              <span className="shrink-0 whitespace-nowrap rounded-lg bg-warning-soft px-2 py-1.5 text-[11px] font-bold text-warning">这个链接打不开</span>
                             )}
                             {!isExternalPlatform && jobUrl && (
-                              <a href={jobUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-card-border px-2 py-1.5 text-[11px] font-bold text-primary hover:bg-secondary">
+                              <a href={jobUrl} target="_blank" rel="noopener noreferrer" className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-card-border px-2 py-1.5 text-[11px] font-bold text-primary hover:bg-secondary">
                                 <ExternalLink className="h-3.5 w-3.5" />打开这个岗位
                               </a>
                             )}
@@ -222,13 +225,13 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                                 type="button"
                                 disabled={alreadySent}
                                 onClick={() => onMarkManuallySent(job)}
-                                className="inline-flex items-center gap-1 rounded-lg bg-primary px-2 py-1.5 text-[11px] font-bold text-primary-foreground hover:opacity-90 disabled:bg-success-soft disabled:text-success disabled:opacity-100"
+                                className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg bg-primary px-2 py-1.5 text-[11px] font-bold text-primary-foreground hover:opacity-90 disabled:bg-success-soft disabled:text-success disabled:opacity-100"
                               >
                                 <CheckCircle2 className="h-3.5 w-3.5" />{alreadySent ? '已投出' : '我投过了'}
                               </button>
                             )}
                             {onSoftDelete && (
-                              <button type="button" onClick={() => onSoftDelete(job)} className="rounded-lg p-2 text-muted hover:bg-danger-soft hover:text-danger" aria-label={`将 ${job.company} ${job.title} 扔进回收站`}>
+                              <button type="button" onClick={() => onSoftDelete(job)} className="shrink-0 whitespace-nowrap rounded-lg p-2 text-muted hover:bg-danger-soft hover:text-danger" aria-label={`将 ${job.company} ${job.title} 扔进回收站`}>
                                 <Trash2 className="h-4 w-4" />
                               </button>
                             )}
@@ -239,7 +242,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                                 onClick={() => onBlockCompany(job)}
                                 aria-label={`屏蔽这家公司 ${company || '没写公司名'}`}
                                 title={blockedRule ? `已经被“${blockedRule}”屏蔽了，在设置里能解除` : company ? '看完预览就把这家公司加进屏蔽名单' : '没写公司名，屏蔽不了'}
-                                className="inline-flex items-center gap-1 rounded-lg border border-card-border px-2 py-1.5 text-[11px] font-bold text-muted hover:bg-danger-soft hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
+                                className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-card-border px-2 py-1.5 text-[11px] font-bold text-muted hover:bg-danger-soft hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 <Ban className="h-3.5 w-3.5" />{blockingJobId === job.id ? '正在处理…' : blockedRule ? '已经屏蔽了' : '屏蔽公司'}
                               </button>
@@ -253,7 +256,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                                   if (status) onStatusChange(job, status)
                                   event.currentTarget.value = ''
                                 }}
-                                className="rounded-lg border border-card-border bg-card px-2 py-1.5 text-[11px] font-bold text-foreground"
+                                className="shrink-0 whitespace-nowrap rounded-lg border border-card-border bg-card px-2 py-1.5 text-[11px] font-bold text-foreground"
                               >
                                 <option value="">改状态</option>
                                 <option value="ready">等着投</option>
@@ -269,7 +272,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                     {isExpanded && (
                       <tr className="border-b border-card-border bg-surface">
                         <td colSpan={hasActions ? 11 : 10} className="px-6 py-4">
-                          <div className="max-w-2xl w-[calc(100vw-9rem)] md:w-[calc(100vw-22rem)]">
+                          <div className="w-full max-w-2xl">
                             <InterviewPreparation key={job.id} job={job} />
                           </div>
                           <div className="grid grid-cols-1 gap-4 text-sm lg:grid-cols-3">

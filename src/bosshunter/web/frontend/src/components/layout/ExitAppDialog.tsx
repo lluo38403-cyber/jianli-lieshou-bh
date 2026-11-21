@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { ModalPortal } from '@/components/ui/modal-portal'
-import { skipCloseConfirm } from '@/lib/closeConfirm'
 
 interface ExitAppDialogProps {
   onStay: () => void
@@ -9,18 +8,17 @@ interface ExitAppDialogProps {
 
 /**
  * “退出程序”确认弹窗（v25，v33 精简文案）。
- * 是 → 先置位跳过 beforeunload（不然代码关窗会被自己的确认拦住），
- * 再调 POST /api/exit（后端先停任务、停 runtime、停我们拉的 Chrome、
+ * 是 → 调 POST /api/exit（后端先停任务、停 runtime、停我们拉的 Chrome、
  * 再扫安装目录残留，最后退出进程），最后关掉本窗口。否 → 只关弹窗，
  * 什么都不做。
  * /api/exit 调不通（例如服务已经不在了）也照常关窗，不卡住。
  * v33：文案只讲“点‘是’会发生什么”——立即终止所有进行中的任务；
  * “之后安装文件夹就能直接删掉，不用重启”那句删了：它跟退出没关系，
  * 反而让人困惑（删文件夹是另一回事，退出程序不用提它）。
- * 窗口右上角 X 不走这个弹窗（网页拦不住 X，只能走 beforeunload
- * 浏览器通用确认框，见 lib/closeConfirm）；X 点“离开”后后端监视
- * 线程调的是同一套退出清理（server._perform_exit_cleanup），
- * 确认后做的事与这里点“是”完全一样。
+ * v34：窗口右上角 X 不走这个弹窗，也不弹任何框——前端不再注册
+ * beforeunload，X 直接关窗，后端监视线程调同一套退出清理
+ * （server._perform_exit_cleanup），做的事与这里点“是”完全一样，
+ * 只是少一次确认。
  */
 export function ExitAppDialog({ onStay }: ExitAppDialogProps) {
   const [exiting, setExiting] = useState(false)
@@ -29,7 +27,6 @@ export function ExitAppDialog({ onStay }: ExitAppDialogProps) {
   const handleExit = async () => {
     setExiting(true)
     setError('')
-    skipCloseConfirm()
     try {
       await fetch('/api/exit', { method: 'POST' })
     } catch {

@@ -196,9 +196,9 @@ _SPLASH_WINDOW_TITLE = "简历猎手正在启动"
 
 # v33：我们拉起的 Chrome 实例的界面语言（只影响 --app 窗口与工作
 # 浏览器共用的这一个专用配置目录实例，见模块 docstring 的 v27）。
-# X 按钮的确认框是 beforeunload 触发的浏览器通用框，文案由浏览器写、
-# 跟着 Chrome 界面语言走，网页放不进自定义文案（Chrome 51 起）；
-# --lang=zh-CN 让它从英文 "Leave app?" 变成中文，不再出现英文。
+# v34：X 的 beforeunload 通用确认框已经彻底去掉（前端不再注册
+# beforeunload），--lang=zh-CN 留着只为让这个专用实例的 Chrome
+# 界面（菜单、提示语）保持中文，不动用户日常用的 Chrome。
 # Chromium 取界面语言的顺序是命令行 --lang > 配置偏好 > 系统语言，
 # 所以先拉起实例的那次启动必须带上它——launch_debuggable_browser
 # 那边也加了同一参数（哪边先拉起实例，哪边定语言）。
@@ -976,9 +976,9 @@ def launch_app_window(
                 f"--user-data-dir={profile_dir}",
                 f"--remote-debugging-port={debug_port}",
             ] + args[1:]
-        # v33：--lang=zh-CN（见 _CHROME_UI_LANG_ARGS）：--app 窗口的 X
-        # 确认框（beforeunload 通用框）跟着 Chrome 界面语言走，强制中文
-        # 就不再弹英文 Leave app?。放哪里都行（Chrome 参数不认顺序），
+        # v33：--lang=zh-CN（见 _CHROME_UI_LANG_ARGS）：让这个专用实例
+        # 的 Chrome 界面保持中文。v34 起 X 的 beforeunload 通用确认框
+        # 已经去掉，这里只留语言作用。放哪里都行（Chrome 参数不认顺序），
         # 插在可执行文件后面、--app 之前，读起来顺。
         args = [args[0]] + _CHROME_UI_LANG_ARGS + args[1:]
         # v32：窗口尺寸与位置记忆——按上次保存的几何（校验过）或默认

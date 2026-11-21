@@ -1,11 +1,9 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
-import { useEffect } from 'react'
 import { Sidebar } from './components/layout/Sidebar'
 import { Header } from './components/layout/Header'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { UpdateProvider } from './hooks/useUpdate'
 import { UnsavedChangesProvider } from './hooks/useUnsavedChangesGuard'
-import { installCloseConfirm } from './lib/closeConfirm'
 import DashboardPage from './pages/DashboardPage'
 import ConfigPage from './pages/ConfigPage'
 import AdminPage from './pages/AdminPage'
@@ -21,14 +19,12 @@ function MonitorPage() {
 
 function MainLayout() {
   const location = useLocation()
-  // v25：点 --app 窗口右上角 X 时先经 beforeunload 确认。现代 Chrome
-  // 的 beforeunload 只能弹浏览器自带的通用离开确认框（放不进自定义
-  // 文案，见 lib/closeConfirm）；v33 起我们拉起的 Chrome 实例带
-  // --lang=zh-CN，通用框是中文，不再是英文 Leave app?。点“离开”后
-  // 后端关窗监视线程走与 /api/exit 同一套退出清理再退出进程，
-  // 点“留下”则什么都不做。代码关窗（更新换版、“退出程序”点“是”）
-  // 先置位跳过确认，见 skipCloseConfirm。
-  useEffect(() => installCloseConfirm(), [])
+  // v34：点 --app 窗口右上角 X 不再弹任何确认框——前端不注册
+  // beforeunload，X 直接关窗；关闭清理全部走后端关窗监视线程
+  // （watch_app_window_close → _perform_exit_cleanup：先停进行中
+  // 任务，再停 runtime / 我们拉的 Chrome，最后退出进程，与
+  // “退出程序”点“是”同一套）。代码关窗（更新换版、“退出程序”
+  // 点“是”后的 window.close()）也不需要再绕过什么，直接关就行。
   return (
     <UpdateProvider>
     <UnsavedChangesProvider>
