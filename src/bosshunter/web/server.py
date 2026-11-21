@@ -56,6 +56,7 @@ from bosshunter.config import (
 	load_config,
 	remove_retired_collection_settings,
 	save_config,
+	validate_config_numbers,
 	validate_config_send_windows,
 	verify_admin_password,
 )
@@ -693,27 +694,42 @@ def _queue_monitor_delivery(
 	job_ids: list[str],
 	*,
 	direct_send: bool = False,
-) -> dict:
-	"""Queue confirmed jobs on a task that is already in its monitor loop."""
+) -> tuple[dict, list[str]]:
+	"""Queue confirmed jobs on a task that is already in its monitor loop.
+
+	H-5：去重不能只看 pending 队列——一批被取走开始发送后就不在
+	pending 里了，但岗位状态仍是 approved，重复确认会再次入队、重复
+	发招呼语。与 _queue_active_delivery 的 delivery_scheduled_ids 对齐：
+	取走的批次进 monitor_in_flight_ids，该批发送结束才释放，任务结束
+	时清空；返回 (payload, new_ids)，与 _queue_active_delivery 一致，
+	调用方只对新入队的岗位写 approved 状态/历史。
+	"""
 	queue_lock = task.context.get("monitor_queue_lock")
 	if queue_lock is None:
 		queue_lock = Lock()
 		task.context["monitor_queue_lock"] = queue_lock
 	with queue_lock:
 		pending = task.context.setdefault("pending_deliveries", [])
+		in_flight_ids = task.context.setdefault("monitor_in_flight_ids", set())
 		queued_ids = {
 			str(job_id)
 			for batch in pending
 			for job_id in batch.get("job_ids", [])
-		}
+		} | {str(job_id) for job_id in in_flight_ids}
 		new_ids = [job_id for job_id in job_ids if job_id not in queued_ids]
+		already_queued_count = len(job_ids) - len(new_ids)
 		if new_ids:
 			pending.append({"job_ids": new_ids, "direct_send": direct_send})
 			_log(task, f"监测期间新增 {len(new_ids)} 个确认投递岗位，已加入发送队列")
+		elif already_queued_count:
+			_log(task, f"所选 {already_queued_count} 个岗位已在监测发送队列中")
 	wakeup_event = task.context.get("monitor_wakeup_event")
 	if isinstance(wakeup_event, Event):
 		wakeup_event.set()
-	return task.snapshot()
+	payload = task.snapshot()
+	payload["queued_count"] = len(new_ids)
+	payload["already_queued_count"] = already_queued_count
+	return payload, new_ids
 
 
 def _take_monitor_deliveries(task: WorkbenchTask) -> list[dict]:
@@ -723,7 +739,27 @@ def _take_monitor_deliveries(task: WorkbenchTask) -> list[dict]:
 	with queue_lock:
 		pending = list(task.context.get("pending_deliveries", []))
 		task.context["pending_deliveries"] = []
+		# 取走即在途：去重集合里保留到该批发送结束（见 _release_monitor_deliveries）。
+		in_flight_ids = task.context.setdefault("monitor_in_flight_ids", set())
+		for batch in pending:
+			in_flight_ids.update(str(job_id) for job_id in batch.get("job_ids", []))
 	return pending
+
+
+def _release_monitor_deliveries(task: WorkbenchTask, job_ids: list[str]) -> None:
+	"""Drop a finished monitor batch from the in-flight dedup set (H-5).
+
+	发送结束才释放：此后该岗位要么已是 sent（入口状态校验拦住重复确认），
+	要么发送失败仍是 approved，可再次确认重试。
+	"""
+	queue_lock = task.context.get("monitor_queue_lock")
+	if queue_lock is None:
+		return
+	with queue_lock:
+		in_flight_ids = task.context.get("monitor_in_flight_ids")
+		if isinstance(in_flight_ids, set):
+			for job_id in job_ids:
+				in_flight_ids.discard(str(job_id))
 
 
 def _execute_monitor(task: WorkbenchTask, config: dict, *, initial_cooldown: bool = False) -> None:
@@ -757,6 +793,7 @@ def _execute_monitor(task: WorkbenchTask, config: dict, *, initial_cooldown: boo
 					deliver_config["_workbench_skip_greeting"] = True
 				_log(task, f"处理监测期间新增的 {len(deliver_config['_workbench_job_ids'])} 个投递岗位")
 				_execute_deliver(task, deliver_config)
+				_release_monitor_deliveries(task, batch.get("job_ids", []))
 				if task.stop_requested.is_set():
 					return
 			_log(task, "执行一轮监测")
@@ -787,6 +824,7 @@ def _execute_monitor(task: WorkbenchTask, config: dict, *, initial_cooldown: boo
 		task.context["monitoring"] = False
 		task.context.pop("monitor_wakeup_event", None)
 		task.context.pop("monitor_queue_lock", None)
+		task.context.pop("monitor_in_flight_ids", None)
 
 
 def _execute_full(task: WorkbenchTask, config: dict) -> None:
@@ -3050,6 +3088,16 @@ def api_workbench_deliver():
 					direct_send=direct_send,
 				)
 
+			if monitoring_task:
+				# H-5：只对新入队的岗位写 approved/历史；已在途的重复确认
+				# 不再重复写历史，返回的 already_queued_count 让前端提示
+				# “已经在投递队列里了”。
+				queued_payload, status_job_ids = _queue_monitor_delivery(
+					monitoring_task,
+					job_ids,
+					direct_send=direct_send,
+				)
+
 			db = _get_web_db()
 			try:
 				for job_id in status_job_ids:
@@ -3068,15 +3116,6 @@ def api_workbench_deliver():
 				if isinstance(confirmation_event, Event):
 					confirmation_event.set()
 				return _json_response(waiting_task.snapshot())
-
-			if monitoring_task:
-				return _json_response(
-					_queue_monitor_delivery(
-						monitoring_task,
-						job_ids,
-						direct_send=direct_send,
-					)
-				)
 
 			deliver_options = {"_workbench_job_ids": job_ids}
 			if direct_send:
@@ -3659,6 +3698,8 @@ def api_config_post():
 		data = _sanitize_config_for_write(data)
 		try:
 			validate_config_send_windows(data)
+			# H-6：数字区间在保存时拦住，别等启动任务才报。
+			validate_config_numbers(data)
 		except ValueError as exc:
 			return _json_response({"error": str(exc)}, 400)
 
@@ -4668,13 +4709,49 @@ def _terminate_process_gracefully(pid: int, timeout: float = 5.0) -> bool:
     return not _pid_alive(pid)
 
 
+# H-3：instance 文件里 started_at 写了却从未被读——快速双击两次时，
+# 第二实例会把刚启动几秒的健康第一实例当残留杀掉。启动不足这么久
+# 的实例视为“刚启动”，一律不杀、等它自己把窗口开出来。
+_INSTANCE_JUST_STARTED_SECONDS = 60.0
+
+
+def _instance_started_at(data_dir) -> float | None:
+    """Read started_at from data/.instance.json (None when absent/bad)."""
+    try:
+        from bosshunter.browser.runtime import _read_instance_file
+    except Exception:
+        return None
+    instance = _read_instance_file(data_dir)
+    if not isinstance(instance, dict):
+        return None
+    started_at = instance.get("started_at")
+    if isinstance(started_at, bool) or not isinstance(started_at, (int, float)):
+        return None
+    return float(started_at)
+
+
+def _instance_is_just_started(data_dir) -> bool:
+    """True when the recorded instance started less than 60s ago (H-3).
+
+    No/invalid started_at means unknown age → False (old behavior:
+    the kill decision then rests on the liveness re-probe below).
+    """
+    started_at = _instance_started_at(data_dir)
+    if started_at is None:
+        return False
+    return time.time() - started_at < _INSTANCE_JUST_STARTED_SECONDS
+
+
 def _stop_stale_our_service(data_dir, port: int) -> bool:
     """停掉一个残留的旧服务进程，只认 data/.instance.json 的 PID + exe 核对（v29）。
 
     绝不按映像名杀进程：instance 文件没有/读不到，就不知道残留
     服务是哪个进程，直接返回 False、不动手；PID 不是我们的 exe
-    （ExecutablePath/命令行核对）也绝不动。先优雅停，等 5 秒，
-    还在再强制结束整棵进程树。返回 True 表示那个进程已经不在了。
+    （ExecutablePath/命令行核对）也绝不动。H-3：动手前先过两道门——
+    刚启动不足 60 秒的实例不杀（快速双击的第二实例不能杀刚起来的
+    第一实例），动手前一刻重探一次 /api/health、还活着也不杀；只对
+    “长时间无响应且 instance 陈旧”的实例执行强杀。过门之后才优雅停，
+    等 5 秒，还在再强制结束整棵进程树。返回 True 表示那个进程已经不在了。
     """
     try:
         from bosshunter.browser.runtime import (
@@ -4696,6 +4773,19 @@ def _stop_stale_our_service(data_dir, port: int) -> bool:
         return False
     if not _is_pid_our_exe(pid):
         _startup_log(f"停残留旧服务：pid={pid} 不是我们的 exe，不动手")
+        return False
+    # H-3：刚启动的实例不杀——快速双击时第一实例才起来几秒，面板
+    # 标签页还没出现，不能把它当残留停掉；改为等待复用（调用方复用
+    # 分支里年轻实例会再核实一次窗口）。
+    if _instance_is_just_started(data_dir):
+        _startup_log(f"停残留旧服务：pid={pid} 是刚启动不足 60 秒的实例，不杀、等它自己起来")
+        return False
+    # H-3：动手前一刻重探一次——/api/health 入口判断是几秒前的事，
+    # 负载高时 2 秒超时还可能假阴性；现在还活着就不是残留，不杀。
+    from bosshunter import app_window as _app_window
+
+    if _app_window.is_our_service_alive("127.0.0.1", port, timeout=2.0):
+        _startup_log(f"停残留旧服务：pid={pid} 的服务还在应答，不杀")
         return False
     if _reused_service_is_windowless(port):
         # v30：已双重确认它在应答、但没有任何面板标签页——优雅停
@@ -4949,6 +5039,11 @@ def _run_server_impl(host: str = "127.0.0.1", port: int = 8686, open_browser: bo
 			_startup_log("面板标签页已出现（或无法核实），复用已有服务")
 			return
 		_startup_log("复用开窗后 3 秒没看到面板标签页，判定为无窗口残留旧服务")
+		# H-3：刚启动不足 60 秒的实例可能只是面板还没开出来——先多
+		# 等一次再核实，不要直接把它当残留停掉；窗口出现了就复用成功。
+		if _instance_is_just_started(DATA_DIR) and _verify_reused_service_window(panel_url, timeout=10.0):
+			_startup_log("刚启动的实例面板标签页出现了，复用已有服务")
+			return
 		if open_browser:
 			# v30：先把启动页拉起来给用户看，再去停旧服务——停要
 			# 几秒，期间屏幕上不能什么都没有。注意：这里拉起的启动页
@@ -4971,8 +5066,21 @@ def _run_server_impl(host: str = "127.0.0.1", port: int = 8686, open_browser: bo
 			_startup_log("残留旧服务已停掉，自己起新服务")
 			# 落到下面分支 B，自己起服务。
 		else:
-			_startup_log("残留旧服务认不出/停不掉，保持复用、不自己起新服务")
-			return
+			# M-40：停不掉 ≠ 服务死了——return 之前重探一次再定。
+			# 入口的存活判断是 10 秒轮询之前的事，核实期间旧服务
+			# 可能已经死了（用户刚关旧面板、旧进程崩溃、更新 bat
+			# 刚杀掉它）：死了就落到分支 B 自己起服务；还活着但
+			# 开不出窗口，就可见地告诉用户服务地址，不要无声退出。
+			if not _app_window.is_our_service_alive(host, port):
+				_startup_log("复用核实期间旧服务已死，自己起新服务")
+				# 落到下面分支 B，自己起服务。
+			else:
+				_fail_startup_visible(
+					f"服务正在运行，但面板窗口一直打不开。"
+					f"请手动打开面板地址 {panel_url}；如果打不开，请先关掉占着"
+					f"这个端口的程序，再重新双击「简历猎手」。",
+					reason_code="reuse_window_failed",
+				)
 	# v30（H1 头号修）：残留清理移到启动页之前。v28 把启动页提前后，
 	# 清理跑在启动页之后，按“我们拉起的浏览器”记录把刚拉起的启动页
 	# Chrome 当残留杀掉——窗口只活 2.75 秒、服务好了也没窗口（录屏

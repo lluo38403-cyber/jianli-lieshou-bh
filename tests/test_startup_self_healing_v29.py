@@ -3,6 +3,8 @@
 
 import json
 import os
+import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -124,9 +126,12 @@ class RunServerReuseVerifyTests(unittest.TestCase):
         stop.assert_called_once_with(self._data_dir, 8686)
         app_mock.run.assert_called_once()
 
-    def test_stale_service_we_cannot_identify_keeps_reuse(self):
-        # 残留服务认不出（instance 文件没有、或 pid 不是我们的 exe）
-        # 就不动手、不自己起新服务：宁可保持复用，也不误杀别的进程。
+    def test_stale_service_we_cannot_stop_but_still_alive_is_visible_not_silent(self):
+        # M-40（v31）：残留服务停不掉、但重探还活着时，旧行为是静默
+        # return、进程退出、用户面前什么都没有（旧测试名
+        # test_stale_service_we_cannot_identify_keeps_reuse 钉的就是
+        # 这个静默 return）。现在改为可见报错：服务在跑、请手动打开
+        # 面板地址（启动页会读失败标记显示同样文案），绝不无声退出。
         from bosshunter.web import server
 
         app_mock = self._patch_branch_b()
@@ -136,10 +141,61 @@ class RunServerReuseVerifyTests(unittest.TestCase):
             patch("bosshunter.app_window.wait_for_panel_tab", return_value=False),
             patch("bosshunter.web.server._stop_stale_our_service", return_value=False) as stop,
         ):
+            with self.assertRaises(SystemExit):
+                server.run_server(host="127.0.0.1", port=8686, open_browser=True)
+
+        launch.assert_called_once_with("http://127.0.0.1:8686")
+        stop.assert_called_once_with(self._data_dir, 8686)
+        app_mock.run.assert_not_called()
+        marker = json.loads((self._data_dir / ".startup-failed.json").read_text(encoding="utf-8"))
+        self.assertEqual(marker["reason_code"], "reuse_window_failed")
+        self.assertIn("http://127.0.0.1:8686", marker["message"])
+
+    def test_reuse_stops_waiting_when_service_died_during_verification(self):
+        # M-40（v31）：入口的存活判断是核实之前的事——核实期间旧服务
+        # 死了（用户刚关旧面板、旧进程崩溃、更新 bat 刚杀掉它），停
+        # 残留失败后重探已死，就落到分支 B 自己起新服务，不再静默退出。
+        from bosshunter.web import server
+
+        app_mock = self._patch_branch_b()
+        with (
+            patch("bosshunter.app_window.is_our_service_alive", side_effect=[True, False]),
+            patch("bosshunter.app_window.launch_app_window") as launch,
+            patch("bosshunter.app_window.wait_for_panel_tab", return_value=False),
+            patch("bosshunter.web.server._stop_stale_our_service", return_value=False) as stop,
+        ):
             server.run_server(host="127.0.0.1", port=8686, open_browser=True)
 
         launch.assert_called_once_with("http://127.0.0.1:8686")
         stop.assert_called_once_with(self._data_dir, 8686)
+        app_mock.run.assert_called_once()
+
+    def test_just_started_instance_gets_a_second_window_check(self):
+        # H-3（v31）：刚启动不足 60 秒的实例，第一次 3 秒核实没看到
+        # 面板标签页不等于残留——再等 10 秒核实一次，出现了就复用
+        # 成功，不停它、也不自己起新服务。
+        from bosshunter.web import server
+
+        self._data_dir.mkdir(parents=True, exist_ok=True)
+        (self._data_dir / ".instance.json").write_text(
+            json.dumps({"pid": 999999, "executable": "x", "port": 8686, "started_at": time.time()}),
+            encoding="utf-8",
+        )
+        app_mock = self._patch_branch_b()
+        with (
+            patch("bosshunter.app_window.is_our_service_alive", return_value=True),
+            patch("bosshunter.app_window.launch_app_window") as launch,
+            patch("bosshunter.app_window.launch_splash_window") as splash,
+            patch("bosshunter.web.server._verify_reused_service_window", side_effect=[False, True]) as verify,
+            patch("bosshunter.web.server._stop_stale_our_service") as stop,
+        ):
+            server.run_server(host="127.0.0.1", port=8686, open_browser=True)
+
+        launch.assert_called_once_with("http://127.0.0.1:8686")
+        self.assertEqual(verify.call_count, 2)
+        self.assertEqual(verify.call_args_list[1].kwargs.get("timeout"), 10.0)
+        splash.assert_not_called()
+        stop.assert_not_called()
         app_mock.run.assert_not_called()
 
 
@@ -168,6 +224,98 @@ class StopStaleServiceTests(unittest.TestCase):
             self.assertFalse(server._stop_stale_our_service(self._data_dir, 8686))
         log = (self._data_dir / "logs" / "jianli-lieshou.log").read_text(encoding="utf-8")
         self.assertIn("不是我们的 exe", log)
+
+
+class StopStaleJustStartedTests(unittest.TestCase):
+    """H-3：停残留服务前先看 started_at 与重探存活，别杀刚起来的健康实例。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._data_dir = Path(self._tmp.name) / "data"
+        self._data_dir.mkdir(parents=True)
+        self._proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)", "bosshunter"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(self._kill_proc)
+
+    def _kill_proc(self):
+        try:
+            if self._proc.poll() is None:
+                os.killpg(self._proc.pid, signal.SIGTERM)
+            self._proc.wait(timeout=5)
+        except Exception:
+            pass
+
+    def _write_instance(self, started_at):
+        payload = {"pid": self._proc.pid, "executable": sys.executable, "port": 8686}
+        if started_at is not None:
+            payload["started_at"] = started_at
+        (self._data_dir / ".instance.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def test_just_started_instance_is_not_killed(self):
+        # 快速双击两次：第一实例才起来几秒，started_at 不足 60 秒——
+        # 不杀，年龄门直接拦下，连存活重探都不用跑。
+        from bosshunter.web import server
+
+        self._write_instance(time.time())
+        with (
+            patch.object(server, "DATA_DIR", self._data_dir),
+            patch(
+                "bosshunter.app_window.is_our_service_alive",
+                side_effect=AssertionError("刚启动不应再探活"),
+            ),
+        ):
+            self.assertFalse(server._stop_stale_our_service(self._data_dir, 8686))
+        self.assertIsNone(self._proc.poll())
+
+    def test_old_but_answering_instance_is_not_killed(self):
+        # 实例已陈旧，但动手前一刻重探还在应答——不是残留，不杀。
+        from bosshunter.web import server
+
+        self._write_instance(time.time() - 3600)
+        with (
+            patch.object(server, "DATA_DIR", self._data_dir),
+            patch("bosshunter.app_window.is_our_service_alive", return_value=True),
+        ):
+            self.assertFalse(server._stop_stale_our_service(self._data_dir, 8686))
+        self.assertIsNone(self._proc.poll())
+
+    def test_old_and_silent_instance_is_stopped(self):
+        # 陈旧 + 重探不答：才是该停的残留，走老路优雅停。
+        from bosshunter.web import server
+
+        self._write_instance(time.time() - 3600)
+        with (
+            patch.object(server, "DATA_DIR", self._data_dir),
+            patch("bosshunter.app_window.is_our_service_alive", return_value=False),
+            patch("bosshunter.web.server._reused_service_is_windowless", return_value=False),
+            patch(
+                "bosshunter.web.server._terminate_process_gracefully", return_value=True
+            ) as graceful,
+            patch("bosshunter.browser.runtime._kill_process_tree") as kill,
+            patch("bosshunter.browser.runtime._pid_alive", return_value=False),
+        ):
+            self.assertTrue(server._stop_stale_our_service(self._data_dir, 8686))
+        graceful.assert_called_once_with(self._proc.pid, timeout=5.0)
+        kill.assert_not_called()
+        self.assertFalse((self._data_dir / ".instance.json").exists())
+
+    def test_missing_started_at_falls_back_to_liveness_probe(self):
+        # 老实例文件没有 started_at（v30 之前写的）：年龄未知，不拦，
+        # 杀不杀只看重探——还活着就不杀。
+        from bosshunter.web import server
+
+        self._write_instance(None)
+        with (
+            patch.object(server, "DATA_DIR", self._data_dir),
+            patch("bosshunter.app_window.is_our_service_alive", return_value=True),
+        ):
+            self.assertFalse(server._stop_stale_our_service(self._data_dir, 8686))
+        self.assertIsNone(self._proc.poll())
 
 
 class PortBindFailureTests(unittest.TestCase):

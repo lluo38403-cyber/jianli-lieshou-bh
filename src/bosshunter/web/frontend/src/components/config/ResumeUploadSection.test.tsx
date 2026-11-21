@@ -36,6 +36,15 @@ it('rejects an unsupported file picked in the file input', async () => {
   expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/upload'))).toHaveLength(0)
 })
 
+it('rejects a 0-byte file picked in the file input without sending it (H-4)', async () => {
+  const fetchMock = mockFetch({ ok: true, body: { success: true } })
+  const { container } = renderSection(fetchMock)
+  const input = container.querySelector('input[type="file"]') as HTMLInputElement
+  fireEvent.change(input, { target: { files: [new File([], 'empty.md', { type: 'text/markdown' })] } })
+  expect(await screen.findByText('这个文件是空的，没有内容，换一份有内容的简历再上传')).toBeTruthy()
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/upload'))).toHaveLength(0)
+})
+
 it('accepts a .docx file and shows the generic success message', async () => {
   const fetchMock = mockFetch({
     ok: true,

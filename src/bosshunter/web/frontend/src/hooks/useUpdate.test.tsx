@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
-import { classifyUpdateError, formatUpdateNotes, getUpdateErrorCopy, BACKEND_CHECK_TIMEOUT_MS, UPDATE_CHECK_JSON_TIMEOUT_MS, UPDATE_CHECK_RETRIES, UPDATE_CHECK_TIMEOUT_MS, UpdateProvider, useUpdate, useUpdateContext } from './useUpdate'
+import { classifyUpdateError, formatUpdateNotes, getUpdateErrorCopy, BACKEND_CHECK_TIMEOUT_MS, UPDATE_AUTO_RECHECK_INTERVAL_MS, UPDATE_CHECK_JSON_TIMEOUT_MS, UPDATE_CHECK_RETRIES, UPDATE_CHECK_TIMEOUT_MS, UpdateProvider, useUpdate, useUpdateContext } from './useUpdate'
 
 function jsonResponse(body: unknown, ok = true) {
   return new Response(JSON.stringify(body), {
@@ -789,4 +789,177 @@ describe('useUpdate check race / timeout / failure (v29)', () => {
     // 读超时只是这次没查到，之前查到的新版还在。
     expect(result.current.info?.version).toBe('1.0.2')
   }, 20000)
+})
+
+describe('useUpdate auto re-check (v31)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let originalLocation: Location | undefined
+
+  const LATEST = { update_available: false, current_version: '1.0.1', status: 'idle' }
+  const CHECK_FAILED = {
+    status: 'error',
+    reason_code: 'check_failed',
+    error: '查新版本超时了，网络可能比较慢，稍后再点一次。',
+    update_available: false,
+    current_version: '1.0.1',
+  }
+
+  /** 只数自动检查（不带 force=1 的 /api/update/check）：手动检查另算。 */
+  function autoCheckCalls() {
+    return fetchMock.mock.calls.filter(([input]) => String(input) === '/api/update/check').length
+  }
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) return jsonResponse(NEW_VERSION)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      if (url === '/api/auth/config') return jsonResponse({})
+      if (url === '/api/update/status') return jsonResponse({ status: 'idle', progress: 0 })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    if (originalLocation === undefined) originalLocation = window.location
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { href: originalLocation.href, reload: vi.fn() },
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+    if (originalLocation !== undefined) {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    }
+    vi.restoreAllMocks()
+    cleanup()
+  })
+
+  it('面板一直开着：挂载时已是最新，30 分钟后自动复查发现新版，不用手动点', async () => {
+    // 回归：lucky 云电脑 2026-11-21 事故——面板 03:47 开到 12:45，
+    // 中转 05:31 发了 1.1.16，启动检查当时说“已是最新”是对的，但之后
+    // 7 小时再没查过，横幅/弹窗一直不出现，手动点才出来。
+    let checkCalls = 0
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/update/check') {
+        checkCalls += 1
+        // 第一次（启动检查）还是旧版，之后中转发了新版。
+        return jsonResponse(checkCalls === 1 ? LATEST : NEW_VERSION)
+      }
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      return jsonResponse({})
+    })
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useUpdate())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.currentVersion).toBe('1.0.1')
+    expect(result.current.info).toBeNull()
+    expect(autoCheckCalls()).toBe(1)
+
+    // 没到 30 分钟不复查。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(UPDATE_AUTO_RECHECK_INTERVAL_MS - 60 * 1000)
+    })
+    expect(autoCheckCalls()).toBe(1)
+    expect(result.current.info).toBeNull()
+
+    // 到 30 分钟自动复查：没点过任何按钮，新版状态就出现了——
+    // 横幅按 info 渲染、弹窗按 info 自动弹（那两处已有单测）。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60 * 1000)
+    })
+    expect(autoCheckCalls()).toBe(2)
+    expect(result.current.info?.version).toBe('1.0.2')
+    expect(result.current.phase).toBe('idle')
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/api/update/check?force=1',
+      expect.objectContaining({ signal: expect.anything() }),
+    )
+  })
+
+  it('自动复查失败时静默：已有新版不被清掉，也不进 error 态', async () => {
+    let checkCalls = 0
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/update/check') {
+        checkCalls += 1
+        if (checkCalls === 1) return jsonResponse(NEW_VERSION)
+        throw new Error('offline')
+      }
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      return jsonResponse({})
+    })
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useUpdate())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.info?.version).toBe('1.0.2')
+    expect(result.current.phase).toBe('idle')
+
+    // 复查两次都断网：自动分支静默，不弹、不清 info、不改 phase。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(UPDATE_AUTO_RECHECK_INTERVAL_MS)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(UPDATE_AUTO_RECHECK_INTERVAL_MS)
+    })
+    expect(result.current.info?.version).toBe('1.0.2')
+    expect(result.current.phase).toBe('idle')
+    expect(result.current.error).toBe('')
+  })
+
+  it('报错态不自动复查：等用户点“再试一次”，不自己把失败盖掉', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) return jsonResponse(CHECK_FAILED)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      return jsonResponse({})
+    })
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useUpdate())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    // 启动自动检查拿 check_failed：静默，phase 还是 idle。
+    expect(result.current.phase).toBe('idle')
+    expect(autoCheckCalls()).toBe(1)
+    // 手动检查同样没查到：进 error 态，等用户处理。
+    await act(async () => {
+      await result.current.check(true)
+    })
+    expect(result.current.phase).toBe('error')
+    expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/update/check?force=1').length).toBe(1)
+
+    // 30 分钟后也不自动复查：报错态只认手动重试。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(UPDATE_AUTO_RECHECK_INTERVAL_MS)
+    })
+    expect(autoCheckCalls()).toBe(1)
+  })
+
+  it('卸载后不再复查', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/update/check') return jsonResponse(LATEST)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      return jsonResponse({})
+    })
+    vi.useFakeTimers()
+    const { result, unmount } = renderHook(() => useUpdate())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.info).toBeNull()
+    expect(autoCheckCalls()).toBe(1)
+    unmount()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2 * UPDATE_AUTO_RECHECK_INTERVAL_MS)
+    })
+    expect(autoCheckCalls()).toBe(1)
+  })
 })

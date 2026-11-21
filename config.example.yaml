@@ -72,7 +72,7 @@ platforms:
       sort: default
   51job:
     enabled: false
-    # 51job 目前只开放采集/评分/招呼语生成，真实发送和监听仍锁定。
+    # 51job 同样支持人工确认后自动投递与消息巡查；消息巡查只做未读统计、不代回。
     search:
       keywords: []
       cities: ["上海"]
@@ -81,7 +81,7 @@ platforms:
       sort: default
   liepin:
     enabled: false
-    # 猎聘目前只开放采集/评分/招呼语生成，真实发送和监听仍锁定。
+    # 猎聘同样支持人工确认后自动投递与消息巡查；消息巡查只做未读统计、不代回。
     search:
       keywords: []
       cities: []

@@ -487,6 +487,105 @@ def save_config(config: dict[str, Any], config_path: Path | None = None) -> None
             pass
 
 
+# H-6：设置页数字区间（与前端 lib/configValidation.ts 同一套口径，
+# 改一处要同步另一处）。只校验配置里已有的字段：缺失按默认处理、不报错；
+# None（前端 NaN 经 JSON 变成 null）按非法值拦住。
+_CONFIG_NUMBER_RULES: tuple[tuple[str, str, float, float, bool], ...] = (
+    ("search.max_pages", "最多翻几页", 1, 10, True),
+    ("platforms.*.search.max_pages", "最多翻几页", 1, 10, True),
+    ("platforms.boss.search.city_yield_policy.warmup_minutes", "过几分钟先看一次", 1, 60, True),
+    ("platforms.boss.search.city_yield_policy.window_minutes", "隔几分钟看一次", 1, 30, True),
+    ("platforms.boss.search.city_yield_policy.min_new_jobs", "一次至少新找到几个", 1, 1000, True),
+    ("scoring.max_candidates", "一次最多看多少个", 1, 100, True),
+    ("scoring.threshold", "多少分以上才投", 0, 100, True),
+    ("collection.daily_search_page_limit", "BOSS 每天最多翻多少页", 1, 200, True),
+    ("collection.daily_detail_page_limit", "BOSS 每天最多打开多少个岗位", 1, 1000, True),
+    ("collection.max_consecutive_page_failures", "BOSS 页面连续打不开几次就停", 1, 10, True),
+    ("collection.collection_delay_multiplier", "动作快慢", 1, 5, False),
+    ("collection.risk_pause_min_minutes", "出问题先歇几分钟（最少）", 1, 60, True),
+    ("collection.risk_pause_max_minutes", "出问题先歇几分钟（最多）", 1, 60, True),
+    ("collection.delivery_cooldown_min_minutes", "找完先歇几分钟再投（最少）", 0, 240, True),
+    ("collection.delivery_cooldown_max_minutes", "找完先歇几分钟再投（最多）", 0, 240, True),
+    ("safety.daily_platform_page_limit", "BOSS 每天最多打开多少个页面", 1, 2000, True),
+    ("throttle.daily_cap", "每日投递上限", 1, 500, True),
+    ("monitor.interval", "隔几分钟看一次", 1, 120, True),
+    ("monitor.initial_cooldown_minutes", "投完先歇几分钟再看回复", 0, 120, True),
+    ("monitor.max_conversations_per_cycle", "一次最多处理几段对话", 1, 20, True),
+    ("monitor.max_consecutive_page_failures", "页面连续打不开几次就停", 1, 10, True),
+    ("monitor.max_resume_sends_per_cycle", "一次最多发几份简历", 1, 100, True),
+    ("follow_up.interval_hours", "过几小时没回就问一次", 12, 168, True),
+    ("profile.salary_min", "我想要的工资（最少）", 0, 200, True),
+    ("profile.salary_max", "我想要的工资（最多）", 0, 200, True),
+    ("profile.salary_ceil_ratio", "工资高一点也能接受", 1, 5, False),
+    ("profile.posted_days", "只要最近发布的", 0, 30, True),
+)
+# 薪资 max=0 表示不限：与 api_config_post 既有口径一致，max>0 时才比大小。
+_CONFIG_NUMBER_RANGE_PAIRS: tuple[tuple[str, str, str, bool], ...] = (
+    ("profile.salary_min", "profile.salary_max", "我想要的工资", True),
+    ("collection.risk_pause_min_minutes", "collection.risk_pause_max_minutes", "出问题先歇几分钟", False),
+    ("collection.delivery_cooldown_min_minutes", "collection.delivery_cooldown_max_minutes", "找完先歇几分钟再投", False),
+)
+
+
+def validate_config_numbers(config: dict[str, Any]) -> None:
+    """Reject out-of-range / non-numeric settings before persisting (H-6).
+
+    只在保存配置时调用，不拦启动加载：旧配置里万一已有坏值，面板还能
+    打开、用户改回合法值再保存；启动时拦会把面板本身挡在门外。
+    """
+    if not isinstance(config, dict):
+        raise ValueError("配置必须是对象")
+    for path, label, minimum, maximum, integer in _CONFIG_NUMBER_RULES:
+        if "*" in path:
+            platforms = config.get("platforms")
+            if not isinstance(platforms, dict):
+                continue
+            paths = [path.replace("*", platform) for platform in platforms]
+        else:
+            paths = [path]
+        for concrete_path in paths:
+            # 缺失字段按默认处理、不报错；显式 null（前端 NaN 经 JSON
+            # 变成 null）是已存坏值，要拦住。
+            current: Any = config
+            missing = False
+            for key in concrete_path.split("."):
+                if not isinstance(current, dict) or key not in current:
+                    missing = True
+                    break
+                current = current[key]
+            if missing:
+                continue
+            value = current
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{label}请填写数字")
+            if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+                raise ValueError(f"{label}请填写数字")
+            if integer and isinstance(value, float) and not value.is_integer():
+                raise ValueError(f"{label}请填写整数")
+            if value < minimum or value > maximum:
+                raise ValueError(f"{label}应在 {minimum:g}–{maximum:g} 之间")
+    def _value_at(path: str) -> Any:
+        current: Any = config
+        for key in path.split("."):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(key)
+        return current
+
+    for min_path, max_path, label, only_when_max_positive in _CONFIG_NUMBER_RANGE_PAIRS:
+        min_value = _value_at(min_path)
+        max_value = _value_at(max_path)
+        if (
+            isinstance(min_value, (int, float))
+            and not isinstance(min_value, bool)
+            and isinstance(max_value, (int, float))
+            and not isinstance(max_value, bool)
+            and (not only_when_max_positive or max_value > 0)
+            and min_value > max_value
+        ):
+            raise ValueError(f"{label}：最少不能比最多大")
+
+
 def validate_config_send_windows(config: dict[str, Any]) -> None:
     """Reject invalid windows before persisting settings or starting a task.
 

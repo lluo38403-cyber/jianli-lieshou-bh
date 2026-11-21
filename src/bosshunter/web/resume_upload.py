@@ -91,9 +91,14 @@ def prepare_resume_content(filename: str, content: bytes) -> tuple[str, bytes]:
 	suffix = Path(safe_name).suffix.lower()
 	if suffix in {".md", ".txt"}:
 		kind = "Markdown" if suffix == ".md" else "文本"
-		text = _decode_plain_text(content, kind=kind)
+		text = sanitize_resume_text(_decode_plain_text(content, kind=kind))
+		# H-4：空白 .md/.txt 之前直接存空文件，还会覆盖好简历并删掉原
+		# PDF 伴档。与 PDF（无文字即报错）/docx（无文字即报错）分支对齐：
+		# sanitize 后只剩空白/NUL 即拒绝，落盘之前就拦住。
+		if not text.strip():
+			raise ResumeUploadError("简历文件没有内容，请换一份有内容的简历再上传")
 		output_name = safe_name if suffix == ".md" else f"{Path(safe_name).stem}.md"
-		return output_name, sanitize_resume_text(text).encode("utf-8")
+		return output_name, text.encode("utf-8")
 
 	markdown = docx_to_markdown(content) if suffix == ".docx" else pdf_to_markdown(content)
 	output_name = f"{Path(safe_name).stem}.md"

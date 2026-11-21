@@ -99,6 +99,12 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
       setPanelMessages((prev) => afterResumeLoadFailure(prev, UNSUPPORTED_RESUME_MESSAGE))
       return
     }
+    // H-4：0 字节文件不等后端就拦住——后端空白校验是最后一道防线，
+    // 前端先拦能避免一次无意义的往返，也避免用户误以为“传上去了”。
+    if (file.size === 0) {
+      setPanelMessages((prev) => afterResumeLoadFailure(prev, '这个文件是空的，没有内容，换一份有内容的简历再上传'))
+      return
+    }
     setPanelMessages(afterUploadAttempt(emptyResumePanelMessages()))
     const form = new FormData()
     form.append('file', file)

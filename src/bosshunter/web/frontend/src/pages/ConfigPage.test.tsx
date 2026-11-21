@@ -354,6 +354,42 @@ it('shows salary in k with 4k/7k placeholders and explains the ceiling ratio in 
   expect(saved.profile.salary_max).toBe(0)
 })
 
+it('已存的坏数字不被默认值掩盖：失焦就地报错并恢复，保存也被拦住（H-6）', async () => {
+  let saved: Record<string, any> = { scoring: { max_candidates: 0 } }
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    let body: unknown = {}
+    if (url === '/api/config') {
+      if (init?.method === 'POST') { saved = JSON.parse(String(init.body)); body = { success: true } }
+      else body = saved
+    }
+    if (url.startsWith('/api/cities')) body = { cities: [] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
+  await screen.findByText('多少分才投')
+  // 已存的 0 露出来，不显示成默认值 20。
+  const input = screen.getByDisplayValue('0') as HTMLInputElement
+  expect(input.value).toBe('0')
+  // 清空再失焦：就地报“不能为空”，并恢复成原来的 0。
+  fireEvent.change(input, { target: { value: '' } })
+  fireEvent.blur(input)
+  expect(screen.getByText('一次最多看多少个不能为空，请填写数字')).toBeTruthy()
+  expect((screen.getByDisplayValue('0') as HTMLInputElement).value).toBe('0')
+  // 改成范围外再失焦：就地报范围，同样恢复。
+  fireEvent.change(input, { target: { value: '999' } })
+  fireEvent.blur(input)
+  expect(screen.getByText('一次最多看多少个应在 1–100 之间')).toBeTruthy()
+  // 脏了之后点保存：坏数字拦在保存前，不发 POST。
+  fireEvent.click(screen.getByRole('switch', { name: '随机操作间隔' }))
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  // 保存失败的提示与框下就地报错是同一句话，共两处。
+  await waitFor(() => expect(screen.getAllByText('一次最多看多少个应在 1–100 之间')).toHaveLength(2))
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
+  expect(saved.scoring.max_candidates).toBe(0)
+})
+
 it('shows both recruitment types selected when the config says so', async () => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)

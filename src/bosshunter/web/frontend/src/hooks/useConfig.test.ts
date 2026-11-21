@@ -73,6 +73,61 @@ describe('useConfig', () => {
     expect(result.current.waitingForService).toBe(false)
   })
 
+  it('保存前拦住坏数字：不发请求并报出原因（H-6）', async () => {
+    const postCalls: unknown[] = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/config' && init?.method === 'POST') {
+        postCalls.push(init.body)
+        return jsonResponse({ success: true })
+      }
+      if (url === '/api/config') return jsonResponse(CONFIG)
+      if (url === '/api/config/schema') return jsonResponse(SCHEMA)
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useConfig())
+    await waitFor(() => expect(result.current.config).toEqual(CONFIG))
+    // 清空数字框曾把 0 写进配置：保存时必须拦住，而不是发给后端。
+    act(() => {
+      result.current.updateConfig('scoring.max_candidates', 0)
+    })
+    let saved = true
+    await act(async () => {
+      saved = await result.current.saveConfig()
+    })
+    expect(saved).toBe(false)
+    expect(postCalls).toHaveLength(0)
+    expect(result.current.message?.type).toBe('error')
+    expect(result.current.message?.text).toContain('一次最多看多少个')
+  })
+
+  it('合法数字照常保存（H-6 回归）', async () => {
+    const postCalls: unknown[] = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/config' && init?.method === 'POST') {
+        postCalls.push(init.body)
+        return jsonResponse({ success: true })
+      }
+      if (url === '/api/config') return jsonResponse(CONFIG)
+      if (url === '/api/config/schema') return jsonResponse(SCHEMA)
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useConfig())
+    await waitFor(() => expect(result.current.config).toEqual(CONFIG))
+    act(() => {
+      result.current.updateConfig('scoring.max_candidates', 25)
+    })
+    let saved = false
+    await act(async () => {
+      saved = await result.current.saveConfig()
+    })
+    expect(saved).toBe(true)
+    expect(postCalls).toHaveLength(1)
+  })
+
   it('手动重试（恢复原样）能重新拉取', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)

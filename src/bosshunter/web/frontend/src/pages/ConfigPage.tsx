@@ -13,7 +13,8 @@ import { CityMultiSelect, type CityOption } from '@/components/config/CityMultiS
 import { ResumeUploadSection } from '@/components/config/ResumeUploadSection'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Save, RotateCcw } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { validateNumberInput } from '@/lib/configValidation'
 import { PLATFORM_LABELS, PLATFORM_SHORT_LABELS, PLATFORM_IDS, MONITOR_CHAT_URL_DEFAULTS, type PlatformId as SharedPlatformId } from '@/lib/platforms'
 
 type PlatformId = 'boss' | 'zhilian' | '51job' | 'liepin'
@@ -143,7 +144,8 @@ export default function ConfigPage() {
       keywords: specific.keywords?.length ? specific.keywords : legacy.keywords,
       cities: specific.cities?.length ? specific.cities : legacy.cities,
       city_codes: Object.keys(specific.city_codes || {}).length ? specific.city_codes : legacy.city_codes,
-      max_pages: specific.max_pages || legacy.max_pages || (platform === 'boss' ? 3 : 1),
+      // H-6：用 ?? 不用 ||——已存的 0 是坏值要露出来，不能悄悄显示成默认值。
+      max_pages: specific.max_pages ?? legacy.max_pages ?? (platform === 'boss' ? 3 : 1),
       sort: specific.sort || legacy.sort || 'default',
     }
   }
@@ -381,7 +383,7 @@ export default function ConfigPage() {
                     </Field>
                     <div className="grid gap-3 md:grid-cols-2">
                       <Field label="最多翻几页">
-                        <Input type="number" value={search.max_pages || (platform === 'boss' ? 3 : 1)} onChange={event => updatePlatformSearch(platform, 'max_pages', Number(event.target.value))} min={1} max={10} />
+                        <ValidatedNumberInput label="最多翻几页" value={search.max_pages ?? (platform === 'boss' ? 3 : 1)} onChange={value => updatePlatformSearch(platform, 'max_pages', value)} min={1} max={10} />
                         {platform === 'boss' && bossTheoreticalPages > 0 && (
                           <p className={`mt-1 rounded-lg px-3 py-2 text-xs ${bossTheoreticalExceedsLimit ? 'bg-warning-soft font-bold text-warning' : 'bg-success-soft text-success'}`}>
                             最多要翻 {bossTheoreticalPages} 页（{bossEstimateKeywords.length} 个岗位 × {bossEstimateCities.length} 个城市 × {bossEstimateMaxPages} 页）。
@@ -400,7 +402,7 @@ export default function ConfigPage() {
                     </div>
                     {platform === 'boss' && <div className="space-y-3 border-t border-card-border pt-3">
                       <label className="flex items-center justify-between text-sm font-bold">这个城市新岗位太少就换地方<Switch checked={search.city_yield_policy?.enabled ?? true} onChange={enabled => updatePlatformSearch('boss', 'city_yield_policy', { warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5, ...search.city_yield_policy, enabled })} /></label>
-                      <div className="grid gap-3 sm:grid-cols-3">{([{ key: 'warmup_minutes', label: '过几分钟先看一次', initial: 10, max: 60 }, { key: 'window_minutes', label: '隔几分钟看一次', initial: 5, max: 30 }, { key: 'min_new_jobs', label: '一次至少新找到几个', initial: 5, max: 1000 }]).map(field => <Field key={field.key} label={field.label}><Input type="number" min={1} max={field.max} value={search.city_yield_policy?.[field.key] ?? field.initial} onChange={event => updatePlatformSearch('boss', 'city_yield_policy', { enabled: true, warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5, ...search.city_yield_policy, [field.key]: Number(event.target.value) })} /></Field>)}</div>
+                      <div className="grid gap-3 sm:grid-cols-3">{([{ key: 'warmup_minutes', label: '过几分钟先看一次', initial: 10, max: 60 }, { key: 'window_minutes', label: '隔几分钟看一次', initial: 5, max: 30 }, { key: 'min_new_jobs', label: '一次至少新找到几个', initial: 5, max: 1000 }]).map(field => <Field key={field.key} label={field.label}><ValidatedNumberInput label={field.label} value={search.city_yield_policy?.[field.key] ?? field.initial} onChange={value => updatePlatformSearch('boss', 'city_yield_policy', { enabled: true, warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5, ...search.city_yield_policy, [field.key]: value })} min={1} max={field.max} /></Field>)}</div>
                     </div>}
                     {platform === 'boss' && <div className="space-y-3 rounded-xl border border-card-border bg-card p-3">
                       <p className="text-xs font-black text-foreground">BOSS 再细筛一下（可以不填）</p>
@@ -507,6 +509,7 @@ export default function ConfigPage() {
               minPlaceholder="4"
               maxPlaceholder="7"
               emptyZero
+              allowMaxZero
             />
             <Field label={`工资高一点也能接受：${config.profile?.salary_ceil_ratio ?? 1.5}`}>
               <Slider
@@ -541,11 +544,11 @@ export default function ConfigPage() {
         {/* Scoring Section */}
         <SectionCard title="多少分才投">
           <div className="space-y-4">
-            <Field label={`多少分以上才投： ${config.scoring?.threshold || 60}`}>
-              <Slider value={config.scoring?.threshold || 60} onChange={v => updateConfig('scoring.threshold', v)} min={0} max={100} />
+            <Field label={`多少分以上才投： ${config.scoring?.threshold ?? 60}`}>
+              <Slider value={config.scoring?.threshold ?? 60} onChange={v => updateConfig('scoring.threshold', v)} min={0} max={100} />
             </Field>
             <Field label="一次最多看多少个">
-              <Input type="number" value={config.scoring?.max_candidates || 20} onChange={e => updateConfig('scoring.max_candidates', Number(e.target.value))} min={1} max={100} />
+              <ValidatedNumberInput label="一次最多看多少个" value={config.scoring?.max_candidates ?? 20} onChange={value => updateConfig('scoring.max_candidates', value)} min={1} max={100} />
             </Field>
           </div>
         </SectionCard>
@@ -554,7 +557,7 @@ export default function ConfigPage() {
           <div className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="BOSS 每天最多翻多少页">
-                <Input type="number" value={config.collection?.daily_search_page_limit ?? 60} onChange={e => updateConfig('collection.daily_search_page_limit', Number(e.target.value))} min={1} max={200} />
+                <ValidatedNumberInput label="BOSS 每天最多翻多少页" value={config.collection?.daily_search_page_limit ?? 60} onChange={value => updateConfig('collection.daily_search_page_limit', value)} min={1} max={200} />
                 {bossTheoreticalPages > 0 && (
                   <p className={`mt-1 text-xs ${bossTheoreticalExceedsLimit ? 'font-bold text-warning' : 'text-muted'}`}>
                     现在这个组合最多要翻 {bossTheoreticalPages} 页；{bossTheoreticalExceedsLimit ? `超过了这个上限 ${bossDailySearchLimit} 页，设置这里和跑起来的时候都会提醒你。` : '还没超过这个上限。'}
@@ -562,11 +565,11 @@ export default function ConfigPage() {
                 )}
               </Field>
               <Field label="BOSS 每天最多打开多少个岗位">
-                <Input type="number" value={config.collection?.daily_detail_page_limit ?? 900} onChange={e => updateConfig('collection.daily_detail_page_limit', Number(e.target.value))} min={1} max={1000} />
+                <ValidatedNumberInput label="BOSS 每天最多打开多少个岗位" value={config.collection?.daily_detail_page_limit ?? 900} onChange={value => updateConfig('collection.daily_detail_page_limit', value)} min={1} max={1000} />
                 <p className="mt-1 text-xs text-muted">只算真正打开岗位详情的次数；列表里跳过的重复、筛掉的岗位不算。打开详情也算进下面的总数里。</p>
               </Field>
               <Field label="BOSS 页面连续打不开几次就停">
-                <Input type="number" value={config.collection?.max_consecutive_page_failures ?? 3} onChange={e => updateConfig('collection.max_consecutive_page_failures', Number(e.target.value))} min={1} max={10} />
+                <ValidatedNumberInput label="BOSS 页面连续打不开几次就停" value={config.collection?.max_consecutive_page_failures ?? 3} onChange={value => updateConfig('collection.max_consecutive_page_failures', value)} min={1} max={10} />
               </Field>
               <NumberRangeField
                 label="出问题先歇几分钟"
@@ -578,7 +581,7 @@ export default function ConfigPage() {
                 max={60}
               />
               <Field label="动作快慢（越大越慢）">
-                <Input type="number" value={config.collection?.collection_delay_multiplier ?? 1.5} onChange={e => updateConfig('collection.collection_delay_multiplier', Number(e.target.value))} min={1} max={5} step={0.1} />
+                <ValidatedNumberInput label="动作快慢" value={config.collection?.collection_delay_multiplier ?? 1.5} onChange={value => updateConfig('collection.collection_delay_multiplier', value)} min={1} max={5} step={0.1} integer={false} />
                 <p className="mt-1 text-xs text-muted">找岗位和看回复的时候都按这个来；数字越大，等得越久。</p>
               </Field>
               <NumberRangeField
@@ -593,7 +596,7 @@ export default function ConfigPage() {
             </div>
             <p className="text-xs text-muted">找完 BOSS 的岗位，每次投之前会随机歇一会儿再投；默认歇 5–15 分钟，只找新岗位的时候不受影响。</p>
             <Field label="BOSS 每天最多打开多少个页面">
-              <Input type="number" value={config.safety?.daily_platform_page_limit ?? 1100} onChange={e => updateConfig('safety.daily_platform_page_limit', Number(e.target.value))} min={1} max={2000} />
+              <ValidatedNumberInput label="BOSS 每天最多打开多少个页面" value={config.safety?.daily_platform_page_limit ?? 1100} onChange={value => updateConfig('safety.daily_platform_page_limit', value)} min={1} max={2000} />
               <p className="mt-1 text-xs text-muted">BOSS 的搜索页、岗位详情、自动投递、看回复打开的页面都算在一起；默认 1100 次，够 60 次搜索加 900 个详情，还剩 140 次给别的操作。其他平台不占这个数。</p>
             </Field>
             <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
@@ -654,15 +657,15 @@ export default function ConfigPage() {
                 <p className="mt-1 text-xs text-muted">达到上限就自动停下今天的投递，明天继续；关了就是不限量。</p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <Input
-                  type="number"
+                <ValidatedNumberInput
+                  label="每日投递上限"
                   className="w-20"
                   value={config.throttle?.daily_cap ?? 120}
-                  onChange={e => updateConfig('throttle.daily_cap', Number(e.target.value))}
+                  onChange={value => updateConfig('throttle.daily_cap', value)}
                   min={1}
                   max={500}
                   disabled={!(config.throttle?.daily_cap_enabled ?? true)}
-                  aria-label="每日投递上限"
+                  ariaLabel="每日投递上限"
                 />
                 <Switch checked={config.throttle?.daily_cap_enabled ?? true} onChange={v => updateConfig('throttle.daily_cap_enabled', v)} aria-label="每日投递上限开关" />
               </div>
@@ -676,11 +679,11 @@ export default function ConfigPage() {
         <SectionCard title="多久看一次 HR 回复">
           <div className="space-y-4">
             <Field label="隔几分钟看一次">
-              <Input type="number" value={config.monitor?.interval || 30} onChange={e => updateConfig('monitor.interval', Number(e.target.value))} min={1} max={120} />
+              <ValidatedNumberInput label="隔几分钟看一次" value={config.monitor?.interval ?? 30} onChange={value => updateConfig('monitor.interval', value)} min={1} max={120} />
               <p className="mt-1 text-xs text-muted">只看回复的时候会马上检查一次；之后每轮还会按上面“动作快慢”再等一等。</p>
             </Field>
             <Field label="投完先歇几分钟再看回复">
-              <Input type="number" value={config.monitor?.initial_cooldown_minutes ?? 10} onChange={e => updateConfig('monitor.initial_cooldown_minutes', Number(e.target.value))} min={0} max={120} />
+              <ValidatedNumberInput label="投完先歇几分钟再看回复" value={config.monitor?.initial_cooldown_minutes ?? 10} onChange={value => updateConfig('monitor.initial_cooldown_minutes', value)} min={0} max={120} />
               <p className="mt-1 text-xs text-muted">只有自动找工作投完才等这一会儿；只看回复是马上就查，停下任务就不等了。</p>
             </Field>
             {/* v27：聊天页按平台分开配。显示的是实际生效的地址：
@@ -704,13 +707,13 @@ export default function ConfigPage() {
               <p className="text-xs text-muted">BOSS 是已验证的沟通页；其余三家默认是各平台消息中心入口，核实到专用聊天页后可改成直链。查 HR 回复时各平台只读自己这一行，不会混用。</p>
             </div>
             <Field label="一次最多处理几段对话">
-              <Input type="number" value={config.monitor?.max_conversations_per_cycle ?? 5} onChange={e => updateConfig('monitor.max_conversations_per_cycle', Number(e.target.value))} min={1} max={20} />
+              <ValidatedNumberInput label="一次最多处理几段对话" value={config.monitor?.max_conversations_per_cycle ?? 5} onChange={value => updateConfig('monitor.max_conversations_per_cycle', value)} min={1} max={20} />
             </Field>
             <Field label="页面连续打不开几次就停">
-              <Input type="number" value={config.monitor?.max_consecutive_page_failures ?? 3} onChange={e => updateConfig('monitor.max_consecutive_page_failures', Number(e.target.value))} min={1} max={10} />
+              <ValidatedNumberInput label="页面连续打不开几次就停" value={config.monitor?.max_consecutive_page_failures ?? 3} onChange={value => updateConfig('monitor.max_consecutive_page_failures', value)} min={1} max={10} />
             </Field>
             <Field label="一次最多发几份简历">
-              <Input type="number" value={config.monitor?.max_resume_sends_per_cycle || 5} onChange={e => updateConfig('monitor.max_resume_sends_per_cycle', Number(e.target.value))} min={1} />
+              <ValidatedNumberInput label="一次最多发几份简历" value={config.monitor?.max_resume_sends_per_cycle ?? 5} onChange={value => updateConfig('monitor.max_resume_sends_per_cycle', value)} min={1} max={100} />
             </Field>
             <div className="flex items-center justify-between rounded-2xl border border-card-border bg-surface p-4">
               <div>
@@ -730,7 +733,7 @@ export default function ConfigPage() {
               <Switch checked={config.follow_up?.enabled ?? false} onChange={v => updateConfig('follow_up.enabled', v)} />
             </div>
             <Field label="过几小时没回就问一次">
-              <Input type="number" value={config.follow_up?.interval_hours || 48} onChange={e => updateConfig('follow_up.interval_hours', Number(e.target.value))} min={12} max={168} />
+              <ValidatedNumberInput label="过几小时没回就问一次" value={config.follow_up?.interval_hours ?? 48} onChange={value => updateConfig('follow_up.interval_hours', value)} min={12} max={168} />
             </Field>
             <div className="flex items-center justify-between">
               <label className="text-xs text-foreground">周末节假日不打扰</label>
@@ -944,6 +947,93 @@ function Field({ label, children, hint, dataTour }: { label: string; children: R
   )
 }
 
+/** H-6 数字框：失焦即校验，空值/非法值/范围外就地红字报错并恢复上一次合法值。 */
+function ValidatedNumberInput({
+  label,
+  value,
+  min,
+  max,
+  step,
+  integer = true,
+  onChange,
+  className,
+  disabled,
+  ariaLabel,
+}: {
+  label: string
+  value: number | undefined | null
+  min: number
+  max: number
+  step?: number
+  integer?: boolean
+  onChange: (value: number) => void
+  className?: string
+  disabled?: boolean
+  ariaLabel?: string
+}) {
+  // raw 为 null 时跟随配置值；正在输入时不被配置回写打断。
+  const [raw, setRaw] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const lastValidRef = useRef<number | null>(
+    typeof value === 'number' && Number.isFinite(value) ? value : null,
+  )
+  const committedRef = useRef<number | undefined | null>(value)
+  const display = raw ?? (value === undefined || value === null ? '' : String(value))
+  // 外部改了配置值（如恢复原样）时跟上，不留着旧的输入残影。
+  useEffect(() => {
+    if (value !== committedRef.current) {
+      committedRef.current = value
+      setRaw(null)
+      setError(null)
+    }
+  }, [value])
+  const handleChange = (text: string) => {
+    setRaw(text)
+    setError(null)
+    if (text.trim() === '') return // 空着等失焦再报，不把 0/NaN 写进配置
+    const next = Number(text)
+    if (!Number.isFinite(next)) return
+    committedRef.current = next
+    if (validateNumberInput(text, label, min, max, { integer }) === null) {
+      lastValidRef.current = next
+    }
+    onChange(next)
+  }
+  const handleBlur = () => {
+    const text = raw ?? (value === undefined || value === null ? '' : String(value))
+    const message = validateNumberInput(text, label, min, max, { integer })
+    if (message) {
+      setError(message)
+      const fallback = lastValidRef.current
+      if (fallback !== null) {
+        committedRef.current = fallback
+        onChange(fallback)
+      }
+      setRaw(null)
+    } else {
+      setError(null)
+      setRaw(null)
+    }
+  }
+  return (
+    <div>
+      <Input
+        type="number"
+        value={display}
+        onChange={event => handleChange(event.target.value)}
+        onBlur={handleBlur}
+        min={min}
+        max={max}
+        step={step}
+        className={className}
+        disabled={disabled}
+        aria-label={ariaLabel}
+      />
+      {error ? <p className="mt-1 text-xs text-danger">{error}</p> : null}
+    </div>
+  )
+}
+
 function NumberRangeField({
   label,
   minValue,
@@ -958,6 +1048,7 @@ function NumberRangeField({
   minPlaceholder,
   maxPlaceholder,
   emptyZero = false,
+  allowMaxZero = false,
 }: {
   label: string
   minValue: number
@@ -974,8 +1065,27 @@ function NumberRangeField({
   minPlaceholder?: string
   maxPlaceholder?: string
   emptyZero?: boolean
+  /** 薪资专用：最多填 0 表示不限，最少比最多大也不算错。 */
+  allowMaxZero?: boolean
 }) {
   const inputClassName = 'h-9 min-w-0 flex-1 bg-transparent px-2 text-center text-sm text-foreground outline-none disabled:cursor-not-allowed disabled:text-muted'
+  // H-6：区间框失焦也校验范围与最少<=最多，就地报错；保存前集中校验是后盾。
+  const [rangeError, setRangeError] = useState<string | null>(null)
+  const checkRange = () => {
+    if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
+      setRangeError(`${label}请填写数字`)
+      return
+    }
+    if (min !== undefined && max !== undefined && (minValue < min || maxValue < min || minValue > max || maxValue > max)) {
+      setRangeError(`${label}应在 ${min}–${max} 之间`)
+      return
+    }
+    if (minValue > maxValue && !(allowMaxZero && maxValue === 0)) {
+      setRangeError(`${label}：最少不能比最多大`)
+      return
+    }
+    setRangeError(null)
+  }
 
   return (
     <Field label={label}>
@@ -988,6 +1098,7 @@ function NumberRangeField({
           value={emptyZero && minValue === 0 ? '' : minValue}
           placeholder={minPlaceholder}
           onChange={event => onMinChange(Number(event.target.value))}
+          onBlur={checkRange}
           min={min}
           max={max}
           step={step}
@@ -1003,6 +1114,7 @@ function NumberRangeField({
           value={emptyZero && maxValue === 0 ? '' : maxValue}
           placeholder={maxPlaceholder}
           onChange={event => onMaxChange(Number(event.target.value))}
+          onBlur={checkRange}
           min={min}
           max={max}
           step={step}
@@ -1010,6 +1122,7 @@ function NumberRangeField({
         />
         {unit && <span className="shrink-0 pr-3 text-xs font-bold text-muted">{unit}</span>}
       </div>
+      {rangeError ? <p className="mt-1 text-xs text-danger">{rangeError}</p> : null}
     </Field>
   )
 }

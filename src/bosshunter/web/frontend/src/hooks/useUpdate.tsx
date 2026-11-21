@@ -55,6 +55,8 @@ interface CheckPayload {
 export const BACKEND_CHECK_TIMEOUT_MS = 10000
 export const UPDATE_CHECK_TIMEOUT_MS = 12000
 export const UPDATE_CHECK_RETRIES = 1
+/** 自动复查间隔 30 分钟：见下面复查 effect 的注释。 */
+export const UPDATE_AUTO_RECHECK_INTERVAL_MS = 30 * 60 * 1000
 /** 读响应体也加超时：fetch 只管到响应头，body 卡住时 res.json()
  * 会一直等——请求层的超时管不到它。本地后端、包体很小，5 秒够了。 */
 export const UPDATE_CHECK_JSON_TIMEOUT_MS = 5000
@@ -457,6 +459,23 @@ export function useUpdate() {
     void fetchManualDownloadUrl()
     void resume()
   }, [check, fetchHealth, fetchManualDownloadUrl, resume])
+
+  /** 自动复查：面板一直开着时，中转上新发了版也要自己发现，不能只靠
+   * 启动那一次检查。lucky 云电脑 2026-11-21 事故：面板从 03:47 开到
+   * 12:45，中转 05:31 发了 1.1.16，启动检查当时说“已是最新”是对的，
+   * 但之后 7 小时再没查过，横幅/弹窗一直不出现，手动点才出来。
+   * 每 30 分钟自动查一次，走自动分支（失败静默、不清已有 info、
+   * 不改 phase；和手动检查并发时照 v29 序号去重来）。只在 idle 时
+   * 查：下载中 / 已就绪 / 换版中 / 报错时不碰状态，免得把进行中的
+   * 更新流程打断、或把失败原因盖掉。后端 600 秒缓存已过期时才是
+   * 真查，没过期直接回缓存，不给中转加压。 */
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (phaseRef.current !== 'idle') return
+      void check()
+    }, UPDATE_AUTO_RECHECK_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [check])
 
   const apply = useCallback(async () => {
     setError('')

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchWithRetry, isServiceNotReadyError, readJsonWithTimeout } from '@/lib/api'
+import { validateConfigNumbers } from '@/lib/configValidation'
 
 /** 本地服务没起来时，隔多久自动再拉一次配置。 */
 const CONFIG_RETRY_MS = 10_000
@@ -160,6 +161,20 @@ export function useConfig() {
   const saveConfig = async (): Promise<boolean> => {
     const snapshot = configRef.current
     if (!snapshot) return false
+    // H-6：保存前集中校验全部数字区间与 min<=max——数字框清空变 0、
+    // 输 e/- 变 NaN 的坏值不能等到启动任务时才暴露；有错不发请求。
+    const numberErrors = validateConfigNumbers(snapshot)
+    if (numberErrors.length) {
+      const first = numberErrors[0]
+      setMessage({
+        type: 'error',
+        text: numberErrors.length > 1
+          ? `${first.message}（另有 ${numberErrors.length - 1} 项数字也有问题）`
+          : first.message,
+      })
+      setTimeout(() => setMessage(null), 3000)
+      return false
+    }
     setSaving(true)
     setMessage(null)
     try {

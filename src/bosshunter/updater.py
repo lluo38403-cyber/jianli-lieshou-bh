@@ -11,10 +11,14 @@ the exe, then exits; the batch file waits for the process (and any
 other copy of the exe, plus its child processes) to exit, copies
 staging over the install directory, purges files the new version
 removed from _internal, verifies the new exe exists, relaunches it,
-polls its /api/health until the expected version answers (up to ~90s;
-no answer means failed/nostart, staging kept, one more relaunch try),
-and cleans up. On any failure the batch file restores the backup,
-writes update-result.json and relaunches the old exe; the restarted
+polls its /api/health until the expected version answers (up to ~180s
+on the configured port; no answer means the batch retries the launch
+once and polls up to 60s more, then rolls back to the backup and
+relaunches the old exe — failed/nostart_rolled_back — while staging
+is kept for a retry), and cleans up. On any failure the batch file
+restores the backup, verifies the restore (a failed restore is
+failed/rollback_failed, never a false "restored"), writes
+update-result.json and relaunches the old exe; the restarted
 process consumes update-pending.json, compares its own version with
 the expected one, and — when they disagree — reports the failure
 instead of prompting for the same update again.
@@ -85,6 +89,8 @@ UPDATE_FAILURE_MESSAGES = {
     "copy": "换文件的时候出问题了，已经换回旧版本。请重新点一次更新。",
     "mismatch": "新版本换上去了，但打开还是旧版本，可能是旧文件没换掉。请重新点一次更新。",
     "nostart": "新版本换好了，但程序没重新打开。请重新点一次更新；如果一直这样，请把 update.log 发给客服。",
+    "nostart_rolled_back": "新版本没能启动，已经换回旧版本。请重新点一次更新；如果一直这样，请把 update.log 发给客服。",
+    "rollback_failed": "更新失败，回滚旧版本也没成功，安装可能新旧混装。请手动重装完整包；如果一直这样，请把 update.log 发给客服。",
     "nostart_old": "更新没换成，旧版本也没重新打开。请手动打开程序再重新点一次更新；如果一直这样，请把 update.log 发给客服。",
     "unknown": "上次更新没换完，请重新点一次更新。",
 }
@@ -444,16 +450,43 @@ def prune_old_backups(install_dir: str | Path, keep: int = 1) -> None:
         shutil.rmtree(old, ignore_errors=True)
 
 
+def _backup_looks_complete(backup_dir: str | Path) -> bool:
+    """True when an existing backup already holds a restorable payload.
+
+    A backup counts as complete when it has the _internal tree and at
+    least one top-level exe (the frozen program). A partial backup
+    (interrupted copy, empty dir) is not complete and may be replaced.
+    """
+    backup = Path(backup_dir)
+    if not (backup / "_internal").is_dir():
+        return False
+    try:
+        return any(
+            entry.is_file() and entry.suffix.lower() == ".exe"
+            for entry in backup.iterdir()
+        )
+    except OSError:
+        return False
+
+
 def create_backup(install_dir: str | Path, backup_dir: str | Path) -> Path:
     """Copy the current replaceable payload into backup_dir.
 
     Everything except config.yaml, data/, previous backups and the
     updater's own files is copied, so a failed update can be restored
     by hand from the backup.
+
+    H-1: an existing complete backup is never overwritten. A failed
+    rollback can leave a mixed install behind; the next retry must
+    not copy that mixed install over the one good backup (the backup
+    directory name is per-version, so the retry would otherwise
+    destroy the only restorable copy).
     """
     install = Path(install_dir)
     backup = Path(backup_dir)
     if backup.exists():
+        if _backup_looks_complete(backup):
+            return backup
         shutil.rmtree(backup)
     backup.mkdir(parents=True)
     for src in install.iterdir():
@@ -556,13 +589,21 @@ def build_update_script() -> str:
     the new exe and polls http://127.0.0.1:%PORT%/api/health until it
     reports the expected version (up to ~180s, hidden PowerShell loop).
     Only then is the update recorded as applied and staging deleted.
-    If the new exe never reports in, the batch records failed/nostart,
-    keeps staging (a retry must not have to re-download), starts the
-    new exe once more as a last chance, and only then deletes itself —
-    the verdict is always written before self-delete. (run 44758466045:
-    both robocopies exited 3, the log said "换好了", update-result.json
-    said applied, but no exe was running and 8686 never reported
-    v1.1.14 — the bare `start` swallowed the failed relaunch silently.)
+    If the new exe never reports in, the batch first checks whether
+    anything is answering on %PORT% at all: if something is, the
+    verdict is failed/nostart and the install is left as-is (the late
+    instance may still come up, and consume_pending_update re-probes
+    before judging failure). If nothing answers, it starts the new
+    exe once more and polls up to 60s more; if that still fails, it
+    rolls back to the backup and relaunches the old exe (S-1: a bad
+    new build must never permanently replace a working old one), and
+    the verdict is failed/nostart_rolled_back once the old version
+    reports in. Staging is kept on every failure path (a retry must
+    not have to re-download), and the verdict is always written
+    before self-delete. (run 44758466045: both robocopies exited 3,
+    the log said "换好了", update-result.json said applied, but no
+    exe was running and 8686 never reported v1.1.14 — the bare
+    `start` swallowed the failed relaunch silently.)
 
     The rollback relaunch gets the same treatment: :fail_write starts
     the old exe (when nothing is running) and polls
@@ -570,11 +611,18 @@ def build_update_script() -> str:
     %CURRENT% — the sixth launch argument, the version the update
     started from (up to ~180s, same hidden PowerShell loop). Only then
     is the failure verdict written, keeping the original reason code
-    (stuck/nopkg/copy) so the Retry expectation "update failed, old
-    version is back" still holds. If the old exe never reports in, the
-    batch records failed/nostart_old, starts the old exe once more as
-    a last chance, and only then deletes itself. Staging is never
-    deleted on any failure path (a retry must not re-download).
+    (stuck/nopkg/copy/nostart_rolled_back) so the Retry expectation
+    "update failed, old version is back" still holds. If the old exe
+    never reports in, the batch records failed/nostart_old, starts the
+    old exe once more as a last chance, and only then deletes itself.
+    Staging is never deleted on any failure path (a retry must not
+    re-download). Rollback itself is verified too (H-1): each restore
+    robocopy is checked for RC>=8, and after the restore the old exe
+    and _internal must exist — otherwise the verdict is
+    failed/rollback_failed (never the false "已恢复旧版本"), and the
+    reason code survives even if the old exe then fails to report in,
+    so the user is told to reinstall by hand instead of retrying the
+    same broken path.
 
     The wait checks use a PowerShell Get-Process probe (PID + process
     name, no pipes): an earlier `tasklist | findstr` pipe hung three
@@ -684,14 +732,21 @@ def build_update_script() -> str:
         "rem 但 8686 上 180 秒都没报新版、也没有 exe 在跑——裸 start 把\r\n"
         "rem 拉起失败静默吞掉了）。所以拉起后轮询 %PORT% /api/health 等\r\n"
         "rem 期望版本（最多约 180 秒），等到了才写 applied、删 staging；\r\n"
-        "rem 等不到写 failed/nostart、staging 保留（重试不用重新下载）、\r\n"
-        "rem 再拉一次新 exe，verdict 一定在 bat 自删之前写好。\r\n"
+        "rem 等不到先探端口：已有实例在应答就只写 failed/nostart、不再拉、\r\n"
+        "rem 也不回滚（迟到的实例随后会起来）；端口没应答就再拉一次新 exe、\r\n"
+        "rem 再等 60 秒，还不起来就走 :rollback 换回旧版、按\r\n"
+        "rem failed/nostart_rolled_back 写结果（S-1：坏新版绝不能永久换掉\r\n"
+        "rem 能用的旧版）；staging 在任何失败路径都不删。\r\n"
         "rem 回滚重开也要核实：:fail_write 以前先写结果再裸 start 重拉旧版，\r\n"
         "rem 旧版拉不起来也照写 copy/stuck，用户看到的还是“旧版本还能用”。\r\n"
         "rem 现在照成功分支的写法：重拉旧 exe 后轮询 %PORT% /api/health 等\r\n"
         "rem 旧版本号 %CURRENT%（最多约 180 秒），等到了才按原原因码写 failed、\r\n"
         "rem 等不到写 failed/nostart_old、再拉一次旧 exe；staging 任何失败\r\n"
         "rem 路径都不删（重试不用重新下载）。\r\n"
+        "rem 回滚本身也要核实（H-1）：恢复用的两条 robocopy 同样判 RC>=8，\r\n"
+        "rem 恢复后校验旧 exe 与 _internal 都在；失败就写\r\n"
+        "rem failed/rollback_failed，绝不写“已恢复旧版本”，原原因码也不再\r\n"
+        "rem 被 nostart_old 覆盖。\r\n"
         "setlocal\r\n"
         'set "STAGING=%~1"\r\n'
         'if "%STAGING:~-1%"=="\\" set "STAGING=%STAGING:~0,-1%"\r\n'
@@ -770,28 +825,51 @@ def build_update_script() -> str:
         '(goto) 2>nul & del "%~f0"\r\n'
         ":fail_nostart\r\n"
         'echo [%date% %time%] 180 秒内新版本没在 %PORT% 上起来，更新没换完。 >> "%LOG%"\r\n'
-        '> "%RESULT%" echo {"status": "failed", "expected_version": "%EXPECTED%", "reason_code": "nostart"}\r\n'
-        'echo [%date% %time%] 再拉一次新版本（最后一次重试机会），安装包留着、不用重新下载。 >> "%LOG%"\r\n'
         'rem M-44：先确认是不是已有实例在起来：端口已有应答就不再拉，\r\n'
         'rem 免得两个实例抢绑端口（第一个随后起来、第二个又绑不上还可能误杀健康实例）。\r\n'
         "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health' -TimeoutSec 5; exit 0 } catch { exit 1 }\" <nul\r\n"
         'set "PROBE_RC=%errorlevel%"\r\n'
-        'if %PROBE_RC% equ 0 echo [%date% %time%] 端口 %PORT% 上已有实例在应答，不再重复拉起。 >> "%LOG%"\r\n'
-        'if %PROBE_RC% neq 0 start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
-        '(goto) 2>nul & del "%~f0"\r\n'
+        'if %PROBE_RC% equ 0 goto :fail_nostart_answered\r\n'
+        'echo [%date% %time%] 再拉一次新版本（最后一次重试机会），安装包留着、不用重新下载。 >> "%LOG%"\r\n'
+        'start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
+        'echo [%date% %time%] 第二次拉起后继续等新版本（最多 60 秒），还不起来就换回旧版本。 >> "%LOG%"\r\n'
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$deadline = (Get-Date).AddSeconds(60); $ok = $false; $seen = ''; while ((Get-Date) -lt $deadline) { try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health' -TimeoutSec 5; $seen = $h.version; if ($seen -eq '%EXPECTED%') { $ok = $true; break } } catch { $seen = '' }; Start-Sleep -Seconds 3 }; Write-Output ('health poll (retry): ok=' + $ok + ' last_seen_version=' + $seen); if ($ok) { exit 0 } else { exit 1 }\" >> \"%LOG%\" 2>&1\r\n"
+        'set "HEALTH2_RC=%errorlevel%"\r\n'
+        'if %HEALTH2_RC% equ 0 goto :fail_nostart_recovered\r\n'
+        'echo [%date% %time%] 第二次拉起也没起来，正在换回旧版本。 >> "%LOG%"\r\n'
+        'set "FAIL_CODE=nostart_rolled_back"\r\n'
+        'goto :rollback\r\n'
+        ":fail_nostart_recovered\r\n"
+        'echo [%date% %time%] 新版本第二次拉起后起来了，版本对上了。 >> "%LOG%"\r\n'
+        '> "%RESULT%" echo {"status": "applied", "expected_version": "%EXPECTED%", "reason_code": ""}\r\n'
+        'rmdir /s /q "%STAGING%"\r\n'
+        'goto :fail_exit\r\n'
+        ":fail_nostart_answered\r\n"
+        'echo [%date% %time%] 端口 %PORT% 上已有实例在应答，不再重复拉起、也不回滚。 >> "%LOG%"\r\n'
+        '> "%RESULT%" echo {"status": "failed", "expected_version": "%EXPECTED%", "reason_code": "nostart"}\r\n'
+        'goto :fail_exit\r\n'
         ":rollback\r\n"
-        'echo [%date% %time%] 复制失败，正在用备份恢复旧版本... >> "%LOG%"\r\n'
+        'if "%FAIL_CODE%"=="" set "FAIL_CODE=copy"\r\n'
+        'echo [%date% %time%] 正在用备份恢复旧版本... >> "%LOG%"\r\n'
         'if "%BACKUP%"=="" goto :fail_copy\r\n'
         "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"& robocopy '%INSTALL_DIR%\\%BACKUP%' '%INSTALL_DIR%' /E /IS /R:3 /W:2 /XD data /XF config.yaml; exit $LASTEXITCODE\" >> \"%LOG%\" 2>&1\r\n"
         'set "RC=%errorlevel%"\r\n'
         'echo [%date% %time%] robocopy 恢复主文件退出码 %RC% >> "%LOG%"\r\n'
+        'if %RC% geq 8 goto :rollback_failed\r\n'
         'if not exist "%INSTALL_DIR%\\%BACKUP%\\_internal\\" goto :rollback_after_internal\r\n'
         "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"& robocopy '%INSTALL_DIR%\\%BACKUP%\\_internal' '%INSTALL_DIR%\\_internal' /MIR /R:3 /W:2; exit $LASTEXITCODE\" >> \"%LOG%\" 2>&1\r\n"
         'set "RC=%errorlevel%"\r\n'
         'echo [%date% %time%] robocopy 恢复 _internal 退出码 %RC% >> "%LOG%"\r\n'
+        'if %RC% geq 8 goto :rollback_failed\r\n'
         ":rollback_after_internal\r\n"
+        'if not exist "%INSTALL_DIR%\\%EXE_NAME%" goto :rollback_failed\r\n'
+        'if not exist "%INSTALL_DIR%\\_internal\\" goto :rollback_failed\r\n'
         'echo [%date% %time%] 已恢复旧版本。 >> "%LOG%"\r\n'
-        "goto :fail_copy\r\n"
+        "goto :fail_write\r\n"
+        ":rollback_failed\r\n"
+        'echo [%date% %time%] 恢复旧版本失败：备份没能完整换回来，安装可能新旧混装，请手动重装完整包。 >> "%LOG%"\r\n'
+        'set "FAIL_CODE=rollback_failed"\r\n'
+        "goto :fail_write\r\n"
         ":fail_stuck\r\n"
         'set "FAIL_CODE=stuck"\r\n'
         "goto :fail_write\r\n"
@@ -799,7 +877,7 @@ def build_update_script() -> str:
         'set "FAIL_CODE=nopkg"\r\n'
         "goto :fail_write\r\n"
         ":fail_copy\r\n"
-        'set "FAIL_CODE=copy"\r\n'
+        'if "%FAIL_CODE%"=="" set "FAIL_CODE=copy"\r\n'
         "goto :fail_write\r\n"
         ":fail_write\r\n"
         'echo [%date% %time%] 更新没换成，正在重开旧版本并确认它起来了... >> "%LOG%"\r\n'
@@ -816,7 +894,12 @@ def build_update_script() -> str:
         "goto :fail_exit\r\n"
         ":fail_nostart_old\r\n"
         'echo [%date% %time%] 180 秒内旧版本没在 %PORT% 上起来，更新没换成、旧版本也没起来。 >> "%LOG%"\r\n'
+        'if "%FAIL_CODE%"=="rollback_failed" goto :fail_nostart_old_rb\r\n'
         '> "%RESULT%" echo {"status": "failed", "expected_version": "%EXPECTED%", "reason_code": "nostart_old"}\r\n'
+        'goto :fail_nostart_old_retry\r\n'
+        ":fail_nostart_old_rb\r\n"
+        '> "%RESULT%" echo {"status": "failed", "expected_version": "%EXPECTED%", "reason_code": "rollback_failed"}\r\n'
+        ":fail_nostart_old_retry\r\n"
         'echo [%date% %time%] 再拉一次旧版本（最后一次重试机会）。 >> "%LOG%"\r\n'
         'rem M-44：同 :fail_nostart，端口已有应答就不再拉，免得两个实例抢绑端口。\r\n'
         "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health' -TimeoutSec 5; exit 0 } catch { exit 1 }\" <nul\r\n"
@@ -1807,6 +1890,10 @@ def apply_update(install_dir: str | Path, exe_name: str, port: int = 8686) -> Pa
         status = _STATE.get("status")
         staging_dir = _STATE.get("staging_dir")
         info = _STATE.get("info")
+    if status == "applying":
+        # H-2：另一路 apply 已经占位换版中，第二路直接报“正在换版中”，
+        # 不要报容易误导的“新版本还没下好”。
+        raise UpdateError("正在换版中，请稍等。")
     if status != "ready" or not staging_dir:
         raise UpdateError("新版本还没下好，先等它下载完。")
     # Validate the staged payload before touching the install: a zip
@@ -1820,15 +1907,27 @@ def apply_update(install_dir: str | Path, exe_name: str, port: int = 8686) -> Pa
     expected_version = info.get("version") if isinstance(info, dict) else None
     if not isinstance(expected_version, str) or not expected_version:
         raise UpdateError("新版本还没下好，先等它下载完。")
-    prune_old_backups(install)
-    backup_name = f"{UPDATE_BACKUP_PREFIX}{__version__}"
-    backup_dir = install / backup_name
-    create_backup(install, backup_dir)
-    bat_path = write_update_script(install)
-    # 旧的结果文件先清掉：新一轮 bat 万一没跑起来就写不出结果，
-    # 上轮的 "applied" 不能被误读成这轮换成了。
-    _remove_quietly(install / UPDATE_RESULT_FILENAME)
-    write_pending_update(install, expected_version)
+    # H-2：先占位再干活——在锁内把状态先置 applying，第二路
+    # apply_update 到这里会看到 applying，直接报“正在换版中”，
+    # 绝不能让两个请求同时进备份 + 双 bat 互毁。占位之后、起 bat
+    # 之前任何一步失败，都要把状态放回 ready，否则用户永远点不了重试。
+    with _STATE_LOCK:
+        if _STATE.get("status") != "ready":
+            raise UpdateError("正在换版中，请稍等。")
+        _STATE.update(status="applying", progress=100, message="正在换上新版本…")
+    try:
+        prune_old_backups(install)
+        backup_name = f"{UPDATE_BACKUP_PREFIX}{__version__}"
+        backup_dir = install / backup_name
+        create_backup(install, backup_dir)
+        bat_path = write_update_script(install)
+        # 旧的结果文件先清掉：新一轮 bat 万一没跑起来就写不出结果，
+        # 上轮的 "applied" 不能被误读成这轮换成了。
+        _remove_quietly(install / UPDATE_RESULT_FILENAME)
+        write_pending_update(install, expected_version)
+    except Exception:
+        _set_status(status="ready", message="新版本下好了", error="")
+        raise
     # 换版进行中：先置位，再关窗——关窗监视线程看到标志位就跳过，
     # 不会在换文件途中抢跑关停（见模块顶部的 _UPDATE_APPLYING）。
     global _UPDATE_APPLYING
@@ -1909,6 +2008,9 @@ def apply_update(install_dir: str | Path, exe_name: str, port: int = 8686) -> Pa
     except Exception:
         _remove_quietly(install / UPDATE_PENDING_FILENAME)
         _UPDATE_APPLYING = False
+        # H-2：bat 没拉起来 = 这次更新没换成，状态放回 ready，
+        # 用户还能点重试；不能留在 applying 里卡死。
+        _set_status(status="ready", message="新版本下好了", error="")
         raise
     _set_status(status="applying", progress=100, message="正在换上新版本…")
     return bat_path

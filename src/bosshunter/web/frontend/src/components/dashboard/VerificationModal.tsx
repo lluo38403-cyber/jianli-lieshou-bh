@@ -14,14 +14,21 @@ interface VerificationModalProps {
 export function VerificationModal({ hold, onContinue, onStop, canStop }: VerificationModalProps) {
   const [busy, setBusy] = useState(false)
   const [stopping, setStopping] = useState(false)
+  // H-7：后端失败不再静默吞掉——弹窗内红字显示原因，并告诉用户下一步。
+  const [error, setError] = useState<string | null>(null)
   if (!hold) return null
   const platformName = PLATFORM_LABELS[hold.platform] ?? hold.platform
 
   const handleContinue = async () => {
     if (busy) return
     setBusy(true)
+    setError(null)
     try {
       await onContinue(hold.id)
+    } catch (cause) {
+      // resolveVerification 在后端 !ok 时抛错（hold 已过期、网络断开等）：
+      // 弹窗原样停留、按钮恢复可点是不够的，必须把原因写出来。
+      setError(cause instanceof Error ? cause.message : '没能继续投递')
     } finally {
       setBusy(false)
     }
@@ -30,8 +37,11 @@ export function VerificationModal({ hold, onContinue, onStop, canStop }: Verific
   const handleStop = async () => {
     if (stopping) return
     setStopping(true)
+    setError(null)
     try {
       await onStop()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '没能停下来')
     } finally {
       setStopping(false)
     }
@@ -47,6 +57,11 @@ export function VerificationModal({ hold, onContinue, onStop, canStop }: Verific
         {hold.url ? (
           <p className="mt-3 break-all rounded-lg bg-muted/60 px-3 py-2 text-xs leading-5 text-muted">
             验证页面：{hold.url}
+          </p>
+        ) : null}
+        {error ? (
+          <p role="alert" className="mt-3 rounded-lg bg-danger-soft px-3 py-2 text-xs leading-5 text-danger">
+            没成功：{error}。可以再点一次；如果一直不行，先去浏览器里确认验证是不是真的通过了。
           </p>
         ) : null}
         <div className="mt-5 flex flex-col gap-2">
