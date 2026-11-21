@@ -47,7 +47,6 @@ from bosshunter.agent_api import (
 )
 from bosshunter import __version__
 from bosshunter.ai.credentials import get_ai_api_key, get_relay_health, get_relay_url
-from bosshunter.ai.scorer import sanitize_score_trace
 from bosshunter.cities import CityRefreshError, get_city_map, load_city_snapshot, refresh_city_cache
 from bosshunter.config import (
 	ADMIN_PASSWORD_MIN_LENGTH,
@@ -109,9 +108,13 @@ from bosshunter.db import (
 )
 from bosshunter.collection.capabilities import platform_supports
 from bosshunter.collection.orchestrator import CollectionOrchestrator, normalize_collection_options
-from bosshunter.collection.platforms.zhilian import load_zhilian_city_snapshot
+# v35 试过把三个平台城市快照加载器也懒加载，实测无效：编排器
+# （collection.orchestrator，顶层 import）本来就会拉起整个平台
+# 注册表，三个模块启动时已经在内存里了，懒加载省不出时间，
+# 所以快照加载器保持顶层 import；真正省下来的是 scorer（见下）。
 from bosshunter.collection.platforms.job51 import load_51job_city_snapshot
 from bosshunter.collection.platforms.liepin import load_liepin_city_snapshot
+from bosshunter.collection.platforms.zhilian import load_zhilian_city_snapshot
 from bosshunter.collection_run_store import (
 	boss_resume_options,
 	get_collection_run,
@@ -3448,7 +3451,14 @@ def api_job_score_trace(job_id):
 		if not job:
 			return _json_response({"error": "job_not_found"}, 404)
 		found, stored_trace = get_score_trace(db, job_id)
-		trace = sanitize_score_trace(stored_trace) if found else None
+		if found:
+			# v35：scorer 只在这里用一次（还要拉 rich），启动不加载，
+			# 第一次打开打分说明时才加载，慢机器上每次启动省约 65ms。
+			from bosshunter.ai.scorer import sanitize_score_trace
+
+			trace = sanitize_score_trace(stored_trace)
+		else:
+			trace = None
 		if trace is not None:
 			return _json_response({"job_id": job_id, "state": "available", "trace": trace})
 		state = "unavailable" if found else _score_trace_missing_state(dict(job))

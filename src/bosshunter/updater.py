@@ -1917,7 +1917,9 @@ def _install_dir_kill_script(install_dir: str | Path, exclude_pid: int | None = 
         + ") { $doomed += $p } }; "
         "$killed = 0; $failed = 0; "
         "foreach ($p in $doomed) { try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } }; "
-        "Start-Sleep -Seconds 1; "
+        # v35：没杀到东西就别睡这 1 秒——等进程退出只在真杀了进程
+        # 时才有意义；每次启动都扫一遍时这 1 秒是白等的固定开销。
+        "if ($killed -gt 0) { Start-Sleep -Seconds 1 }; "
         "Write-Output \"killed=$killed failed=$failed\""
     )
 

@@ -180,6 +180,16 @@ export function useUpdate() {
   } | null>(null)
   /** 转圈计数：两路检查并发时先结束的那路不许关转圈，等都完了才停。 */
   const checkingCountRef = useRef(0)
+  /** 一键更新意图：用户点了“立即更新”（或缓存重试）之后才置上，
+   * 下载到 ready 就自动换上；resume() 接回的状态绝不置上它——
+   * 上次会话下好没换的包只停在 ready 等用户自己点。 */
+  const autoApplyRef = useRef(false)
+  /** 同上，给弹窗看的：ready 只是瞬态时弹窗别弹出来闪一下。 */
+  const [autoApplyPending, setAutoApplyPending] = useState(false)
+  const setAutoApply = useCallback((value: boolean) => {
+    autoApplyRef.current = value
+    if (mountedRef.current) setAutoApplyPending(value)
+  }, [])
 
   const setPhaseBoth = useCallback((next: UpdatePhase) => {
     phaseRef.current = next
@@ -346,137 +356,12 @@ export function useUpdate() {
     }
   }, [])
 
-  /** 状态轮询：1 秒问一次服务端下载到哪了。下载中切页面也不停——
-   * 轮询挂在全局的 UpdateProvider 里，页面卸载清不掉它。 */
-  const startPolling = useCallback(() => {
-    stopPolling()
-    // 轮询本身不重试：后端下载中途挂掉，状态接口会连续失败；
-    // 连失败 10 次就定稿为下载失败，不让页面一直卡在“下载中”。
-    let consecutiveFailures = 0
-    pollTimer.current = window.setInterval(async () => {
-      try {
-        const res = await fetch('/api/update/status')
-        const data = (await res.json().catch(() => ({}))) as CheckPayload
-        consecutiveFailures = 0
-        // 每轮都把版本信息接回来：失败时 info 也留着，不置空。
-        applyPayload(data)
-        const status = String(data?.status || '')
-        if (status === 'downloading' || status === 'verifying') {
-          setPhaseBoth(status)
-          if (mountedRef.current) setProgress(Number(data?.progress) || 0)
-        } else if (status === 'ready') {
-          setPhaseBoth('ready')
-          if (mountedRef.current) setProgress(100)
-          stopPolling()
-        } else if (status === 'error') {
-          // 并发检查失败（check_failed）不算下载失败：轮询继续，
-          // 不停、不报错，等下一次轮询再看下载状态。
-          if (data?.reason_code === 'check_failed' || data?.check_failed) {
-            // 忽略这一轮，继续轮询。
-          } else {
-            setPhaseBoth('error')
-            setErrorBoth(String(data?.error || '下载失败了，稍后再试。'), phaseRef.current === 'verifying' ? 'verifying' : 'downloading')
-            stopPolling()
-          }
-        }
-      } catch {
-        consecutiveFailures += 1
-        if (consecutiveFailures >= STATUS_POLL_GIVE_UP) {
-          stopPolling()
-          setPhaseBoth('error')
-          setErrorBoth('下载时和本地服务断开了，请检查网络后重试。', 'downloading')
-        }
-        // 没到次数就下次轮询再试。
-      }
-    }, 1000)
-  }, [applyPayload, setPhaseBoth, setErrorBoth, stopPolling])
-
-  /** 启动时从服务端把下载状态接回来：刷新页面、或上次打开时下载已在
-   * 进行中，进度不从 0 重来——服务端一直在下，问它现在到哪了就行。 */
-  const resume = useCallback(async () => {
-    try {
-      const res = await fetch('/api/update/status')
-      const data = (await res.json().catch(() => ({}))) as CheckPayload
-      if (!mountedRef.current) return
-      const status = String(data?.status || '')
-      if (typeof data?.version === 'string' && data.version) {
-        setInfo({
-          version: data.version,
-          size: Number(data.size) || 0,
-          sha256: String(data.sha256 || ''),
-          notes: String(data.notes || ''),
-          current_version: String(data.current_version || ''),
-          reason: typeof data?.reason === 'string' && data.reason ? data.reason : undefined,
-          downloadCached: data?.download_cached === true,
-        })
-        setError('')
-        setErrorKind(null)
-      }
-      if (status === 'downloading' || status === 'verifying') {
-        setPhaseBoth(status)
-        setProgress(Number(data?.progress) || 0)
-        startPolling()
-      } else if (status === 'ready') {
-        setPhaseBoth('ready')
-        setProgress(100)
-      } else if (status === 'error') {
-        // 查新版失败（check_failed）不是下载失败：不进 error 态、
-        // 不弹打扰，info 留着给横幅/弹窗；下载失败才按老样子报错。
-        if (data?.reason_code !== 'check_failed' && !data?.check_failed) {
-          setPhaseBoth('error')
-          setErrorBoth(String(data?.error || '下载失败了，稍后再试。'), 'downloading')
-        }
-      }
-    } catch {
-      // 状态读不到就不管：check() 那边会照常查有没有新版。
-    }
-  }, [setPhaseBoth, setErrorBoth, startPolling])
-
-  const start = useCallback(async () => {
-    if (!info) return
-    setError('')
-    setErrorKind(null)
-    setPhaseBoth('downloading')
-    setProgress(0)
-    try {
-      const res = await fetch('/api/update/start', { method: 'POST' })
-      const data = (await res.json().catch(() => ({}))) as { error?: string }
-      if (!res.ok) throw new Error(String(data?.error || '没开始下载，稍后再试。'))
-    } catch (err) {
-      setPhaseBoth('error')
-      setErrorBoth(err instanceof Error ? err.message : '没开始下载，稍后再试。', 'downloading')
-      return
-    }
-    startPolling()
-  }, [info, setPhaseBoth, setErrorBoth, startPolling])
-
-  // 挂载时启动检查 + 从服务端接回下载状态：必须放在 resume 定义之后，
-  // 依赖数组在渲染时就求值，写在前面会撞上 const 的暂时性死区。
-  useEffect(() => {
-    void check()
-    void fetchHealth()
-    void fetchManualDownloadUrl()
-    void resume()
-  }, [check, fetchHealth, fetchManualDownloadUrl, resume])
-
-  /** 自动复查：面板一直开着时，中转上新发了版也要自己发现，不能只靠
-   * 启动那一次检查。lucky 云电脑 2026-11-21 事故：面板从 03:47 开到
-   * 12:45，中转 05:31 发了 1.1.16，启动检查当时说“已是最新”是对的，
-   * 但之后 7 小时再没查过，横幅/弹窗一直不出现，手动点才出来。
-   * 每 30 分钟自动查一次，走自动分支（失败静默、不清已有 info、
-   * 不改 phase；和手动检查并发时照 v29 序号去重来）。只在 idle 时
-   * 查：下载中 / 已就绪 / 换版中 / 报错时不碰状态，免得把进行中的
-   * 更新流程打断、或把失败原因盖掉。后端 600 秒缓存已过期时才是
-   * 真查，没过期直接回缓存，不给中转加压。 */
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (phaseRef.current !== 'idle') return
-      void check()
-    }, UPDATE_AUTO_RECHECK_INTERVAL_MS)
-    return () => window.clearInterval(timer)
-  }, [check])
-
+  // apply 放在 startPolling 之前：轮询看到 ready 要直接调
+  // maybeAutoApply → apply，写在后面会撞 const 的暂时性死区
+  //（挂载 effect 放在 resume 之后是同一个原因）。
   const apply = useCallback(async () => {
+    // 手动点“马上换上”也是换上：意图已经用掉了，别留着。
+    setAutoApply(false)
     setError('')
     setErrorKind(null)
     setPhaseBoth('applying')
@@ -543,7 +428,182 @@ export function useUpdate() {
       return
     }
     startFallbackPolling()
-  }, [setPhaseBoth, setErrorBoth, stopHealthPolling])
+  }, [setPhaseBoth, setErrorBoth, stopHealthPolling, setAutoApply])
+
+  /**
+   * 一键更新的守卫：换版会重启程序、停掉进行中的任务，不能在投递
+   * 跑到一半时悄悄换掉。查 GET /api/workbench 的任务——“在跑”的
+   * 判定跟 DashboardPage 一样：status 是 running 或 stopping。
+   * tasks 列表和单个 task 都看（后端两个字段都给）；查不到状态
+   * （请求失败、响应读不懂、两个字段都没有）也当有任务在跑处理，
+   * 一律不自动换，停在 ready 等用户自己挑时间点。
+   */
+  const canAutoApply = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await fetch('/api/workbench')
+      const data = (await res.json().catch(() => ({}))) as {
+        tasks?: Array<{ status?: string }>
+        task?: { status?: string } | null
+      }
+      const tasksKnown = Array.isArray(data?.tasks)
+      const taskKnown = data?.task !== undefined
+      if (!tasksKnown && !taskKnown) return false
+      const candidates = [
+        ...(tasksKnown ? data.tasks! : []),
+        ...(data?.task && typeof data.task === 'object' ? [data.task] : []),
+      ]
+      return !candidates.some((t) => t?.status === 'running' || t?.status === 'stopping')
+    } catch {
+      return false
+    }
+  }, [])
+
+  /** ready 到了、且是这次用户点的更新，就自动换上。意图只用一次：
+   * 先清掉，免得守卫没过、用户又手动点了之后再被触发一次。 */
+  const maybeAutoApply = useCallback(async () => {
+    if (!autoApplyRef.current) return
+    setAutoApply(false)
+    if (phaseRef.current !== 'ready') return
+    if (!(await canAutoApply())) return
+    await apply()
+  }, [apply, canAutoApply, setAutoApply])
+
+  /** 状态轮询：1 秒问一次服务端下载到哪了。下载中切页面也不停——
+   * 轮询挂在全局的 UpdateProvider 里，页面卸载清不掉它。 */
+  const startPolling = useCallback(() => {
+    stopPolling()
+    // 轮询本身不重试：后端下载中途挂掉，状态接口会连续失败；
+    // 连失败 10 次就定稿为下载失败，不让页面一直卡在“下载中”。
+    let consecutiveFailures = 0
+    pollTimer.current = window.setInterval(async () => {
+      try {
+        const res = await fetch('/api/update/status')
+        const data = (await res.json().catch(() => ({}))) as CheckPayload
+        consecutiveFailures = 0
+        // 每轮都把版本信息接回来：失败时 info 也留着，不置空。
+        applyPayload(data)
+        const status = String(data?.status || '')
+        if (status === 'downloading' || status === 'verifying') {
+          setPhaseBoth(status)
+          if (mountedRef.current) setProgress(Number(data?.progress) || 0)
+        } else if (status === 'ready') {
+          setPhaseBoth('ready')
+          if (mountedRef.current) setProgress(100)
+          stopPolling()
+          // 一键更新：这次是用户点的，下载好了就自动换上，不停在
+          // ready 等第二下；守卫在 maybeAutoApply 里。
+          void maybeAutoApply()
+        } else if (status === 'error') {
+          // 并发检查失败（check_failed）不算下载失败：轮询继续，
+          // 不停、不报错，等下一次轮询再看下载状态。
+          if (data?.reason_code === 'check_failed' || data?.check_failed) {
+            // 忽略这一轮，继续轮询。
+          } else {
+            // 下载真失败了：这次更新不自动换了，等用户点“再试一次”。
+            setAutoApply(false)
+            setPhaseBoth('error')
+            setErrorBoth(String(data?.error || '下载失败了，稍后再试。'), phaseRef.current === 'verifying' ? 'verifying' : 'downloading')
+            stopPolling()
+          }
+        }
+      } catch {
+        consecutiveFailures += 1
+        if (consecutiveFailures >= STATUS_POLL_GIVE_UP) {
+          stopPolling()
+          setPhaseBoth('error')
+          setErrorBoth('下载时和本地服务断开了，请检查网络后重试。', 'downloading')
+        }
+        // 没到次数就下次轮询再试。
+      }
+    }, 1000)
+  }, [applyPayload, setPhaseBoth, setErrorBoth, stopPolling, maybeAutoApply, setAutoApply])
+
+  /** 启动时从服务端把下载状态接回来：刷新页面、或上次打开时下载已在
+   * 进行中，进度不从 0 重来——服务端一直在下，问它现在到哪了就行。 */
+  const resume = useCallback(async () => {
+    try {
+      const res = await fetch('/api/update/status')
+      const data = (await res.json().catch(() => ({}))) as CheckPayload
+      if (!mountedRef.current) return
+      const status = String(data?.status || '')
+      if (typeof data?.version === 'string' && data.version) {
+        setInfo({
+          version: data.version,
+          size: Number(data.size) || 0,
+          sha256: String(data.sha256 || ''),
+          notes: String(data.notes || ''),
+          current_version: String(data.current_version || ''),
+          reason: typeof data?.reason === 'string' && data.reason ? data.reason : undefined,
+          downloadCached: data?.download_cached === true,
+        })
+        setError('')
+        setErrorKind(null)
+      }
+      if (status === 'downloading' || status === 'verifying') {
+        setPhaseBoth(status)
+        setProgress(Number(data?.progress) || 0)
+        startPolling()
+      } else if (status === 'ready') {
+        setPhaseBoth('ready')
+        setProgress(100)
+      } else if (status === 'error') {
+        // 查新版失败（check_failed）不是下载失败：不进 error 态、
+        // 不弹打扰，info 留着给横幅/弹窗；下载失败才按老样子报错。
+        if (data?.reason_code !== 'check_failed' && !data?.check_failed) {
+          setPhaseBoth('error')
+          setErrorBoth(String(data?.error || '下载失败了，稍后再试。'), 'downloading')
+        }
+      }
+    } catch {
+      // 状态读不到就不管：check() 那边会照常查有没有新版。
+    }
+  }, [setPhaseBoth, setErrorBoth, startPolling])
+
+  const start = useCallback(async () => {
+    if (!info) return
+    setError('')
+    setErrorKind(null)
+    setPhaseBoth('downloading')
+    setProgress(0)
+    try {
+      const res = await fetch('/api/update/start', { method: 'POST' })
+      const data = (await res.json().catch(() => ({}))) as { error?: string }
+      if (!res.ok) throw new Error(String(data?.error || '没开始下载，稍后再试。'))
+    } catch (err) {
+      setPhaseBoth('error')
+      setErrorBoth(err instanceof Error ? err.message : '没开始下载，稍后再试。', 'downloading')
+      return
+    }
+    // 下载真开始了才记一键意图：下好就自动换上，不用再点第二下。
+    setAutoApply(true)
+    startPolling()
+  }, [info, setPhaseBoth, setErrorBoth, setAutoApply, startPolling])
+
+  // 挂载时启动检查 + 从服务端接回下载状态：必须放在 resume 定义之后，
+  // 依赖数组在渲染时就求值，写在前面会撞上 const 的暂时性死区。
+  useEffect(() => {
+    void check()
+    void fetchHealth()
+    void fetchManualDownloadUrl()
+    void resume()
+  }, [check, fetchHealth, fetchManualDownloadUrl, resume])
+
+  /** 自动复查：面板一直开着时，中转上新发了版也要自己发现，不能只靠
+   * 启动那一次检查。lucky 云电脑 2026-11-21 事故：面板从 03:47 开到
+   * 12:45，中转 05:31 发了 1.1.16，启动检查当时说“已是最新”是对的，
+   * 但之后 7 小时再没查过，横幅/弹窗一直不出现，手动点才出来。
+   * 每 30 分钟自动查一次，走自动分支（失败静默、不清已有 info、
+   * 不改 phase；和手动检查并发时照 v29 序号去重来）。只在 idle 时
+   * 查：下载中 / 已就绪 / 换版中 / 报错时不碰状态，免得把进行中的
+   * 更新流程打断、或把失败原因盖掉。后端 600 秒缓存已过期时才是
+   * 真查，没过期直接回缓存，不给中转加压。 */
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (phaseRef.current !== 'idle') return
+      void check()
+    }, UPDATE_AUTO_RECHECK_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [check])
 
   const dismiss = useCallback(() => {
     setDismissed(true)
@@ -552,6 +612,9 @@ export function useUpdate() {
   const retry = useCallback(async () => {
     // 先走缓存重试：安装包已经下好验过，后端直接恢复成 ready，不重新下载。
     // 失败信息留着，横幅上的“再试一次”还能点。
+    // 再试一次也是用户点的更新：不管是缓存直接 ready、还是重新下载，
+    // 下好都一键换上，不停在 ready 等第二下。
+    setAutoApply(true)
     setError('')
     setErrorKind(null)
     setProgress(0)
@@ -563,6 +626,8 @@ export function useUpdate() {
         if (String(data?.status) === 'ready') {
           setPhaseBoth('ready')
           setProgress(100)
+          // 缓存包已经下好验过：直接一键换上，不停在 ready 等第二下。
+          void maybeAutoApply()
           return
         }
         setPhaseBoth('downloading')
@@ -577,7 +642,7 @@ export function useUpdate() {
       setPhaseBoth('idle')
     }
     await check(true)
-  }, [applyPayload, check, setPhaseBoth, startPolling])
+  }, [applyPayload, check, setPhaseBoth, startPolling, setAutoApply, maybeAutoApply])
 
   return {
     info,
@@ -589,6 +654,9 @@ export function useUpdate() {
     manualDownloadUrl,
     dismissed,
     checking,
+    /** 一键更新进行中：ready 只是瞬态，马上就要自动换上并关窗，
+     * 弹窗这时别弹出来闪一下（见 UpdateModal 的 effect）。 */
+    autoApplyPending,
     check,
     start,
     apply,

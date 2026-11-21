@@ -1973,6 +1973,51 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["count"], len(payload["cities"]))
         self.assertIn({"name": "北京", "code": "010"}, payload["cities"])
 
+    def test_web_api_cities_returns_bundled_zhilian_snapshot(self):
+        # v35 回归：智联城市快照接口功能与原来一致。
+        status, _, body = self._request("/api/cities?platform=zhilian")
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["count"], len(payload["cities"]))
+        self.assertIn({"name": "北京", "code": "530"}, payload["cities"])
+
+    def test_web_api_cities_returns_bundled_51job_snapshot(self):
+        # v35 回归：前程无忧城市快照接口功能与原来一致。
+        status, _, body = self._request("/api/cities?platform=51job")
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["count"], len(payload["cities"]))
+        self.assertIn({"name": "北京", "code": "010000"}, payload["cities"])
+
+    def test_web_api_job_score_trace_returns_persisted_trace(self):
+        # v35：scorer 已懒加载——打分说明接口第一次调到它时才加载，
+        # 功能与原来一致。
+        from bosshunter.ai import scorer
+        from bosshunter.db import persist_job_score_and_trace
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("traced-job"))
+                result = scorer._structured_score_result(_agent_score())
+                self.assertIsNotNone(result)
+                trace = scorer.build_score_trace(result)
+                persist_job_score_and_trace(db, "traced-job", 87, "匹配", trace)
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+            status, _, body = self._request("/api/jobs/traced-job/score-trace")
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(payload["job_id"], "traced-job")
+        self.assertEqual(payload["state"], "available")
+        self.assertEqual(payload["trace"]["role_summary"], "面向企业用户的 AI 产品岗位")
+
     def test_web_api_city_refresh_rejects_liepin_bundled_catalog(self):
         status, _, body = self._request("/api/cities/refresh?platform=liepin", method="POST")
 

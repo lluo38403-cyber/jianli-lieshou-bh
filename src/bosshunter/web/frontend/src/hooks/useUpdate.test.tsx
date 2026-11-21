@@ -959,3 +959,202 @@ describe('useUpdate auto re-check (v31)', () => {
     expect(autoCheckCalls()).toBe(1)
   })
 })
+
+describe('useUpdate one-click auto-apply (v35)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let reloadMock: ReturnType<typeof vi.fn>
+  let originalLocation: Location | undefined
+
+  /** 下好没换的包：resume() 接回的状态长这样，带完整版本信息。 */
+  const READY_STATUS = {
+    status: 'ready',
+    progress: 100,
+    version: '1.0.2',
+    size: 66_549_810,
+    sha256: 'a'.repeat(64),
+    notes: '更快更稳',
+    current_version: '1.0.1',
+  }
+  const RUNNING_TASK = {
+    id: 'task-1',
+    mode: 'deliver',
+    label: '投递',
+    status: 'running',
+    logs: [],
+    stop_requested: false,
+  }
+
+  /** 基础 mock：没任务在跑；各用例再按需改 /api/workbench 与下载进度。 */
+  function baseMock(workbench: unknown = { tasks: [], task: null }) {
+    let started = false
+    let statusCalls = 0
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) return jsonResponse(NEW_VERSION)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      if (url === '/api/auth/config') return jsonResponse({})
+      if (url === '/api/workbench') return jsonResponse(workbench)
+      if (url === '/api/update/apply') return jsonResponse({ applying: true })
+      if (url === '/api/update/start' && init?.method === 'POST') {
+        started = true
+        return jsonResponse({ status: 'downloading', progress: 0 })
+      }
+      if (url === '/api/update/status') {
+        if (!started) return jsonResponse({ status: 'idle', progress: 0 })
+        statusCalls += 1
+        return statusCalls < 2
+          ? jsonResponse({ status: 'downloading', progress: 42 })
+          : jsonResponse(READY_STATUS)
+      }
+      return jsonResponse({})
+    })
+  }
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) return jsonResponse(NEW_VERSION)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      if (url === '/api/auth/config') return jsonResponse({})
+      if (url === '/api/update/status') return jsonResponse({ status: 'idle', progress: 0 })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    reloadMock = vi.fn()
+    if (originalLocation === undefined) originalLocation = window.location
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { href: originalLocation.href, reload: reloadMock },
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+    if (originalLocation !== undefined) {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    }
+    vi.restoreAllMocks()
+    cleanup()
+  })
+
+  const applyCalls = () =>
+    fetchMock.mock.calls.filter(([input, init]) => String(input) === '/api/update/apply' && (init as RequestInit)?.method === 'POST').length
+
+  it('start 后下载到 ready 就自动换上，不停在 ready 等第二下', async () => {
+    // 这条链路比别的用例多一轮轮询 + 守卫 + 换版兜底：下载两轮
+    // （约 2 秒）→ 守卫 → 换版兜底再等新版起来（约 2 秒），
+    // 默认 5 秒测试超时不够用，不是产品慢。
+    baseMock()
+    const { result } = renderHook(() => useUpdate())
+    await waitFor(() => expect(result.current.info?.version).toBe('1.0.2'))
+    await act(async () => {
+      await result.current.start()
+    })
+    expect(result.current.phase).toBe('downloading')
+    expect(result.current.autoApplyPending).toBe(true)
+    await waitFor(() => expect(result.current.phase).toBe('applying'), { timeout: 5000 })
+    expect(applyCalls()).toBe(1)
+    expect(result.current.autoApplyPending).toBe(false)
+    // 换版走完兜底：新版起来后面板刷新（非 standalone 分支）。
+    await waitFor(() => expect(reloadMock).toHaveBeenCalled(), { timeout: 8000 })
+  }, 15000)
+
+  it('有任务在跑时不自动换：停在 ready，留“马上换上”让用户自己挑时间', async () => {
+    baseMock({ tasks: [RUNNING_TASK], task: RUNNING_TASK })
+    const { result } = renderHook(() => useUpdate())
+    await waitFor(() => expect(result.current.info?.version).toBe('1.0.2'))
+    await act(async () => {
+      await result.current.start()
+    })
+    await waitFor(() => expect(result.current.phase).toBe('ready'), { timeout: 5000 })
+    // 守卫是异步查的：多等一拍，确认它真的没去换。
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    })
+    expect(result.current.phase).toBe('ready')
+    expect(result.current.autoApplyPending).toBe(false)
+    expect(applyCalls()).toBe(0)
+  })
+
+  it('查不到任务状态时也不自动换：宁可多等用户点一下，不在投递中途悄悄换版', async () => {
+    baseMock()
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/workbench') throw new Error('down')
+      if (url.startsWith('/api/update/check')) return jsonResponse(NEW_VERSION)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      if (url === '/api/auth/config') return jsonResponse({})
+      if (url === '/api/update/apply') return jsonResponse({ applying: true })
+      if (url === '/api/update/start' && init?.method === 'POST') return jsonResponse({ status: 'downloading', progress: 0 })
+      if (url === '/api/update/status') return jsonResponse(READY_STATUS)
+      return jsonResponse({})
+    })
+    const { result } = renderHook(() => useUpdate())
+    await waitFor(() => expect(result.current.info?.version).toBe('1.0.2'))
+    await act(async () => {
+      await result.current.start()
+    })
+    await waitFor(() => expect(result.current.phase).toBe('ready'), { timeout: 5000 })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    })
+    expect(result.current.phase).toBe('ready')
+    expect(applyCalls()).toBe(0)
+  })
+
+  it('resume 接回上次下好的包不自动换：停在 ready 等用户点“马上换上”', async () => {
+    baseMock()
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) return jsonResponse(NEW_VERSION)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      if (url === '/api/auth/config') return jsonResponse({})
+      if (url === '/api/workbench') return jsonResponse({ tasks: [], task: null })
+      if (url === '/api/update/status') return jsonResponse(READY_STATUS)
+      return jsonResponse({})
+    })
+    const { result } = renderHook(() => useUpdate())
+    await waitFor(() => expect(result.current.phase).toBe('ready'), { timeout: 5000 })
+    expect(result.current.autoApplyPending).toBe(false)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    })
+    expect(result.current.phase).toBe('ready')
+    expect(applyCalls()).toBe(0)
+  })
+
+  it('retry 时缓存包已经是 ready：同样一键换上', async () => {
+    baseMock()
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/update/check')) return jsonResponse(NEW_VERSION)
+      if (url === '/api/health') return jsonResponse({ status: 'ok', version: '1.0.1' })
+      if (url === '/api/auth/config') return jsonResponse({})
+      if (url === '/api/workbench') return jsonResponse({ tasks: [], task: null })
+      if (url === '/api/update/apply') return jsonResponse({ applying: true })
+      if (url === '/api/update/start' && init?.method === 'POST') return jsonResponse(READY_STATUS)
+      if (url === '/api/update/status') return jsonResponse({ status: 'idle', progress: 0 })
+      return jsonResponse({})
+    })
+    const { result } = renderHook(() => useUpdate())
+    await waitFor(() => expect(result.current.info?.version).toBe('1.0.2'))
+    await act(async () => {
+      await result.current.retry()
+    })
+    await waitFor(() => expect(result.current.phase).toBe('applying'), { timeout: 5000 })
+    expect(applyCalls()).toBe(1)
+  })
+
+  it('retry 后要重新下载：下好同样自动换上', async () => {
+    baseMock()
+    const { result } = renderHook(() => useUpdate())
+    await waitFor(() => expect(result.current.info?.version).toBe('1.0.2'))
+    await act(async () => {
+      await result.current.retry()
+    })
+    // 缓存不可用时 retry 回退到重新下载：轮询看到 ready 照样自动换。
+    await waitFor(() => expect(result.current.phase).toBe('applying'), { timeout: 5000 })
+    expect(applyCalls()).toBe(1)
+  })
+})

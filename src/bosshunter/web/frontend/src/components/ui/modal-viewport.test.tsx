@@ -44,6 +44,7 @@ function fakeUpdate(overrides: Partial<UpdateState> = {}): UpdateState {
     apply: vi.fn(),
     dismiss: vi.fn(),
     retry: vi.fn(),
+    autoApplyPending: false,
     ...overrides,
   }
 }
@@ -114,7 +115,8 @@ describe('ModalPortal：弹窗逃出带 transform 的祖先，fixed 重新相对
     const footer = screen.getByTestId('update-modal-footer')
     expect(body.className).toContain('overflow-y-auto')
     expect(body.contains(footer)).toBe(false)
-    expect(footer.contains(screen.getByRole('button', { name: '前往下载' }))).toBe(true)
+    // v35：弹窗 idle 按钮文案已统一为“立即更新”（原“前往下载”）。
+    expect(footer.contains(screen.getByRole('button', { name: '立即更新' }))).toBe(true)
   })
 
   it('滚动到底部后验证弹窗仍在视口内居中，“继续投递”在滚动区之外', () => {

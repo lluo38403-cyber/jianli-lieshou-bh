@@ -1017,7 +1017,23 @@ def cleanup_stale_browser_resources(data_dir: str | Path | None = None, port: in
         target = Path(install_dir)
     elif getattr(sys, "frozen", False):
         target = Path(sys.executable).resolve().parent
-    if target is not None:
+    _state_now = _read_browser_state(resolved)
+    had_browser_state = (
+        (_state_now is not None and _state_now.get("pid") != exclude_pid)
+        or (_launched_browser is not None and _launched_browser.get("pid") != exclude_pid)
+    )
+    # v35：没证据就别扫安装目录——正常退出后实例文件与浏览器
+    # state 都已清掉，安装目录里不可能有残留；每次启动都跑一次
+    # PowerShell 全进程枚举（Get-CimInstance Win32_Process）+
+    # 固定睡 1 秒，慢机器上窗口要晚几秒才出现。残留只可能来自
+    # 上次没正常退出：那时实例文件一定还在（只有正常退出才会清
+    # 掉它），或浏览器 state 文件还在；两个都没有就直接跳过这一扫。
+    # 运行组件 node.exe 孤儿也没有自己的 state 文件，但它只会在
+    # exe 被强杀后留下，那时实例文件也一定还在，不会漏扫。
+    # 例外：手动删了 data/、或换了数据目录启动，孤儿可能没证据——
+    # 漏掉也只影响更新换文件那一步（bat 的 :procsweep 还会再扫），
+    # 不影响本次启动。
+    if target is not None and (instance is not None or had_browser_state):
         try:
             if _is_windows():
                 from bosshunter.updater import _kill_install_dir_processes
@@ -1032,11 +1048,6 @@ def cleanup_stale_browser_resources(data_dir: str | Path | None = None, port: in
                     cleaned = True
         except Exception as exc:
             _logger.warning("cleanup_stale_browser_resources: 清安装目录残留失败：%s", exc)
-    _state_now = _read_browser_state(resolved)
-    had_browser_state = (
-        (_state_now is not None and _state_now.get("pid") != exclude_pid)
-        or (_launched_browser is not None and _launched_browser.get("pid") != exclude_pid)
-    )
     try:
         stop_launched_browser(exclude_pid=exclude_pid)
     except Exception as exc:

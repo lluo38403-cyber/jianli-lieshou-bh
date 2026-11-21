@@ -37,7 +37,7 @@ interface UpdateModalProps {
  * 与首页横幅共用同一份 useUpdate 状态，不另起检查/下载流程。
  */
 export function UpdateModal({ update, manualCheckSignal = 0, onOpenChange }: UpdateModalProps) {
-  const { info, currentVersion, phase, progress, error, errorKind, manualDownloadUrl, dismissed, checking } = update
+  const { info, currentVersion, phase, progress, error, errorKind, manualDownloadUrl, dismissed, checking, autoApplyPending } = update
   const [open, setOpen] = useState(false)
   const [closedForVersion, setClosedForVersion] = useState('')
   const autoOpenedForRef = useRef('')
@@ -51,16 +51,20 @@ export function UpdateModal({ update, manualCheckSignal = 0, onOpenChange }: Upd
 
   // 启动自动检查出新版：没跳过、横幅没被“先不换”掉、这次没关过，就弹一次。
   // 下载好了（ready）才切回首页也弹一次：不然用户只看到横幅，不知道已经能换了。
+  // v35：一键更新进行中时 ready 只是瞬态——马上自动换上并关窗，这时
+  // 再弹弹窗只会闪一下，所以 autoApplyPending 时不弹；守卫拦住、停在
+  // ready 不走了，pending 变回 false，effect 再跑一次才弹。
   useEffect(() => {
     if (!info || !version) return
     if (phase !== 'idle' && phase !== 'checking' && phase !== 'ready') return
+    if (phase === 'ready' && autoApplyPending) return
     if (dismissed) return
     if (closedForVersion === version) return
     if (autoOpenedForRef.current === version) return
     if (getSkippedUpdateVersion() === version) return
     autoOpenedForRef.current = version
     setOpen(true)
-  }, [info, version, phase, dismissed, closedForVersion])
+  }, [info, version, phase, dismissed, closedForVersion, autoApplyPending])
 
   // 手动检查出新版：忽略跳过记录和“先不换”，也要弹。
   useEffect(() => {
@@ -104,7 +108,7 @@ export function UpdateModal({ update, manualCheckSignal = 0, onOpenChange }: Upd
   // 定位：经 ModalPortal 挂到 body（见 modal-portal.tsx），fixed bottom-4
   // 才真正相对视口右下角，不会被 .animate-page-in 的 transform 拽到页底。
   // 布局：卡片 flex 纵向分栏，只有正文区滚动，按钮行固定在底部不跟内容走，
-  // 内容再长“前往下载 / 立即更新”也始终可见可点。
+  // 内容再长“立即更新 / 马上换上”也始终可见可点。
   return (
     <ModalPortal>
     <div
@@ -165,7 +169,7 @@ export function UpdateModal({ update, manualCheckSignal = 0, onOpenChange }: Upd
       <div data-testid="update-modal-footer" className="mt-4 flex shrink-0 flex-wrap items-center gap-2 border-t border-card-border pt-3">
         {phase === 'idle' || phase === 'checking' ? (
           <Button data-testid="update-modal-download" onClick={() => void update.start()} disabled={checking}>
-            前往下载
+            立即更新
           </Button>
         ) : null}
         {phase === 'downloading' || phase === 'verifying' ? (
@@ -176,7 +180,7 @@ export function UpdateModal({ update, manualCheckSignal = 0, onOpenChange }: Upd
         ) : null}
         {phase === 'ready' ? (
           <Button data-testid="update-modal-apply" onClick={() => void update.apply()}>
-            立即更新
+            马上换上
           </Button>
         ) : null}
         {phase === 'applying' ? (

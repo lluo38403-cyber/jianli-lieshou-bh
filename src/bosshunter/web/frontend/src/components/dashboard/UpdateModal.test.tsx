@@ -20,6 +20,7 @@ function fakeUpdate(overrides: Partial<UpdateState> = {}): UpdateState {
     manualDownloadUrl: '',
     dismissed: false,
     checking: false,
+    autoApplyPending: false,
     check: vi.fn(),
     start: vi.fn(),
     apply: vi.fn(),
@@ -46,7 +47,7 @@ describe('UpdateModal', () => {
     expect(screen.getByText(/现在是 v1\.0\.1，最新是 v1\.0\.2/)).toBeTruthy()
     expect(screen.getByText(/更快更稳/)).toBeTruthy()
     expect(screen.getByText(/63 MB/)).toBeTruthy()
-    expect(screen.getByText('前往下载')).toBeTruthy()
+    expect(screen.getByText('立即更新')).toBeTruthy()
     expect(screen.getByText('跳过此版本')).toBeTruthy()
     expect(screen.getByText('稍后再说')).toBeTruthy()
   })
@@ -94,11 +95,11 @@ describe('UpdateModal', () => {
     expect(window.localStorage.getItem(SKIPPED_UPDATE_VERSION_KEY)).toBeNull()
   })
 
-  it('runs the existing download flow and offers 立即更新 when ready', async () => {
+  it('runs the existing download flow and offers 马上换上 when ready', async () => {
     const update = fakeUpdate()
     const { rerender } = render(<UpdateModal update={update} />)
     expect(await screen.findByTestId('update-modal')).toBeTruthy()
-    fireEvent.click(screen.getByText('前往下载'))
+    fireEvent.click(screen.getByText('立即更新'))
     expect(update.start).toHaveBeenCalledTimes(1)
 
     rerender(<UpdateModal update={{ ...update, phase: 'downloading', progress: 42 }} />)
@@ -107,8 +108,20 @@ describe('UpdateModal', () => {
 
     rerender(<UpdateModal update={{ ...update, phase: 'ready', progress: 100 }} />)
     expect(screen.getByText('新版本下载好了，点一下马上换上')).toBeTruthy()
-    fireEvent.click(screen.getByText('立即更新'))
+    fireEvent.click(screen.getByText('马上换上'))
     expect(update.apply).toHaveBeenCalledTimes(1)
+  })
+
+  it('一键更新进行中：ready 是瞬态，不自动弹出来闪一下；守卫拦住停在 ready 才弹', async () => {
+    const update = fakeUpdate({ phase: 'ready', progress: 100, autoApplyPending: true })
+    const { rerender } = render(<UpdateModal update={update} />)
+    // 马上就要自动换上并关窗，这时弹出来只会闪一下。
+    expect(screen.queryByTestId('update-modal')).toBeNull()
+    // 守卫拦住了（有任务在跑）：停在 ready 不走了，pending 回落，
+    // 这时再弹，告诉用户已经能手动换了。
+    rerender(<UpdateModal update={{ ...update, autoApplyPending: false }} />)
+    expect(await screen.findByTestId('update-modal')).toBeTruthy()
+    expect(screen.getByText('马上换上')).toBeTruthy()
   })
 
   it('shows which step failed and a retry button when the update fails', async () => {

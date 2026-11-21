@@ -30,6 +30,7 @@ function fakeUpdate(overrides: Partial<UpdateState> = {}): UpdateState {
     manualDownloadUrl: '',
     dismissed: false,
     checking: false,
+    autoApplyPending: false,
     check: vi.fn(),
     start: vi.fn(),
     apply: vi.fn(),
