@@ -25,7 +25,7 @@ is alive the backend writes nothing, consumes nothing and rescues
 nothing; once the bat wrote stuck and self-deleted, the backend
 respects it and the final update-result.json is stuck.
 
-The fake new version here is 1.1.23, same as tests/test_auto_update.py.
+The fake new version here is 1.1.24, same as tests/test_auto_update.py.
 """
 
 import json
@@ -75,7 +75,7 @@ class BatAliveDeferTests(unittest.TestCase):
     def tearDown(self):
         _reset_update_state()
 
-    def _install_with_live_bat(self, base: Path, expected: str = "1.1.23") -> Path:
+    def _install_with_live_bat(self, base: Path, expected: str = "1.1.24") -> Path:
         install = base / "install"
         install.mkdir()
         write_pending_update(install, expected)
@@ -90,7 +90,7 @@ class BatAliveDeferTests(unittest.TestCase):
             verdict = consume_pending_update(install)
             assert verdict is not None
             self.assertEqual(verdict["status"], "in_progress")
-            self.assertEqual(verdict["expected_version"], "1.1.23")
+            self.assertEqual(verdict["expected_version"], "1.1.24")
             # pending 还在，留给 bat 退出后的那次核对。
             self.assertTrue((install / updater.UPDATE_PENDING_FILENAME).is_file())
             # 结果文件一个字节都不写：06:05:09 读到的 unknown 就是这么来的。
@@ -115,7 +115,7 @@ class BatAliveDeferTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             install = Path(tmp) / "install"
             install.mkdir()
-            write_pending_update(install, "1.1.23")
+            write_pending_update(install, "1.1.24")
             verdict = consume_pending_update(install)
             assert verdict is not None
             self.assertEqual(verdict["status"], "failed")
@@ -137,10 +137,10 @@ class BatStuckRespectedTests(unittest.TestCase):
         # 没有 actual_version、没有 reason；bat 写完就自删了。
         install = base / "install"
         install.mkdir()
-        write_pending_update(install, "1.1.23")
+        write_pending_update(install, "1.1.24")
         write_update_result(install, {
             "status": "failed",
-            "expected_version": "1.1.23",
+            "expected_version": "1.1.24",
             "reason_code": "stuck",
         })
         return install
@@ -154,7 +154,7 @@ class BatStuckRespectedTests(unittest.TestCase):
             self.assertEqual(verdict["reason_code"], "stuck")
             self.assertEqual(verdict["reason"], UPDATE_FAILURE_MESSAGES["stuck"])
             self.assertIn("主程序关不掉", verdict["reason"])
-            self.assertEqual(verdict["expected_version"], "1.1.23")
+            self.assertEqual(verdict["expected_version"], "1.1.24")
             self.assertEqual(verdict["actual_version"], __version__)
             # 最终文件内容就是 stuck：后端重写只补 reason/actual_version，
             # 不改原因码。
@@ -163,7 +163,7 @@ class BatStuckRespectedTests(unittest.TestCase):
             )
             self.assertEqual(final, {
                 "status": "failed",
-                "expected_version": "1.1.23",
+                "expected_version": "1.1.24",
                 "actual_version": __version__,
                 "reason": UPDATE_FAILURE_MESSAGES["stuck"],
                 "reason_code": "stuck",
@@ -212,7 +212,7 @@ class StaleBatValveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             install = Path(tmp) / "install"
             install.mkdir()
-            write_pending_update(install, "1.1.23")
+            write_pending_update(install, "1.1.24")
             bat = install / "update.bat"
             bat.write_text("rem dead bat, never self-deleted", encoding="utf-8")
             old = time.time() - 16 * 60
@@ -232,13 +232,13 @@ class StaleBatValveTests(unittest.TestCase):
             # pending + 新 bat = 进行中。
             install = base / "a"
             install.mkdir()
-            write_pending_update(install, "1.1.23")
+            write_pending_update(install, "1.1.24")
             (install / "update.bat").write_text("rem live", encoding="utf-8")
             self.assertTrue(is_update_in_progress(install))
             # pending 在、没 bat = 已结束。
             install2 = base / "b"
             install2.mkdir()
-            write_pending_update(install2, "1.1.23")
+            write_pending_update(install2, "1.1.24")
             self.assertFalse(is_update_in_progress(install2))
             # 没 pending、有 bat 残留（bat 没拉起来那次）= 不算进行中。
             install3 = base / "c"
@@ -248,7 +248,7 @@ class StaleBatValveTests(unittest.TestCase):
             # pending + 陈旧 bat = 已死，不算进行中。
             install4 = base / "d"
             install4.mkdir()
-            write_pending_update(install4, "1.1.23")
+            write_pending_update(install4, "1.1.24")
             bat = install4 / "update.bat"
             bat.write_text("rem stale", encoding="utf-8")
             old = time.time() - 16 * 60
@@ -292,7 +292,7 @@ class RelaunchPortTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.23"},
+                "info": {"version": "1.1.24"},
             })
             install = Path(tmp) / "install"
             install.mkdir()

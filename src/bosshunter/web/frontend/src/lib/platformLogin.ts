@@ -20,11 +20,18 @@ export function derivePlatformLoginStates(
   diagnostics: unknown,
 ): Partial<Record<PlatformId, PlatformLoginInfo>> | null {
   if (!diagnostics || typeof diagnostics !== 'object') return null
-  const result = diagnostics as Record<string, unknown>
-  if (!result.chrome) return null
-  const now = new Date().toISOString()
+  const envelope = diagnostics as Record<string, unknown>
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null
+  // v37②b：/api/browser/diagnostics 返回的是信封 {ok, diagnostics: 原始
+  // 诊断, ...}，原始字段（chrome / boss_tab / zhilian_page …）在
+  // diagnostics 里，不在顶层。以前两处调用都直接传了整个信封，
+  // result.chrome 取不到 → 恒返回 null：挂载诊断静默不更新，点“刷新”
+  // 恒报“浏览器没连上”，浏览器里明明已登录也认不出来。先拆信封，
+  // 再按原始诊断推导；直接传原始诊断的调用（旧单元测试）继续兼容。
+  const result = isRecord(envelope.diagnostics) ? envelope.diagnostics : envelope
+  if (!result.chrome) return null
+  const now = new Date().toISOString()
   const tabUrl = (tab: unknown): string =>
     isRecord(tab) ? String(tab.url || '') : ''
   const pageState = (page: unknown): Record<string, unknown> =>

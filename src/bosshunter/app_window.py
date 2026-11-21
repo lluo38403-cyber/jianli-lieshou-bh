@@ -669,7 +669,7 @@ def save_current_window_geometry(path=None, _query_bounds=None) -> bool:
     return save_window_geometry(path, {"x": x, "y": y, "width": width, "height": height})
 
 
-def is_our_service_alive(host: str = "127.0.0.1", port: int = 8686, timeout: float = 2.0) -> bool:
+def is_our_service_alive(host: str = "127.0.0.1", port: int = 8686, timeout: float = 1.0) -> bool:
     """Return True when our own panel service already answers on host:port.
 
     Used at startup: if the previous run's service is still there, just
@@ -677,6 +677,8 @@ def is_our_service_alive(host: str = "127.0.0.1", port: int = 8686, timeout: flo
     would fail to bind the port). Only our own /api/health counts --
     a foreign program squatting on the port must not be mistaken for us.
     Never raises.
+    v37：默认超时 2.0 秒→1.0 秒——本机回环上连接拒绝只要约 30ms，
+    只有端口有人占着却不回包时才会等满超时；1 秒足够，2 秒是白等。
     """
     try:
         req = urllib.request.Request(f"http://{host}:{port}/api/health", method="GET")
@@ -692,7 +694,7 @@ def is_our_service_alive(host: str = "127.0.0.1", port: int = 8686, timeout: flo
     )
 
 
-def wait_for_service_ready(host: str = "127.0.0.1", port: int = 8686, timeout: float = 15.0, interval: float = 0.5) -> bool:
+def wait_for_service_ready(host: str = "127.0.0.1", port: int = 8686, timeout: float = 15.0, interval: float = 0.2) -> bool:
     """Poll until our own panel answers /api/health, or the deadline passes.
 
     冷启动慢的机器上服务可能 1 秒还起不来：以前开窗线程只睡 1 秒就开
@@ -700,6 +702,9 @@ def wait_for_service_ready(host: str = "127.0.0.1", port: int = 8686, timeout: f
     一直空白、不会自动重试。先等就绪再开；15 秒还没好也返回 False，
     调用方照常开窗（和以前一样，用户刷新就能进），绝不因为等不到就
     让用户连窗口都没有。
+    v37：默认间隔 0.5 秒→0.2 秒——沙箱实测服务在 350ms 后就绪时，
+    0.5 秒间隔要 503ms 才检出，0.2 秒间隔约 400ms；每多 0.1 秒都是
+    用户眼前的白屏时间。
     """
     deadline = time.monotonic() + timeout
     while True:
@@ -734,23 +739,24 @@ def _splash_page_html(panel_url: str) -> bytes:
         "p{font-size:14px;color:#666;margin:0}</style></head><body><main>"
         "<h1>简历猎手正在启动，请稍等&hellip;</h1>"
         "<p id=\"status\">正在等本地服务起来&hellip;</p></main>"
-        "<script>var panelUrl=" + panel_json + ";var tried=0;var fails=0;"
+        "<script>var panelUrl=" + panel_json + ";var started=Date.now();var fails=0;"
         "function showError(msg){document.getElementById('status').textContent=msg;}"
-        "function tick(){tried++;"
+        "function tick(){"
         "fetch('/splash-health').then(function(r){return r.json()}).then(function(d){"
         "if(d.ready){location.replace(panelUrl);return}"
         # v29：服务明确死了（启动失败标记）就显示错误、不再无限轮询；
         # 联系不上启动页服务本身（进程已死）连续失败 10 次也一样，
         # 显示明确错误而不是一直转圈。
         "if(d.failed){showError(d.error||'本地服务启动失败，请重新双击「简历猎手」再试一次。');return}"
-        # v30：超过 10 秒（tried>20，每 500 ms 一轮）未就绪就显示
-        # 已等秒数；没到 10 秒时显示服务端推来的当前阶段（清残留 /
-        # 启动服务…），用户能看到卡在哪一步。
-        "if(tried>20){showError('启动有点慢，还在努力…（已等 '+Math.round(tried/2)+' 秒）');}"
+        # v30：超过 10 秒未就绪就显示已等秒数；没到 10 秒时显示服务端
+        # 推来的当前阶段（清残留 / 启动服务…），用户能看到卡在哪一步。
+        # v37：轮询 500ms→200ms 一轮，“已等秒数”按 Date.now() 实测
+        # 经过时间算，不再按轮次数推算（换间隔后轮次不再等于秒数）。
+        "if(Date.now()-started>10000){showError('启动有点慢，还在努力…（已等 '+Math.round((Date.now()-started)/1000)+' 秒）');}"
         "else if(d.stage){document.getElementById('status').textContent=d.stage;}"
-        "setTimeout(tick,500)}).catch(function(){fails++;"
+        "setTimeout(tick,200)}).catch(function(){fails++;"
         "if(fails>=10){showError('本地服务没有响应，程序可能没有启动成功。请重新双击「简历猎手」再试一次；如果一直这样，请把 data/logs/jianli-lieshou.log 发给客服。');return}"
-        "setTimeout(tick,500)})}"
+        "setTimeout(tick,200)})}"
         "tick();</script></body></html>"
     )
     return page.encode("utf-8")
@@ -795,7 +801,10 @@ class _SplashRequestHandler(http.server.BaseHTTPRequestHandler):
                 ready = is_our_service_alive(
                     parsed.hostname or "127.0.0.1",
                     parsed.port or 8686,
-                    timeout=1.0,
+                    # v37：启动页每 200ms 轮询一轮，单次探针超时 1.0 秒
+                    # 会积压重叠请求；本机回环 0.5 秒足够，不回包就当
+                    # 这轮没好、下一轮再问，不死等。
+                    timeout=0.5,
                 )
                 if ready and not getattr(self.server, "_splash_stop_scheduled", False):
                     # 服务好了：页面下次轮询就会跳面板；5 秒后自停，
@@ -1119,7 +1128,7 @@ def wait_for_panel_tab(
     panel_url: str,
     debug_port: int | None,
     timeout: float = 10.0,
-    interval: float = 0.5,
+    interval: float = 0.2,
     splash_url: str | None = None,
     _list_tabs=None,
     _clock=None,
@@ -1131,6 +1140,8 @@ def wait_for_panel_tab(
     内一直没看到我们的标签页——窗口没开出来（无窗口残留旧服务）。
     None：无法核实（没有调试端口，或端口一直没应答）——调用方
     绝不能把它读成“没有标签页”，只能按旧行为放行。永不抛异常。
+    v37：默认间隔 0.5 秒→0.2 秒，与 server.py 里显式传的 0.2 一致，
+    标签页出现后最多 0.2 秒就检出，不再多等半秒。
     """
     clock = _clock or time.monotonic
     sleep = _sleep or time.sleep

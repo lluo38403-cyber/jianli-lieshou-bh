@@ -112,7 +112,7 @@ class VersionCompareTests(unittest.TestCase):
 class UpdateStubHandler(BaseHTTPRequestHandler):
     """Stub for the relay update contract: /api/version + /download/latest."""
 
-    version_payload = {"version": "1.1.23", "size": 0, "sha256": "0" * 64, "notes": ""}
+    version_payload = {"version": "1.1.24", "size": 0, "sha256": "0" * 64, "notes": ""}
     zip_bytes = b""
     status = 200
     requests: list = []
@@ -167,7 +167,7 @@ class UpdateCheckTests(unittest.TestCase):
     def setUp(self):
         _reset_update_state()
         UpdateStubHandler.version_payload = {
-            "version": "1.1.23",
+            "version": "1.1.24",
             "size": 123,
             "sha256": hashlib.sha256(_make_zip()).hexdigest(),
             "notes": "更快更稳",
@@ -200,7 +200,7 @@ class UpdateCheckTests(unittest.TestCase):
         info = check_for_update(self._config())
         self.assertIsNotNone(info)
         assert info is not None
-        self.assertEqual(info["version"], "1.1.23")
+        self.assertEqual(info["version"], "1.1.24")
         self.assertEqual(info["current_version"], __version__)
         self.assertEqual(info["size"], 123)
         self.assertEqual(info["notes"], "更快更稳")
@@ -229,9 +229,9 @@ class UpdateCheckTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         for bad in (
             {"size": 1, "sha256": "a" * 64},
-            {"version": "1.1.23", "size": 1},
-            {"version": "1.1.23", "size": 1, "sha256": "not-a-hash"},
-            {"version": "1.1.23", "size": 1, "sha256": "a" * 64, "notes": 5},
+            {"version": "1.1.24", "size": 1},
+            {"version": "1.1.24", "size": 1, "sha256": "not-a-hash"},
+            {"version": "1.1.24", "size": 1, "sha256": "a" * 64, "notes": 5},
         ):
             with self.subTest(bad=bad):
                 UpdateStubHandler.version_payload = bad
@@ -355,7 +355,7 @@ class CheckFailureClassificationTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_bad_sha_is_classified(self):
-        payload = {"version": "1.1.23", "size": 1, "sha256": "not-a-hash", "notes": ""}
+        payload = {"version": "1.1.24", "size": 1, "sha256": "not-a-hash", "notes": ""}
         with mock.patch.object(
             updater.httpx, "get",
             return_value=self._fake_response(200, payload),
@@ -384,7 +384,7 @@ class CheckFailureClassificationTests(unittest.TestCase):
 
     def test_run_check_failure_keeps_known_info_and_reports_check_failed(self):
         info = {
-            "version": "1.1.23",
+            "version": "1.1.24",
             "current_version": __version__,
             "size": 123,
             "sha256": "a" * 64,
@@ -421,7 +421,7 @@ class CheckFailureClassificationTests(unittest.TestCase):
         run_check(dead, force=True)
         self.assertEqual(get_status()["reason_code"], "check_failed")
         payload = {
-            "version": "1.1.23", "size": 123,
+            "version": "1.1.24", "size": 123,
             "sha256": "a" * 64, "notes": "更快更稳",
         }
         with mock.patch.object(
@@ -437,7 +437,7 @@ class CheckFailureClassificationTests(unittest.TestCase):
 
     def test_run_check_without_token_stays_idle_and_keeps_info(self):
         info = {
-            "version": "1.1.23",
+            "version": "1.1.24",
             "current_version": __version__,
             "size": 123,
             "sha256": "a" * 64,
@@ -478,7 +478,7 @@ class UpdateDownloadTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.23",
+            "version": "1.1.24",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -506,7 +506,7 @@ class UpdateDownloadTests(unittest.TestCase):
 
     def _info(self):
         return {
-            "version": "1.1.23",
+            "version": "1.1.24",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -607,7 +607,7 @@ class UpdateDownloadTests(unittest.TestCase):
         bad = buf.getvalue()
         UpdateStubHandler.zip_bytes = bad
         UpdateStubHandler.version_payload = {
-            "version": "1.1.23",
+            "version": "1.1.24",
             "size": len(bad),
             "sha256": hashlib.sha256(bad).hexdigest(),
             "notes": "",
@@ -758,6 +758,36 @@ class UpdatePendingTests(unittest.TestCase):
             self.assertFalse((install / updater.UPDATE_PENDING_FILENAME).exists())
             self.assertIsNone(get_last_update_failure(install))
             self.assertFalse(reconcile_pending_update(install))
+
+    def test_consume_removes_stale_bat_but_keeps_live_one(self):
+        # 残留 bat 的兜底清理（v37）：bat 已死（mtime 超 15 分钟）时
+        # consume_pending_update 在消费 pending 的同时删掉残留的
+        # update.bat——bat 不会再写 verdict、也不会自删，文件留着只
+        # 会让下次核对误会。活 bat（15 分钟内）绝不能动：consume 提
+        # 前返回 in_progress，pending 和 bat 都原样留着。
+        import os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp)
+            # 陈旧 bat：消费后 bat 被清掉、pending 也被消费。
+            write_pending_update(install, "9.9.9")
+            bat = install / "update.bat"
+            bat.write_text("rem stale", encoding="utf-8")
+            old = time.time() - 16 * 60
+            os.utime(bat, (old, old))
+            verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "failed")
+            self.assertFalse(bat.exists())
+            self.assertFalse((install / updater.UPDATE_PENDING_FILENAME).exists())
+            # 新鲜 bat：还在进行中，bat 和 pending 都不动。
+            write_pending_update(install, "9.9.9")
+            bat.write_text("rem live", encoding="utf-8")
+            verdict = consume_pending_update(install)
+            assert verdict is not None
+            self.assertEqual(verdict["status"], "in_progress")
+            self.assertTrue(bat.exists())
+            self.assertTrue((install / updater.UPDATE_PENDING_FILENAME).exists())
 
     def test_consume_mismatch_reports_failure_not_a_prompt(self):
         # 回归：换完打开还是旧版本时，旧实现毫无记录，启动检查立刻
@@ -1075,7 +1105,19 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertIn("/XD data", script)
         self.assertIn("/XF config.yaml", script)
         self.assertIn("rmdir /s /q", script)
-        self.assertIn('start ""', script)
+        # 重拉 exe 不用裸 start：窗口 exe 经隐藏 PowerShell 的
+        # Start-Process 拉起（不带 -WindowStyle，面板正常显示、
+        # 不分配控制台），4 处重拉（首轮 / nostart 重试 / 回滚重开 /
+        # nostart_old 重试）都是同一写法。
+        self.assertNotIn('start ""', script)
+        self.assertEqual(
+            script.count(
+                "Start-Process -FilePath '%INSTALL_DIR%\\%EXE_NAME%'"
+                " -WorkingDirectory '%INSTALL_DIR%'"
+            ),
+            4,
+        )
+        self.assertNotIn("Start-Process -WindowStyle", script)
         self.assertIn("update.log", script)
         self.assertIn('del "%~f0"', script)
         # 批处理里绝不能出现会删用户数据的命令
@@ -1153,17 +1195,34 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertNotIn("|", script)
 
     def test_bat_launch_flags_hide_the_console_window(self):
-        # 回归：只用 DETACHED_PROCESS 不够——detached 的 cmd 自己没有
-        # 控制台，它再拉起的 ping / PowerShell / robocopy 各自会新开
-        # 一个黑框（v1.0.8 用户实拍：findstr /C:"2108" 黑框弹在面板
-        # 前面）。CREATE_NO_WINDOW（0x08000000）必须在启动标志里，
-        # bat 和它拉起的控制台程序才都不开窗口。
-        from bosshunter.updater import _windows_launch_flags
+        # 回归（v37 根因核实）：CREATE_NO_WINDOW 只让直接创建的 cmd
+        # 不开窗口，cmd 拉起的孙进程（PowerShell / robocopy /
+        # taskkill）各自会新开一个黑框——powershell -WindowStyle
+        # Hidden 只是窗口建出来后再藏起来，建窗到藏窗之间会闪一下；
+        # 等主进程的轮询一秒调两次 PowerShell，黑框就一直闪、一直弹
+        # （用户 2026-11-22 原话）。根治在发起方：cmd 出生就带一个
+        # 隐藏控制台——CREATE_NEW_CONSOLE（0x00000010）+ STARTUPINFO
+        # （STARTF_USESHOWWINDOW + SW_HIDE），孙进程继承这个已隐藏的
+        # 控制台，不再自己分配窗口。CREATE_NO_WINDOW / DETACHED_PROCESS
+        # 与 CREATE_NEW_CONSOLE 互斥（前两者 = 不要控制台），绝不能
+        # 同在标志里；CREATE_NEW_PROCESS_GROUP（Ctrl+C 隔离）保留。
+        from unittest.mock import patch
+
+        from bosshunter.updater import (
+            _windows_hidden_console_startupinfo,
+            _windows_launch_flags,
+        )
 
         flags = _windows_launch_flags()
-        self.assertTrue(flags & 0x08000000, "CREATE_NO_WINDOW 缺失")
-        self.assertTrue(flags & 0x00000008, "DETACHED_PROCESS 缺失")
+        self.assertTrue(flags & 0x00000010, "CREATE_NEW_CONSOLE 缺失")
+        self.assertFalse(flags & 0x08000000, "CREATE_NO_WINDOW 必须去掉")
+        self.assertFalse(flags & 0x00000008, "DETACHED_PROCESS 必须去掉")
         self.assertTrue(flags & 0x00000200, "CREATE_NEW_PROCESS_GROUP 缺失")
+        with patch("bosshunter.updater._is_windows", return_value=True):
+            si = _windows_hidden_console_startupinfo()
+        assert si is not None
+        self.assertTrue(si.dwFlags & 0x00000001, "STARTF_USESHOWWINDOW 缺失")
+        self.assertEqual(si.wShowWindow, 0, "wShowWindow 必须是 SW_HIDE(0)")
 
     def test_batch_strips_trailing_backslash_from_dirs(self):
         # 回归：INSTALL_DIR=%~dp0 自带末尾反斜杠，robocopy "%INSTALL_DIR%"
@@ -1370,7 +1429,7 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertIn("Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health'", section)
         self.assertIn('set "PROBE_RC=%errorlevel%"', section)
         self.assertIn('if %PROBE_RC% equ 0 goto :fail_nostart_answered', section)
-        self.assertIn('start "" "%INSTALL_DIR%\\%EXE_NAME%"', section)
+        self.assertIn("Start-Process -FilePath '%INSTALL_DIR%\\%EXE_NAME%'", section)
         self.assertIn("(Get-Date).AddSeconds(60)", section)
         self.assertIn('set "HEALTH2_RC=%errorlevel%"', section)
         self.assertIn('set "FAIL_CODE=nostart_rolled_back"', section)
@@ -1379,10 +1438,10 @@ class UpdateScriptTests(unittest.TestCase):
         # 顺序不能反：探端口 → 再拉一次 → 60 秒轮询 → 回滚。
         self.assertLess(
             section.index('set "PROBE_RC=%errorlevel%"'),
-            section.index('start "" "%INSTALL_DIR%\\%EXE_NAME%"'),
+            section.index("Start-Process -FilePath '%INSTALL_DIR%\\%EXE_NAME%'"),
         )
         self.assertLess(
-            section.index('start "" "%INSTALL_DIR%\\%EXE_NAME%"'),
+            section.index("Start-Process -FilePath '%INSTALL_DIR%\\%EXE_NAME%'"),
             section.index("(Get-Date).AddSeconds(60)"),
         )
         self.assertLess(
@@ -1445,7 +1504,7 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertIn('reason_code": "%FAIL_CODE%"', section)
         self.assertNotIn('rmdir /s /q "%STAGING%"', section)
         self.assertLess(
-            section.index('start "" "%INSTALL_DIR%\\%EXE_NAME%"'),
+            section.index("Start-Process -FilePath '%INSTALL_DIR%\\%EXE_NAME%'"),
             section.index("http://127.0.0.1:%PORT%/api/health"),
         )
         self.assertLess(
@@ -1469,15 +1528,15 @@ class UpdateScriptTests(unittest.TestCase):
         start = script.index("\r\n:fail_nostart_old\r\n")
         section = script[start:]
         self.assertIn('reason_code": "nostart_old"', section)
-        self.assertIn('start "" "%INSTALL_DIR%\\%EXE_NAME%"', section)
+        self.assertIn("Start-Process -FilePath '%INSTALL_DIR%\\%EXE_NAME%'", section)
         self.assertIn("Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health'", section)
-        self.assertIn('if %PROBE_RC% neq 0 if exist "%INSTALL_DIR%\\%EXE_NAME%" start "" "%INSTALL_DIR%\\%EXE_NAME%"', section)
+        self.assertIn("if %PROBE_RC% neq 0 if exist \"%INSTALL_DIR%\\%EXE_NAME%\" powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"Start-Process -FilePath '%INSTALL_DIR%\\%EXE_NAME%' -WorkingDirectory '%INSTALL_DIR%'\" >> \"%LOG%\" 2>&1", section)
         self.assertNotIn('rmdir /s /q "%STAGING%"', section)
         verdict_at = section.index('reason_code": "nostart_old"')
         self.assertLess(verdict_at, section.index('del "%~f0"'))
         self.assertLess(
             verdict_at,
-            section.index('start "" "%INSTALL_DIR%\\%EXE_NAME%"'),
+            section.index("Start-Process -FilePath '%INSTALL_DIR%\\%EXE_NAME%'"),
         )
         # 分流必须在写原原因码之前：OLD_HEALTH_RC 非 0 就走新分支，
         # 不能先写 %FAIL_CODE% 再改——结果文件只写一次。
@@ -1504,11 +1563,11 @@ class UpdateScriptTests(unittest.TestCase):
             return False, waited
 
         # 第三次轮询报到旧版本：不等满，直接成功。
-        self.assertEqual(poll(["", "1.1.23", "1.1.15"], "1.1.15"), (True, 6))
+        self.assertEqual(poll(["", "1.1.24", "1.1.15"], "1.1.15"), (True, 6))
         # 一直没应答：等满 180 秒再判失败。
         self.assertEqual(poll([""] * 60, "1.1.15"), (False, 180))
         # 一直应答新版本：回滚没换回旧版，同样等满 180 秒判失败。
-        self.assertEqual(poll(["1.1.23"] * 60, "1.1.15"), (False, 180))
+        self.assertEqual(poll(["1.1.24"] * 60, "1.1.15"), (False, 180))
 
     def test_batch_health_poll_semantics(self):
         # bat 本体跑不了（Windows 批处理），这里把轮询的判定语义
@@ -1527,11 +1586,11 @@ class UpdateScriptTests(unittest.TestCase):
             return False, waited
 
         # 第三次轮询报到期望版本：不等满，直接成功。
-        self.assertEqual(poll(["", "1.1.15", "1.1.23"], "1.1.23"), (True, 6))
+        self.assertEqual(poll(["", "1.1.15", "1.1.24"], "1.1.24"), (True, 6))
         # 一直没应答：等满 180 秒再判失败。
-        self.assertEqual(poll([""] * 60, "1.1.23"), (False, 180))
+        self.assertEqual(poll([""] * 60, "1.1.24"), (False, 180))
         # 一直应答旧版本：同样等满 180 秒（旧版不算数）。
-        self.assertEqual(poll(["1.1.15"] * 60, "1.1.23"), (False, 180))
+        self.assertEqual(poll(["1.1.15"] * 60, "1.1.24"), (False, 180))
 
     def test_batch_validates_staging_and_purges_stale_internal(self):
         # 回归：旧 bat 不校验 staging、有错照换；且 robocopy /E /IS
@@ -1616,7 +1675,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.23"},
+                "info": {"version": "1.1.24"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1647,7 +1706,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.23"},
+                "info": {"version": "1.1.24"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1670,7 +1729,12 @@ class UpdateApplyTests(unittest.TestCase):
             kill.assert_called_once()
             popen.assert_called_once()
             flags = popen.call_args.kwargs.get("creationflags", 0)
-            self.assertTrue(flags & 0x08000000, "拉起 update.bat 必须带 CREATE_NO_WINDOW")
+            # v37：拉起 update.bat 必须带 CREATE_NEW_CONSOLE（+ SW_HIDE
+            # 的 STARTUPINFO，见 test_apply_launches_bat_with_hidden_console），
+            # 不能只带 CREATE_NO_WINDOW——后者管不住 bat 拉起的孙进程，
+            # 每次 PowerShell 都会闪一下黑窗口。
+            self.assertTrue(flags & 0x00000010, "拉起 update.bat 必须带 CREATE_NEW_CONSOLE")
+            self.assertFalse(flags & 0x08000000, "CREATE_NO_WINDOW 必须去掉")
 
     def test_apply_passes_current_version_to_update_bat(self):
         # v30 回滚重开核实：bat 第 6 个参数必须是当前（旧）版本号，
@@ -1687,7 +1751,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.23"},
+                "info": {"version": "1.1.24"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1706,7 +1770,7 @@ class UpdateApplyTests(unittest.TestCase):
             self.assertEqual(argv[0:2], ["cmd.exe", "/c"])
             self.assertEqual(argv[3], str(staging))
             self.assertEqual(argv[4], "简历猎手.exe")
-            self.assertEqual(argv[6], "1.1.23")
+            self.assertEqual(argv[6], "1.1.24")
             self.assertEqual(argv[7], f"update-backup-{__version__}")
             self.assertEqual(argv[8], __version__)
 
@@ -1728,7 +1792,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.23"},
+                "info": {"version": "1.1.24"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1749,6 +1813,82 @@ class UpdateApplyTests(unittest.TestCase):
             # 第 6 个参数仍是当前版本号，不能被端口顶掉。
             self.assertEqual(argv[8], __version__)
 
+    def test_apply_launches_bat_with_hidden_console(self):
+        # v37：起 bat 必须带 CREATE_NEW_CONSOLE + STARTUPINFO(SW_HIDE)，
+        # 不能只传 CREATE_NO_WINDOW——后者只让 cmd 本身不开窗口，
+        # bat 拉起的每个孙进程（PowerShell / robocopy / taskkill）会
+        # 各自新开黑框、每次闪一下，轮询一秒两次就是“一直闪、一直弹”。
+        # 隐藏控制台出生即有、孙进程继承它，才是根治。
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp) / "staging"
+            (staging / "_internal").mkdir(parents=True)
+            (staging / "简历猎手.exe").write_bytes(b"new-exe")
+            (staging / "_internal" / "app.bin").write_bytes(b"new-app")
+            updater._STATE.update({
+                "status": "ready",
+                "staging_dir": str(staging),
+                "info": {"version": "1.1.24"},
+            })
+            install = Path(tmp) / "install"
+            install.mkdir()
+            (install / "简历猎手.exe").write_bytes(b"old-exe")
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.app_window.close_app_window", return_value=True),
+                patch("bosshunter.browser.runtime.stop_runtime", return_value=True),
+                patch("bosshunter.browser.runtime.stop_launched_browser", return_value=True),
+                patch("bosshunter.updater._kill_install_dir_processes", return_value=True),
+                patch("bosshunter.updater.subprocess.Popen") as popen,
+            ):
+                apply_update(install, "简历猎手.exe")
+            popen.assert_called_once()
+            kwargs = popen.call_args.kwargs
+            flags = kwargs.get("creationflags", 0)
+            self.assertTrue(flags & 0x00000010, "CREATE_NEW_CONSOLE 缺失")
+            self.assertFalse(flags & 0x08000000, "CREATE_NO_WINDOW 必须去掉")
+            self.assertFalse(flags & 0x00000008, "DETACHED_PROCESS 必须去掉")
+            si = kwargs.get("startupinfo")
+            assert si is not None, "startupinfo 必须传（SW_HIDE 藏控制台）"
+            self.assertTrue(si.dwFlags & 0x00000001, "STARTF_USESHOWWINDOW 缺失")
+            self.assertEqual(si.wShowWindow, 0, "wShowWindow 必须是 SW_HIDE(0)")
+
+    def test_apply_failure_removes_bat_and_pending(self):
+        # bat 没拉起来（Popen 直接炸）：pending 和刚写好的 update.bat
+        # 都要清掉——残留的 bat 不能留给下次核对误会。状态放回 ready
+        # （H-2：用户还能点重试），安装文件原样不动。
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp) / "staging"
+            (staging / "_internal").mkdir(parents=True)
+            (staging / "简历猎手.exe").write_bytes(b"new-exe")
+            (staging / "_internal" / "app.bin").write_bytes(b"new-app")
+            updater._STATE.update({
+                "status": "ready",
+                "staging_dir": str(staging),
+                "info": {"version": "1.1.24"},
+            })
+            install = Path(tmp) / "install"
+            install.mkdir()
+            (install / "简历猎手.exe").write_bytes(b"old-exe")
+            with (
+                patch("bosshunter.updater._is_windows", return_value=True),
+                patch("bosshunter.app_window.close_app_window", return_value=True),
+                patch("bosshunter.browser.runtime.stop_runtime", return_value=True),
+                patch("bosshunter.browser.runtime.stop_launched_browser", return_value=True),
+                patch("bosshunter.updater._kill_install_dir_processes", return_value=True),
+                patch("bosshunter.updater.subprocess.Popen") as popen,
+            ):
+                popen.side_effect = RuntimeError("boom")
+                with self.assertRaises(RuntimeError):
+                    apply_update(install, "简历猎手.exe")
+            self.assertFalse((install / "update.bat").exists())
+            self.assertFalse((install / updater.UPDATE_PENDING_FILENAME).exists())
+            self.assertEqual((install / "简历猎手.exe").read_bytes(), b"old-exe")
+            self.assertEqual(updater._STATE.get("status"), "ready")
+
     def test_apply_excludes_own_pid_when_killing_install_dir_processes(self):
         # 回归（v27，run 44707216190）：v24 的 apply_update 调
         # _kill_install_dir_processes 时没传 exclude_pid，PowerShell 按
@@ -1766,7 +1906,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.23"},
+                "info": {"version": "1.1.24"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1800,7 +1940,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.23"},
+                "info": {"version": "1.1.24"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1827,7 +1967,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.23"},
+                "info": {"version": "1.1.24"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1851,7 +1991,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(Path(tmp) / "empty-staging"),
-                "info": {"version": "1.1.23"},
+                "info": {"version": "1.1.24"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1882,7 +2022,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.23"},
+                "info": {"version": "1.1.24"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1941,7 +2081,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.23"},
+                "info": {"version": "1.1.24"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -1971,7 +2111,7 @@ class UpdateApplyTests(unittest.TestCase):
             updater._STATE.update({
                 "status": "ready",
                 "staging_dir": str(staging),
-                "info": {"version": "1.1.23"},
+                "info": {"version": "1.1.24"},
             })
             install = Path(tmp) / "install"
             install.mkdir()
@@ -2126,7 +2266,7 @@ class UpdateRouteTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.23",
+            "version": "1.1.24",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "更快更稳",
@@ -2218,7 +2358,7 @@ class UpdateRouteTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             data = json.loads(body)
             self.assertTrue(data["update_available"])
-            self.assertEqual(data["version"], "1.1.23")
+            self.assertEqual(data["version"], "1.1.24")
             self.assertEqual(data["current_version"], __version__)
             self.assertEqual(data["notes"], "更快更稳")
 
@@ -2228,9 +2368,9 @@ class UpdateRouteTests(unittest.TestCase):
         # 后才能重新查到新版。
         with tempfile.TemporaryDirectory() as tmp:
             base = self._base_dir(tmp)
-            updater.write_pending_update(base, "1.1.23")
+            updater.write_pending_update(base, "1.1.24")
             updater.write_update_result(
-                base, {"status": "failed", "expected_version": "1.1.23", "reason_code": "copy"}
+                base, {"status": "failed", "expected_version": "1.1.24", "reason_code": "copy"}
             )
             original_get_install_dir = updater.get_install_dir
             updater.get_install_dir = lambda: base
@@ -2249,7 +2389,7 @@ class UpdateRouteTests(unittest.TestCase):
                 self.assertTrue(status.startswith("200"), body)
                 data = json.loads(body)
                 self.assertTrue(data["update_available"])
-                self.assertEqual(data["version"], "1.1.23")
+                self.assertEqual(data["version"], "1.1.24")
             finally:
                 updater.get_install_dir = original_get_install_dir
 
@@ -2356,13 +2496,20 @@ class UpdatePathKillTests(unittest.TestCase):
 
 
 class UpdateHiddenConsoleTests(unittest.TestCase):
-    """bat 里不许有裸控制台程序调用（v24 黑窗口修法）。
+    """bat 里不许有裸控制台程序调用（v24 黑窗口修法，v37 根因重定）。
 
     回归：CREATE_NO_WINDOW 只作用于直接创建的 cmd.exe，cmd 拉起的
     孙进程（robocopy / ping / taskkill / PowerShell）没有可继承的
-    控制台时会自己分配可见窗口——这就是用户看到的黑窗口。所有
-    控制台调用必须经 powershell -WindowStyle Hidden 走，隐藏的
-    PowerShell 自带隐藏控制台，子进程继承它。
+    控制台时会自己分配可见窗口——这就是用户看到的黑窗口。v24 曾
+    以为 powershell -WindowStyle Hidden 是根治：隐藏的 PowerShell
+    自带隐藏控制台、子进程继承它；v37 核实它只是第二层——窗口建出
+    来后再藏起来，建窗到藏窗之间会闪一下，等主进程的轮询一秒调两
+    次 PowerShell，黑框就一直闪、一直弹。根治在发起方：apply_update
+    起 cmd 时带 CREATE_NEW_CONSOLE + STARTUPINFO(SW_HIDE)，cmd 出生
+    就带隐藏控制台、孙进程继承它（见 test_bat_launch_flags_hide_
+    the_console_window）。bat 里仍要求：所有控制台调用经
+    powershell -WindowStyle Hidden 走（双击 bat 时没有隐藏控制台可
+    继承，靠它兜底），重拉 exe 用 Start-Process、不用裸 start。
     """
 
     def test_no_bare_console_program_lines(self):
@@ -2374,6 +2521,40 @@ class UpdateHiddenConsoleTests(unittest.TestCase):
             self.assertFalse(stripped.startswith("robocopy"), line)
             self.assertFalse(stripped.startswith("ping"), line)
             self.assertFalse(stripped.startswith("taskkill"), line)
+
+    def test_no_bare_start_relaunch(self):
+        # v37：4 处重拉 exe（首轮 / nostart 重试 / 回滚重开 /
+        # nostart_old 重试）一律走隐藏 PowerShell 的 Start-Process，
+        # 不许再有裸 start（裸 start 在无控制台继承时也会闪；且
+        # Start-Process 带 -WorkingDirectory，工作目录明确是安装目录）。
+        # Start-Process 不带 -WindowStyle：窗口 exe 正常显示面板、
+        # 不分配控制台；带了 -WindowStyle Hidden 会把面板也藏起来。
+        script = build_update_script()
+        commands = [
+            line
+            for line in script.splitlines()
+            if not line.strip().lower().startswith("rem")
+        ]
+        joined = "\n".join(commands)
+        self.assertNotIn('start ""', joined)
+        self.assertNotIn("Start-Process -WindowStyle", joined)
+        relaunches = [
+            line for line in commands if "Start-Process -FilePath" in line
+        ]
+        self.assertEqual(len(relaunches), 4)
+        for line in relaunches:
+            self.assertIn(
+                "powershell -NoProfile -NonInteractive -WindowStyle Hidden",
+                line,
+                line,
+            )
+            self.assertIn(
+                "Start-Process -FilePath '%INSTALL_DIR%\\%EXE_NAME%'"
+                " -WorkingDirectory '%INSTALL_DIR%'",
+                line,
+                line,
+            )
+            self.assertIn('>> "%LOG%" 2>&1', line, line)
 
     def test_every_powershell_call_is_hidden(self):
         script = build_update_script()
@@ -2533,7 +2714,7 @@ class UpdateCacheTests(unittest.TestCase):
         UpdateStubHandler.status = 200
         UpdateStubHandler.requests = []
         UpdateStubHandler.version_payload = {
-            "version": "1.1.23",
+            "version": "1.1.24",
             "size": len(self.zip_bytes),
             "sha256": hashlib.sha256(self.zip_bytes).hexdigest(),
             "notes": "",
@@ -2711,7 +2892,7 @@ class UpdateCacheTests(unittest.TestCase):
             self.assertEqual(get_status()["status"], "ready", get_status())
             loaded = load_cached_update(install)
             assert loaded is not None
-            self.assertEqual(loaded["version"], "1.1.23")
+            self.assertEqual(loaded["version"], "1.1.24")
             self.assertTrue(Path(loaded["zip_path"]).is_file())
 
     def test_start_download_restores_from_cache_without_network(self):

@@ -86,6 +86,24 @@ describe('derivePlatformLoginStates', () => {
     expect(states?.boss?.status).toBe('logged_in')
   })
 
+  it('accepts the real /api/browser/diagnostics envelope', () => {
+    // v37②b：后端返回的是 {ok, diagnostics: 原始诊断, ...} 信封，
+    // 原始字段在 diagnostics 里。以前两处调用直接传整个信封，
+    // chrome 取不到就恒返回 null，刷新恒报“浏览器没连上”。
+    const states = derivePlatformLoginStates({ ok: true, diagnostics: diagnosticsResult() })
+    expect(states && Object.fromEntries(Object.entries(states).map(([k, v]) => [k, v.status]))).toEqual({
+      boss: 'logged_in',
+      zhilian: 'logged_in',
+      '51job': 'logged_in',
+      liepin: 'logged_in',
+    })
+  })
+
+  it('returns null for a nested envelope whose browser is not connected', () => {
+    expect(derivePlatformLoginStates({ ok: false, diagnostics: { chrome: false } })).toBeNull()
+    expect(derivePlatformLoginStates({ ok: false, diagnostics: null })).toBeNull()
+  })
+
   it('marks BOSS logged out only on the precise login URLs', () => {
     // 只认 /web/user/login 和 ?ka=header-login（与采集侧 boss.py 的
     // 精确正则同一口径），其余 /web/user/ 下的页面不算掉线。

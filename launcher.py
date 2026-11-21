@@ -175,6 +175,27 @@ def _ensure_config(exe_dir: Path) -> Path:
 
 
 def main() -> None:
+    # v37 单实例互斥：最顶端，在任何初始化（切目录、配 config、接日志、
+    # 加载 UI）之前抢 Windows Named Mutex。只拦 web 模式：--version
+    # 这类一次性命令与 scrape/run 等批处理子命令不受影响。已有实例
+    # 在跑时本进程立即退出（它的窗口已由 ensure_single_instance 前置）。
+    # 抢锁本身绝不挡启动：import 失败/抢锁异常都按“没有 OS 锁”放行，
+    # 走原有的 .instance.json + 端口探测兜底。
+    args = sys.argv[1:] or ["web"]
+    if "web" in args:
+        try:
+            from bosshunter.single_instance import (
+                ensure_single_instance,
+                release_single_instance_mutex,
+            )
+
+            if ensure_single_instance() is None:
+                return
+            import atexit
+
+            atexit.register(release_single_instance_mutex)
+        except Exception:
+            pass
     exe_dir = _exe_dir()
     os.chdir(exe_dir)
     node = _bundled_node()
@@ -182,7 +203,6 @@ def main() -> None:
         # 浏览器运行时（cdp-proxy.mjs）优先用打包自带的 Node 22+
         os.environ.setdefault("BOSSHUNTER_NODE_PATH", str(node))
     config_path = _ensure_config(exe_dir) if getattr(sys, "frozen", False) else exe_dir / "config.yaml"
-    args = sys.argv[1:] or ["web"]
     if getattr(sys, "frozen", False) and "web" in args:
         # 无窗口 exe：启动前就把输出接到日志文件，不然双击启动时
         # 往无效的 stdout 句柄写东西会直接炸掉启动（WinError 6）。

@@ -63,6 +63,59 @@ def _login_state(login_states: dict | None, platform: str) -> str:
 	return "unknown"
 
 
+# 四平台的固定顺序：默认顺序、已登录兜底都按它排，不依赖 dict 顺序。
+_PLATFORM_ORDER = ("boss", "zhilian", "51job", "liepin")
+
+
+def _enabled_platforms(config: dict | None) -> list[str]:
+	"""Return the platforms the user enabled in config, in canonical order.
+
+	只认 config.platforms.<平台>.enabled，不硬编码任何平台：BOSS 关了
+	就不在里面，智联/前程无忧/猎聘开了就在里面。
+	"""
+	if not isinstance(config, dict):
+		return []
+	configured = config.get("platforms")
+	if not isinstance(configured, dict):
+		return []
+	return [
+		platform
+		for platform in _PLATFORM_ORDER
+		if isinstance(configured.get(platform), dict) and configured[platform].get("enabled")
+	]
+
+
+def resolve_check_platforms(
+	config: dict | None,
+	collection_options: dict | None = None,
+	login_states: dict | None = None,
+) -> list[str]:
+	"""Resolve which platforms a preflight browser check should validate.
+
+	优先级（v37②a：按用户打算用的平台动态校验，不再死绑 BOSS）：
+	1. 本次任务明确选的平台（collection_options.platform_order）；
+	2. 配置里启用的平台（config.platforms.*.enabled）；
+	3. 配置没写任何启用信息时，实际已登录的平台；
+	4. 以上全都没有，才回落到 ["boss"]（全新/旧配置的兜底，不拦新用户）。
+	"""
+	if isinstance(collection_options, dict):
+		order = collection_options.get("platform_order")
+		if isinstance(order, list):
+			selected = [str(value).strip() for value in order if str(value).strip()]
+			if selected:
+				return selected
+	enabled = _enabled_platforms(config)
+	if enabled:
+		return enabled
+	if isinstance(login_states, dict):
+		logged_in = [
+			platform for platform in _PLATFORM_ORDER if _login_state(login_states, platform) == "logged_in"
+		]
+		if logged_in:
+			return logged_in
+	return ["boss"]
+
+
 def collect_preflight_checks(mode: str, config: dict, options: dict | None = None, allow_launch: bool = False, login_states: dict | None = None) -> list[dict[str, str]]:
 	"""Collect configuration, AI connectivity, and browser readiness checks.
 
@@ -71,6 +124,8 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 	那时拉起是用户主动要跑任务的一部分。
 	"""
 	collection_options = None
+	full_options: dict | None = None
+	full_options_error: ValueError | None = None
 	if mode == "collect":
 		try:
 			collection_options = normalize_collection_options(config, options)
@@ -80,6 +135,15 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 		else:
 			checks = _configuration_checks(mode, config, collection_options)
 			checks.extend(_collection_city_checks(collection_options))
+	elif mode == "full":
+		# v37②a：全流程的浏览器检查也要按本次实际选的平台来，不能再
+		# 用 collection_options=None 时的默认集合（以前只查 BOSS）。
+		# 这里先算出 full_options，后面城市检查和平台能力检查复用同一份。
+		try:
+			full_options = normalize_collection_options(config, options)
+		except ValueError as exc:
+			full_options_error = exc
+		checks = _configuration_checks(mode, config, options)
 	else:
 		checks = _configuration_checks(mode, config, options)
 	if mode not in VALID_MODES:
@@ -102,6 +166,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 			checks.append(_check("browser_runtime", "浏览器连接", "error", "浏览器连接检测失败", "请重新启动简历猎手后再试。", "browser"))
 		return checks
 
+	browser_options = collection_options if mode == "collect" else full_options
 	with ThreadPoolExecutor(max_workers=2) as executor:
 		pending_checks: list = []
 		if ai_configured:
@@ -110,7 +175,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 				_check("ai_connection", "AI 接口连接", "error", "AI 接口检测失败", "请检查 AI 设置后重试。", "config"),
 			))
 		pending_checks.append((
-			executor.submit(check_browser_connection, deepcopy(config), collection_options, allow_launch, login_states),
+			executor.submit(check_browser_connection, deepcopy(config), browser_options, allow_launch, login_states),
 			_check("browser_runtime", "浏览器连接", "error", "浏览器连接检测失败", "请重新启动简历猎手后再试。", "browser"),
 		))
 		for future, fallback in pending_checks:
@@ -119,20 +184,18 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 			except Exception:
 				checks.append(fallback)
 	if mode == "full":
-		try:
-			full_options = normalize_collection_options(config, options)
-		except ValueError as exc:
+		if full_options_error is not None:
 			checks.append(
 				_check(
 					"full_flow_platform",
 					"全流程采集设置",
 					"error",
-					str(exc),
+					str(full_options_error),
 					"请在全流程采集设置中选择平台并填写关键词、城市和目标数量。",
 					"config",
 				)
 			)
-		else:
+		elif full_options is not None:
 			checks.extend(_collection_city_checks(full_options))
 			checks.append(
 				_check(
@@ -490,7 +553,22 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 			)
 
 	if result.get("chrome"):
-		selected_platforms = set(collection_options.get("platform_order", [])) if collection_options else {"boss"}
+		# v37②a：查用户打算用的平台（本次任务选的 → 配置启用的 →
+		# 实际已登录的），不再没给采集参数就默认只查 BOSS。
+		selected_platforms = set(resolve_check_platforms(config, collection_options, login_states))
+		# v37②a（补）：缺页只对“这次明确选了的平台”报错。默认顺序/
+		# 配置启用带进来的平台缺页只警告——全新/默认配置下四个平台
+		# 默认全开，要求四个标签页全开才能过预检会把所有人都拦住；
+		# 用户“任意可用平台已就绪即可跑”，没准备好的平台采集时跳过。
+		# 没带 platform_order_explicit 标记的手写 options 视为明确选择
+		# （旧行为：缺页报错），只有 normalize 明确标了非显式才降级。
+		if isinstance(collection_options, dict) and "platform_order_explicit" in collection_options:
+			explicit_selection = bool(collection_options["platform_order_explicit"])
+		elif isinstance(collection_options, dict) and collection_options.get("platform_order"):
+			explicit_selection = True
+		else:
+			explicit_selection = False
+		platform_status = "error" if explicit_selection else "warning"
 		if "boss" in selected_platforms:
 			boss_tab = result.get("boss_tab")
 			if boss_tab:
@@ -546,30 +624,32 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 			if state == "ready":
 				checks.append(_check("zhilian_tab", "智联招聘页面", "pass", "智联搜索页可用，未发现登录墙", "采集不会点击投递或申请按钮。"))
 			elif state == "login_required":
-				checks.append(_check("zhilian_login", "智联招聘登录", "error", "智联页面要求登录", "请在已连接的浏览器中完成智联登录后重新检查。", "browser"))
+				checks.append(_check("zhilian_login", "智联招聘登录", platform_status, "智联页面要求登录", "请在已连接的浏览器中完成智联登录后重新检查。", "browser"))
 			elif state == "blocked":
-				checks.append(_check("zhilian_blocked", "智联页面状态", "error", "智联页面受到拦截", str(page_state.get("message") or "请人工处理验证码、频率限制或账号异常。"), "browser"))
+				checks.append(_check("zhilian_blocked", "智联页面状态", platform_status, "智联页面受到拦截", str(page_state.get("message") or "请人工处理验证码、频率限制或账号异常。"), "browser"))
 			elif state == "missing":
 				if _login_state(login_states, "zhilian") == "logged_in":
 					# 已登录却没打开页面：开始任务时会自动打开，降级为 warning，不拦。
 					checks.append(_check("zhilian_tab", "智联招聘页面", "warning", "未发现已打开的智联招聘页面，开始任务时会自动打开", "智联已登录，开始任务时会自动打开对应的页面。", "browser"))
 				else:
-					checks.append(_check("zhilian_tab", "智联招聘页面", "error", "未发现已打开的智联招聘页面", "请在已连接的浏览器中打开已登录的智联职位页后重新检查。", "browser"))
+					checks.append(_check("zhilian_tab", "智联招聘页面", platform_status, "未发现已打开的智联招聘页面", "请在已连接的浏览器中打开已登录的智联职位页后重新检查。", "browser"))
 			else:
-				checks.append(_check("zhilian_page", "智联页面结构", "error", "未识别到智联搜索页", str(page_state.get("message") or "请打开智联职位搜索页后重新检查。"), "browser"))
+				checks.append(_check("zhilian_page", "智联页面结构", platform_status, "未识别到智联搜索页", str(page_state.get("message") or "请打开智联职位搜索页后重新检查。"), "browser"))
 		if "51job" in selected_platforms:
-			checks.extend(_platform_page_checks(result, "51job", "前程无忧", login_states))
+			checks.extend(_platform_page_checks(result, "51job", "前程无忧", login_states, platform_status))
 		if "liepin" in selected_platforms:
-			checks.extend(_platform_page_checks(result, "liepin", "猎聘", login_states))
+			checks.extend(_platform_page_checks(result, "liepin", "猎聘", login_states, platform_status))
 	return checks
 
 
-def _platform_page_checks(result: dict, platform: str, display: str, login_states: dict | None = None) -> list[dict[str, str]]:
+def _platform_page_checks(result: dict, platform: str, display: str, login_states: dict | None = None, missing_status: str = "error") -> list[dict[str, str]]:
 	"""Login checks for 51job / Liepin, mirroring the Zhilian DOM check.
 
 	只读已打开标签页的 DOM 状态（diagnostics 已查好放在 result 里），
 	不新开页面：ready=已登录可用，login_required=要求登录，
 	block=拦截，missing=没打开该平台页面，其他=结构未识别。
+	missing_status：缺页/要求登录/被拦截时的严重程度——明确选了该
+	平台时是 error，没明确选时调用方传 warning，不拦其他平台。
 	"""
 	tab_key = "job51_tab" if platform == "51job" else "liepin_tab"
 	page_key = "job51_page" if platform == "51job" else "liepin_page"
@@ -580,15 +660,15 @@ def _platform_page_checks(result: dict, platform: str, display: str, login_state
 	if state == "ready":
 		return [_check(f"{platform}_tab", f"{display}页面", "pass", f"{display}搜索页可用，未发现登录墙", "采集不会点击投递或申请按钮。")]
 	if state == "login_required":
-		return [_check(f"{platform}_login", f"{display}登录", "error", f"{display}页面要求登录", f"请在已连接的浏览器中完成{display}登录后重新检查。", "browser")]
+		return [_check(f"{platform}_login", f"{display}登录", missing_status, f"{display}页面要求登录", f"请在已连接的浏览器中完成{display}登录后重新检查。", "browser")]
 	if state == "blocked":
-		return [_check(f"{platform}_blocked", f"{display}页面状态", "error", f"{display}页面受到拦截", message or "请人工处理验证码、频率限制或账号异常。", "browser")]
+		return [_check(f"{platform}_blocked", f"{display}页面状态", missing_status, f"{display}页面受到拦截", message or "请人工处理验证码、频率限制或账号异常。", "browser")]
 	if state == "missing":
 		if _login_state(login_states, platform) == "logged_in":
 			# 已登录却没打开页面：开始任务时会自动打开，降级为 warning，不拦。
 			return [_check(f"{platform}_tab", f"{display}页面", "warning", f"未发现已打开的{display}页面，开始任务时会自动打开", f"{display}已登录，开始任务时会自动打开对应的页面。", "browser")]
-		return [_check(f"{platform}_tab", f"{display}页面", "error", f"未发现已打开的{display}页面", f"请在已连接的浏览器中打开已登录的{display}职位页后重新检查。", "browser")]
-	return [_check(f"{platform}_page", f"{display}页面结构", "error", f"未识别到{display}搜索页", message or f"请打开{display}职位搜索页后重新检查。", "browser")]
+		return [_check(f"{platform}_tab", f"{display}页面", missing_status, f"未发现已打开的{display}页面", f"请在已连接的浏览器中打开已登录的{display}职位页后重新检查。", "browser")]
+	return [_check(f"{platform}_page", f"{display}页面结构", missing_status, f"未识别到{display}搜索页", message or f"请打开{display}职位搜索页后重新检查。", "browser")]
 
 
 # ─── 平台登录态：从诊断结果推导并持久化 ─────────────────────────

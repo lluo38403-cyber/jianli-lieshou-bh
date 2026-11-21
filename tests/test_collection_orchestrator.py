@@ -381,6 +381,29 @@ class CollectionOrchestratorTests(TestCase):
         })
         self.assertEqual(result["platform_order"], ["boss"])
 
+    def test_disabled_boss_is_not_in_implicit_default_queue(self):
+        # v37②a：BOSS 显式禁用时，默认顺序不再硬塞 BOSS。
+        result = normalize_collection_options({
+            "search": {"keywords": ["后端"], "cities": ["北京"]},
+            "collection": {"default_order": ["boss", "zhilian", "51job", "liepin"]},
+            "platforms": {
+                "boss": {"enabled": False, "search": {"keywords": ["后端"], "cities": ["北京"]}},
+                "zhilian": {"enabled": True, "search": {"keywords": ["后端"], "cities": ["北京"]}},
+                "51job": {"enabled": False},
+                "liepin": {"enabled": False},
+            },
+            "profile": {"target_cities": ["北京"]},
+        })
+        self.assertEqual(result["platform_order"], ["zhilian"])
+
+    def test_all_disabled_platforms_keep_legacy_boss_fallback(self):
+        result = normalize_collection_options({
+            "search": {"keywords": ["后端"], "cities": ["北京"]},
+            "collection": {"default_order": ["boss", "zhilian"]},
+            "platforms": {"boss": {"enabled": False}, "zhilian": {"enabled": False}},
+        })
+        self.assertEqual(result["platform_order"], ["boss"])
+
 
 class ValidateCollectionOptionsTests(TestCase):
     """validate_collection_options 错误路径覆盖。"""

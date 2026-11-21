@@ -666,16 +666,27 @@ def build_update_script() -> str:
     before the errorlevel check), so the next copy failure names
     its cause in the log instead of guessing.
 
-    No bare console program in this file: CREATE_NO_WINDOW on the
-    directly created cmd.exe does NOT hide the grandchildren it
-    launches (robocopy / ping / taskkill would each allocate their own
-    visible console — the black window users saw). Every console call
-    therefore runs inside `powershell -WindowStyle Hidden -Command`,
-    whose hidden console the child inherits; delays use Start-Sleep
-    inside the same hidden PowerShell instead of ping, and robocopy's
-    exit code is carried out with `exit $LASTEXITCODE` so the
-    `set "RC=%errorlevel%"` lines still see the real robocopy code.
-    `start /min` is not a substitute (still visible on the taskbar).
+    No bare console program in this file. Root cause (v37): CREATE_NO_WINDOW
+    on the directly created cmd.exe does NOT hide the grandchildren it
+    launches — each powershell / robocopy / taskkill would allocate its
+    own visible console, and `powershell -WindowStyle Hidden` only hides
+    its window after it is created, so every spawn flashes once; the wait
+    loop spawns PowerShell twice a second, which is the "black window
+    keeps flashing" users reported (2026-11-22). The fix is at the
+    launcher: apply_update starts cmd.exe with CREATE_NEW_CONSOLE plus a
+    STARTUPINFO whose wShowWindow is SW_HIDE, so cmd is born with a
+    hidden console and every grandchild inherits it instead of allocating
+    a new window. Every console call still also runs inside
+    `powershell -WindowStyle Hidden -Command` as a second layer (it is
+    what hides the window when the bat is double-clicked by hand with no
+    hidden console to inherit); delays use Start-Sleep inside the same
+    hidden PowerShell instead of ping, and robocopy's exit code is
+    carried out with `exit $LASTEXITCODE` so the `set "RC=%errorlevel%"`
+    lines still see the real robocopy code. `start /min` is not a
+    substitute (still visible on the taskbar). The exe itself is
+    relaunched with PowerShell `Start-Process` (no -WindowStyle: the
+    windowed exe shows its panel normally and allocates no console),
+    never with bare `start`.
 
     Before any copy, :procsweep kills processes by ExecutablePath, not
     by image name: the browser runtime's node.exe
@@ -721,13 +732,18 @@ def build_update_script() -> str:
         "rem 进程还活着：上游命令早退出了，它还在等管道输入不返回。\r\n"
         "rem 改用 PowerShell 按 PID+进程名直接查（无管道），每次约\r\n"
         "rem 1 秒，60 次上限仍在一到两分钟里。\r\n"
-        "rem 黑窗口：CREATE_NO_WINDOW 只让直接创建的 cmd 不开窗口，cmd 拉起的\r\n"
-        "rem robocopy / ping / taskkill 是控制台程序，没有可继承的控制台时会\r\n"
-        "rem 自己分配可见窗口——这就是 v1.1.9 用户看到的黑窗口。所以 bat 里\r\n"
-        "rem 所有控制台调用都经 powershell -WindowStyle Hidden 走：隐藏的\r\n"
-        "rem PowerShell 自带隐藏控制台，子进程继承它、不再自己开可见窗口；\r\n"
-        "rem 延时不用 ping，改用隐藏 PowerShell 里的 Start-Sleep；输出照旧\r\n"
-        "rem 重定向到 update.log。start /min 不接受（任务栏仍可见）。\r\n"
+        "rem 黑窗口（v37 根因）：CREATE_NO_WINDOW 只让直接创建的 cmd 不开\r\n"
+        "rem 窗口，cmd 拉起的孙进程（PowerShell / robocopy / taskkill）各自\r\n"
+        "rem 会新开黑框；powershell -WindowStyle Hidden 只是窗口建出来后\r\n"
+        "rem 再藏起来，建窗到藏窗之间会闪一下，等主进程的轮询一秒调两次\r\n"
+        "rem PowerShell，黑框就一直闪、一直弹。根治在发起方：apply_update\r\n"
+        "rem 起 cmd 时带 CREATE_NEW_CONSOLE + SW_HIDE，让 cmd 出生就带一个\r\n"
+        "rem 隐藏控制台，孙进程继承它、不再自己分配窗口。bat 里每行控制台\r\n"
+        "rem 调用仍经 powershell -WindowStyle Hidden 走（第二层：直接双击\r\n"
+        "rem bat 时没有隐藏控制台可继承，靠它兜底）；延时用隐藏 PowerShell\r\n"
+        "rem 里的 Start-Sleep，不用 ping；输出照旧重定向到 update.log。\r\n"
+        "rem start /min 不接受（任务栏仍可见）；重拉 exe 用 Start-Process，\r\n"
+        "rem 不带 -WindowStyle（窗口 exe 正常显示面板、不分配控制台）。\r\n"
         "rem 占住文件的进程：主程序退出时不杀子进程，浏览器运行时的 node.exe\r\n"
         "rem （安装目录下 _internal\\patchright\\driver\\node.exe）会变成孤儿，\r\n"
         "rem :procsweep 只杀同名 exe 杀不到它，robocopy 换 _internal 就失败。\r\n"
@@ -745,7 +761,7 @@ def build_update_script() -> str:
         "rem 又双击打开了旧版）。\r\n"
         "rem 换完重开要核实：新 exe 拉起来不等于起来了（run 44758466045：\r\n"
         "rem robocopy 两次退出码都是 3、log 说“换好了”、结果写 applied，\r\n"
-        "rem 但 8686 上 180 秒都没报新版、也没有 exe 在跑——裸 start 把\r\n"
+        "rem 但 8686 上 180 秒都没报新版、也没有 exe 在跑——拉起命令把\r\n"
         "rem 拉起失败静默吞掉了）。所以拉起后轮询 %PORT% /api/health 等\r\n"
         "rem 期望版本（最多约 180 秒），等到了才写 applied、删 staging；\r\n"
         "rem 等不到先探端口：已有实例在应答就只写 failed/nostart、不再拉、\r\n"
@@ -753,7 +769,7 @@ def build_update_script() -> str:
         "rem 再等 60 秒，还不起来就走 :rollback 换回旧版、按\r\n"
         "rem failed/nostart_rolled_back 写结果（S-1：坏新版绝不能永久换掉\r\n"
         "rem 能用的旧版）；staging 在任何失败路径都不删。\r\n"
-        "rem 回滚重开也要核实：:fail_write 以前先写结果再裸 start 重拉旧版，\r\n"
+        "rem 回滚重开也要核实：:fail_write 以前先写结果再直接重拉旧版，\r\n"
         "rem 旧版拉不起来也照写 copy/stuck，用户看到的还是“旧版本还能用”。\r\n"
         "rem 现在照成功分支的写法：重拉旧 exe 后轮询 %PORT% /api/health 等\r\n"
         "rem 旧版本号 %CURRENT%（最多约 180 秒），等到了才按原原因码写 failed、\r\n"
@@ -832,7 +848,7 @@ def build_update_script() -> str:
         'if %RC% geq 8 goto :rollback\r\n'
         'if not exist "%INSTALL_DIR%\\%EXE_NAME%" goto :rollback\r\n'
         'echo [%date% %time%] 换好了，正在重新打开... >> "%LOG%"\r\n'
-        'start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Process -FilePath \'%INSTALL_DIR%\\%EXE_NAME%\' -WorkingDirectory \'%INSTALL_DIR%\'" >> "%LOG%" 2>&1\r\n'
         'echo [%date% %time%] 新版本已拉起，正在等它在 %PORT% 上报到期望版本（最多等 180 秒）... >> "%LOG%"\r\n'
         "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$deadline = (Get-Date).AddSeconds(180); $ok = $false; $seen = ''; while ((Get-Date) -lt $deadline) { try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health' -TimeoutSec 5; $seen = $h.version; if ($seen -eq '%EXPECTED%') { $ok = $true; break } } catch { $seen = '' }; Start-Sleep -Seconds 3 }; Write-Output ('health poll: ok=' + $ok + ' last_seen_version=' + $seen); if ($ok) { exit 0 } else { exit 1 }\" >> \"%LOG%\" 2>&1\r\n"
         'set "HEALTH_RC=%errorlevel%"\r\n'
@@ -849,7 +865,7 @@ def build_update_script() -> str:
         'set "PROBE_RC=%errorlevel%"\r\n'
         'if %PROBE_RC% equ 0 goto :fail_nostart_answered\r\n'
         'echo [%date% %time%] 再拉一次新版本（最后一次重试机会），安装包留着、不用重新下载。 >> "%LOG%"\r\n'
-        'start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
+        'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Process -FilePath \'%INSTALL_DIR%\\%EXE_NAME%\' -WorkingDirectory \'%INSTALL_DIR%\'" >> "%LOG%" 2>&1\r\n'
         'echo [%date% %time%] 第二次拉起后继续等新版本（最多 60 秒），还不起来就换回旧版本。 >> "%LOG%"\r\n'
         "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$deadline = (Get-Date).AddSeconds(60); $ok = $false; $seen = ''; while ((Get-Date) -lt $deadline) { try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health' -TimeoutSec 5; $seen = $h.version; if ($seen -eq '%EXPECTED%') { $ok = $true; break } } catch { $seen = '' }; Start-Sleep -Seconds 3 }; Write-Output ('health poll (retry): ok=' + $ok + ' last_seen_version=' + $seen); if ($ok) { exit 0 } else { exit 1 }\" >> \"%LOG%\" 2>&1\r\n"
         'set "HEALTH2_RC=%errorlevel%"\r\n'
@@ -919,7 +935,7 @@ def build_update_script() -> str:
         'echo [%date% %time%] 更新没换成，正在重开旧版本并确认它起来了... >> "%LOG%"\r\n'
         'powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "if (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension(\'%EXE_NAME%\')) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" <nul\r\n'
         "if %errorlevel% equ 0 goto :fail_poll\r\n"
-        'if exist "%INSTALL_DIR%\\%EXE_NAME%" start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
+        'if exist "%INSTALL_DIR%\\%EXE_NAME%" powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Process -FilePath \'%INSTALL_DIR%\\%EXE_NAME%\' -WorkingDirectory \'%INSTALL_DIR%\'" >> "%LOG%" 2>&1\r\n'
         ":fail_poll\r\n"
         'echo [%date% %time%] 旧版本已拉起，正在等它在 %PORT% 上报到旧版本（最多等 180 秒）... >> "%LOG%"\r\n'
         "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$deadline = (Get-Date).AddSeconds(180); $ok = $false; $seen = ''; while ((Get-Date) -lt $deadline) { try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health' -TimeoutSec 5; $seen = $h.version; if (($seen -eq '%CURRENT%') -or ('%CURRENT%' -eq '' -and $seen -ne '' -and $seen -ne '%EXPECTED%')) { $ok = $true; break } } catch { $seen = '' }; Start-Sleep -Seconds 3 }; Write-Output ('health poll: ok=' + $ok + ' last_seen_version=' + $seen); if ($ok) { exit 0 } else { exit 1 }\" >> \"%LOG%\" 2>&1\r\n"
@@ -941,7 +957,7 @@ def build_update_script() -> str:
         "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT%/api/health' -TimeoutSec 5; exit 0 } catch { exit 1 }\" <nul\r\n"
         'set "PROBE_RC=%errorlevel%"\r\n'
         'if %PROBE_RC% equ 0 echo [%date% %time%] 端口 %PORT% 上已有实例在应答，不再重复拉起。 >> "%LOG%"\r\n'
-        'if %PROBE_RC% neq 0 if exist "%INSTALL_DIR%\\%EXE_NAME%" start "" "%INSTALL_DIR%\\%EXE_NAME%"\r\n'
+        'if %PROBE_RC% neq 0 if exist "%INSTALL_DIR%\\%EXE_NAME%" powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Process -FilePath \'%INSTALL_DIR%\\%EXE_NAME%\' -WorkingDirectory \'%INSTALL_DIR%\'" >> "%LOG%" 2>&1\r\n'
         ":fail_exit\r\n"
         '(goto) 2>nul & del "%~f0"\r\n'
     )
@@ -1156,6 +1172,11 @@ def consume_pending_update(install_dir: str | Path, port: Any = None) -> dict | 
         pending_path.unlink()
     except OSError:
         pass
+    # 兜底清残留 update.bat：能走到这里说明 bat 已死（上面 _bat_is_alive
+    # 为 False 时才继续；为 True 时已提前返回 in_progress），它不会再写
+    # verdict、也不会自删；文件留着只会让下次核对误会。bat 合法耗时到
+    # 顶约 8 分钟、15 分钟才判死，活 bat 不会被删到这里。
+    _remove_quietly(Path(install_dir) / "update.bat")
     expected = pending.get("expected_version") if isinstance(pending, dict) else None
     bat_result = read_update_result(install_dir)
     bat_status = bat_result.get("status") if isinstance(bat_result, dict) else None
@@ -1639,36 +1660,65 @@ def _restore_from_cache(install_dir: str | Path, info: dict) -> bool:
     return True
 
 
-# Windows 创建标志的真实值（CREATE_NO_WINDOW 0x08000000、
-# DETACHED_PROCESS 0x00000008、CREATE_NEW_PROCESS_GROUP 0x00000200）。
+# Windows 创建标志的真实值（CREATE_NEW_CONSOLE 0x00000010、
+# CREATE_NEW_PROCESS_GROUP 0x00000200；STARTUPINFO 里
+# STARTF_USESHOWWINDOW 0x00000001、SW_HIDE 0）。
 # getattr 的 fallback 写死真实值：这样 helper 在 Windows 上是对的，
 # 在 Linux/macOS 上也能跑测试（那里的 subprocess 没有这些属性）。
-_NO_WINDOW_FLAG = 0x08000000
-_DETACHED_PROCESS_FLAG = 0x00000008
+_CREATE_NEW_CONSOLE_FLAG = 0x00000010
 _NEW_PROCESS_GROUP_FLAG = 0x00000200
+_STARTF_USESHOWWINDOW_FLAG = 0x00000001
+_SW_HIDE = 0
+
+
+class _HiddenConsoleStartupInfo:
+    """subprocess.STARTUPINFO 不存在时（Linux 跑测试）的替身：只留
+    Popen 在 Windows 上读的两个字段，让测试能钉住它们。真 Windows
+    上一定走真的 STARTUPINFO，Popen 只认它。"""
+
+    def __init__(self) -> None:
+        self.dwFlags = 0
+        self.wShowWindow = 0
 
 
 def _windows_launch_flags() -> int:
-    """update.bat 的启动标志：不带控制台窗口。
+    """update.bat 的启动标志：给它一个从出生就隐藏的控制台。
 
-    只用 DETACHED_PROCESS 不够：detached 的 cmd 自己没有控制台，它再
-    拉起的 ping / PowerShell / robocopy / taskkill 各自会新开一个黑框
-    （v1.0.8 用户实拍：findstr /C:"2108" 黑框弹在面板前面——旧 bat
-    的 tasklist | findstr 里 findstr 卡在等管道输入，自己的黑框一直
-    挂在前面）。CREATE_NO_WINDOW 只作用于直接创建的 cmd.exe：它能
-    让 cmd 本身不开窗口，但 cmd 拉起的孙进程（robocopy / ping /
-    taskkill / PowerShell）并不会因此也不开窗口——旧注释称
-    CREATE_NO_WINDOW 能让孙进程也不开窗口，这个说法是错的。孙进程
-    的黑窗口靠 bat 里解决：所有控制台调用都经
-    powershell -WindowStyle Hidden 调用，隐藏的 PowerShell 自带
-    隐藏控制台，子进程继承它、不再自己开可见窗口。bat 的输出本来
-    就写 update.log，不靠控制台看。
+    根因（v37 实测核对）：CREATE_NO_WINDOW 只让直接创建的 cmd 不开
+    窗口，cmd 拉起的孙进程（PowerShell / robocopy / taskkill）各自会
+    新开一个黑框——powershell -WindowStyle Hidden 只是窗口建出来后
+    再藏起来，建窗到藏窗之间会闪一下；等主进程的轮询一秒调两次
+    PowerShell，黑框就一直闪、一直弹（用户 2026-11-22 原话）。旧注
+    释称 CREATE_NO_WINDOW 能让孙进程也不开窗口，这个说法是错的。
+    CREATE_NEW_CONSOLE + STARTUPINFO(SW_HIDE) 让 cmd 出生就带一个隐
+    藏控制台：孙进程继承这个已隐藏的控制台，不再自己分配窗口，也就
+    没有闪。CREATE_NO_WINDOW / DETACHED_PROCESS 与 CREATE_NEW_CONSOLE
+    互斥，不能同用（前两者 = 不要控制台，后者 = 新建一个控制台）。
+    CREATE_NEW_PROCESS_GROUP 保留（Ctrl+C 隔离）。bat 里每行
+    powershell -WindowStyle Hidden 是第二层（直接双击 bat 时没有隐
+    藏控制台可继承，靠它兜底），不是根治。
     """
     return (
-        getattr(subprocess, "CREATE_NO_WINDOW", _NO_WINDOW_FLAG)
-        | getattr(subprocess, "DETACHED_PROCESS", _DETACHED_PROCESS_FLAG)
+        getattr(subprocess, "CREATE_NEW_CONSOLE", _CREATE_NEW_CONSOLE_FLAG)
         | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", _NEW_PROCESS_GROUP_FLAG)
     )
+
+
+def _windows_hidden_console_startupinfo():
+    """STARTUPINFO：update.bat 的新控制台出生即隐藏。
+
+    wShowWindow=SW_HIDE 只对 CREATE_NEW_CONSOLE 建出来的控制台生
+    效——这正是 _windows_launch_flags 的用法（start /min 就是靠它
+    把控制台窗口最小化，同理 SW_HIDE 让它出生即隐藏）。非 Windows
+    返回 None（Popen 忽略）。
+    """
+    if not _is_windows():
+        return None
+    si_cls = getattr(subprocess, "STARTUPINFO", None)
+    si = si_cls() if si_cls is not None else _HiddenConsoleStartupInfo()
+    si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", _STARTF_USESHOWWINDOW_FLAG)
+    si.wShowWindow = getattr(subprocess, "SW_HIDE", _SW_HIDE)
+    return si
 
 
 def _is_windows() -> bool:
@@ -2110,13 +2160,23 @@ def apply_update(install_dir: str | Path, exe_name: str) -> Path:
             ["cmd.exe", "/c", str(bat_path), str(staging_dir), exe_name, str(os.getpid()),
              expected_version, backup_name, __version__, str(RELAUNCH_PORT)],
             creationflags=flags,
+            # v37 黑窗口根治：cmd 出生就带一个隐藏控制台（CREATE_NEW_CONSOLE
+            # + SW_HIDE，见 _windows_hidden_console_startupinfo），bat 拉起的
+            # 每个孙进程都继承它、不再自己分配可见窗口；只传 CREATE_NO_WINDOW
+            # 管不住孙进程（每次拉起 PowerShell 都会闪一下）。
+            startupinfo=_windows_hidden_console_startupinfo(),
             close_fds=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
     except Exception:
+        # bat 没拉起来：pending 和刚写好的 bat 都清掉——残留的 bat 不
+        # 能留给下次核对误会（is_update_in_progress 要求 pending +
+        # 新鲜 bat 两者齐全才算进行中，缺 pending 已不算，但文件本身
+        # 不该留着）。
         _remove_quietly(install / UPDATE_PENDING_FILENAME)
+        _remove_quietly(bat_path)
         _UPDATE_APPLYING = False
         # H-2：bat 没拉起来 = 这次更新没换成，状态放回 ready，
         # 用户还能点重试；不能留在 applying 里卡死。

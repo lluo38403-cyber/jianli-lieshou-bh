@@ -131,17 +131,31 @@ def normalize_collection_options(config: dict[str, Any], raw_options: dict[str, 
             raise ValueError("城市产出策略仅支持 BOSS")
 
     order = supplied.get("platform_order")
+    explicit_order = isinstance(order, list)
     if order is None:
         configured_order = config.get("collection", {}).get("default_order") if isinstance(config.get("collection"), dict) else None
         order = configured_order if isinstance(configured_order, list) else ["boss"]
-        if not supplied:
-            enabled_platforms = {"boss"}
-            for platform, value in configured_platforms.items():
-                if isinstance(value, dict) and value.get("enabled"):
-                    enabled_platforms.add(str(platform))
+    if not explicit_order:
+        # v37②a：没明确指定顺序时，按配置里启用的平台过滤默认顺序。
+        # BOSS 只有显式 enabled=false 才排除（以前 enabled 集合里写死
+        # 了 {"boss"}，关了 BOSS 还照跑 BOSS）；其余平台只认显式启用。
+        # 配置里一个都没启用时沿用旧兜底 ["boss"]，不让全新/旧配置
+        # 直接报错。
+        enabled_platforms: set[str] = set()
+        for platform, value in configured_platforms.items():
+            if isinstance(value, dict) and value.get("enabled"):
+                enabled_platforms.add(str(platform))
+        boss_entry = configured_platforms.get("boss")
+        if not (isinstance(boss_entry, dict) and boss_entry.get("enabled") is False):
+            enabled_platforms.add("boss")
+        if enabled_platforms:
             order = [platform for platform in order if platform in enabled_platforms]
             if not order:
-                order = ["boss"]
+                order = [platform for platform in ("boss", "zhilian", "51job", "liepin") if platform in enabled_platforms]
+        else:
+            order = ["boss"]
+    if not order and not explicit_order:
+        order = ["boss"]
     order = [str(value).strip() for value in order if str(value).strip()] if isinstance(order, list) else []
     selected_platforms = supplied.get("platforms") if isinstance(supplied.get("platforms"), dict) else None
     if supplied and selected_platforms is not None:
@@ -163,6 +177,10 @@ def normalize_collection_options(config: dict[str, Any], raw_options: dict[str, 
         }}
         if conflict := internship_config_error(effective):
             raise ValueError(conflict)
+    # v37②a：记下平台顺序是不是用户这次明确选的。预检里缺页的严重
+    # 程度按它区分：明确选了的平台缺页才报错（用户点名要它）；默认/
+    # 启用带进来的平台缺页只警告，不拦其他平台跑。
+    normalized["platform_order_explicit"] = explicit_order
     return normalized
 
 

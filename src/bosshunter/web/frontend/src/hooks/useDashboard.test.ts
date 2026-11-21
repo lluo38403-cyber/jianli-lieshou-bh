@@ -196,16 +196,21 @@ describe('platform login states', () => {
     '51job': { status: 'unknown' },
     liepin: { status: 'unknown' },
   }
+  // v37②b：按后端 /api/browser/diagnostics 的真实形状 mock——原始诊断
+  // 在 diagnostics 信封字段里，不在顶层。以前这里 mock 的是扁平形状，
+  // 测不出 derive 收不到 chrome 的 bug。
   const diagnosticsAllReady = {
     ok: true,
-    chrome: true,
-    boss_tab: { targetId: '1', url: 'https://www.zhipin.com/web/geek/job' },
-    zhilian_tab: { targetId: '2', url: 'https://www.zhaopin.com/' },
-    zhilian_page: { status: 'ready', message: '已发现智联搜索框，未发现登录墙' },
-    job51_tab: { targetId: '3', url: 'https://we.51job.com/pc/search' },
-    job51_page: { status: 'ready', message: '已发现前程无忧搜索框，未发现登录墙' },
-    liepin_tab: { targetId: '4', url: 'https://www.liepin.com/zhaopin/' },
-    liepin_page: { status: 'ready', message: '已发现猎聘搜索框，未发现登录墙' },
+    diagnostics: {
+      chrome: true,
+      boss_tab: { targetId: '1', url: 'https://www.zhipin.com/web/geek/job' },
+      zhilian_tab: { targetId: '2', url: 'https://www.zhaopin.com/' },
+      zhilian_page: { status: 'ready', message: '已发现智联搜索框，未发现登录墙' },
+      job51_tab: { targetId: '3', url: 'https://we.51job.com/pc/search' },
+      job51_page: { status: 'ready', message: '已发现前程无忧搜索框，未发现登录墙' },
+      liepin_tab: { targetId: '4', url: 'https://www.liepin.com/zhaopin/' },
+      liepin_page: { status: 'ready', message: '已发现猎聘搜索框，未发现登录墙' },
+    },
   }
 
   it('refreshPlatformLogin only refreshes login states, not the whole page', async () => {
@@ -255,7 +260,7 @@ describe('platform login states', () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url === '/api/browser/diagnostics' && init?.method === 'POST') {
-        return jsonResponse({ ok: false, chrome: false, error_kind: 'connection_failed', message: '浏览器已经装好了，但是现在连不上。' })
+        return jsonResponse({ ok: false, diagnostics: { chrome: false }, error_kind: 'connection_failed', message: '浏览器已经装好了，但是现在连不上。' })
       }
       if (url === '/api/workbench') return jsonResponse({ platform_login: oldLogin })
       return jsonResponse({})
@@ -297,7 +302,7 @@ describe('platform login states', () => {
       const url = String(input)
       if (url === '/api/browser/diagnostics' && init?.method === 'POST') {
         return diagnosticsMode === 'fail'
-          ? jsonResponse({ ok: false, chrome: false, error_kind: 'connection_failed', message: '浏览器已经装好了，但是现在连不上。' })
+          ? jsonResponse({ ok: false, diagnostics: { chrome: false }, error_kind: 'connection_failed', message: '浏览器已经装好了，但是现在连不上。' })
           : jsonResponse(diagnosticsAllReady)
       }
       if (url === '/api/workbench') return jsonResponse({ platform_login: oldLogin })
@@ -323,7 +328,7 @@ describe('platform login states', () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url === '/api/browser/diagnostics' && init?.method === 'POST') {
-        return jsonResponse({ ok: false, chrome: false, error_kind: 'connection_failed', message: '浏览器已经装好了，但是现在连不上。' })
+        return jsonResponse({ ok: false, diagnostics: { chrome: false }, error_kind: 'connection_failed', message: '浏览器已经装好了，但是现在连不上。' })
       }
       if (url === '/api/workbench') return jsonResponse(workbenchPayload)
       return jsonResponse({})

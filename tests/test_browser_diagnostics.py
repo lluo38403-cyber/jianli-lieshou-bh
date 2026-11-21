@@ -45,6 +45,63 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["boss_tab"]["title"], "BOSS直聘")
         self.assertEqual(result["runtime_url"], "http://127.0.0.1:3456")
 
+    @patch("bosshunter.browser.diagnostics.evaluate")
+    @patch("bosshunter.browser.diagnostics.runtime_health")
+    @patch("bosshunter.browser.diagnostics.runtime_targets")
+    @patch("bosshunter.browser.diagnostics.ensure_runtime")
+    @patch("bosshunter.browser.diagnostics.check_node_available")
+    def test_multi_tab_prefers_logged_in_page_over_login_wall(
+        self, check_node, ensure_runtime, runtime_targets, runtime_health, evaluate
+    ):
+        # v37②b：同站多个标签页时（登录页 + 已登录的搜索页并存），只查
+        # 第一个会把已登录误判成未登录——取状态最好的那一页。
+        from bosshunter.browser.diagnostics import run_browser_diagnostics
+
+        check_node.return_value = {"available": True, "version": "v22.1.0"}
+        ensure_runtime.return_value = True
+        runtime_health.return_value = {"runtime": "bosshunter", "browserName": "Google Chrome"}
+        runtime_targets.return_value = [
+            {"targetId": "1", "url": "https://www.zhipin.com/web/user/login", "title": "登录"},
+            {"targetId": "2", "url": "https://www.zhipin.com/web/geek/job", "title": "BOSS直聘"},
+            {"targetId": "3", "url": "https://www.zhaopin.com/", "title": "智联"},
+            {"targetId": "4", "url": "https://www.zhaopin.com/job/", "title": "智联职位"},
+        ]
+
+        def _page_state(target_id, script, timeout=5):
+            if target_id == "3":
+                return {"status": "login_required", "message": "智联页面要求登录"}
+            return {"status": "ready", "message": "已发现智联搜索框，未发现登录墙"}
+
+        evaluate.side_effect = _page_state
+
+        result = run_browser_diagnostics({"browser": {"proxy_port": 3456}})
+
+        # BOSS：登录页在前，已登录的岗位页在后——取岗位页。
+        self.assertEqual(result["boss_tab"]["targetId"], "2")
+        # 智联：登录墙页在前，已登录的搜索页在后——取搜索页。
+        self.assertEqual(result["zhilian_tab"]["targetId"], "4")
+        self.assertEqual(result["zhilian_page"]["status"], "ready")
+
+    @patch("bosshunter.browser.diagnostics.runtime_health")
+    @patch("bosshunter.browser.diagnostics.runtime_targets")
+    @patch("bosshunter.browser.diagnostics.ensure_runtime")
+    @patch("bosshunter.browser.diagnostics.check_node_available")
+    def test_boss_tab_falls_back_to_login_page_when_nothing_else_open(
+        self, check_node, ensure_runtime, runtime_targets, runtime_health
+    ):
+        from bosshunter.browser.diagnostics import run_browser_diagnostics
+
+        check_node.return_value = {"available": True, "version": "v22.1.0"}
+        ensure_runtime.return_value = True
+        runtime_health.return_value = {"runtime": "bosshunter", "browserName": "Google Chrome"}
+        runtime_targets.return_value = [
+            {"targetId": "1", "url": "https://www.zhipin.com/web/user/login", "title": "登录"},
+        ]
+
+        result = run_browser_diagnostics({"browser": {"proxy_port": 3456}})
+
+        self.assertEqual(result["boss_tab"]["targetId"], "1")
+
     @patch("bosshunter.browser.diagnostics.runtime_targets")
     @patch("bosshunter.browser.diagnostics.runtime_health")
     @patch("bosshunter.browser.diagnostics.ensure_runtime")

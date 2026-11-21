@@ -8,6 +8,7 @@ from bosshunter.web.preflight import (
 	check_browser_connection,
 	collect_preflight_checks,
 	is_boss_login_url,
+	resolve_check_platforms,
 )
 
 
@@ -173,6 +174,82 @@ class BrowserPreflightTests(unittest.TestCase):
 		self.assertFalse(any(check["id"].startswith("boss") for check in checks))
 		self.assertEqual(next(check for check in checks if check["id"] == "zhilian_tab")["status"], "pass")
 
+	def test_resolve_check_platforms_prefers_enabled_platforms_over_boss(self):
+		# v37②a：没给采集参数时不再默认只查 BOSS——查配置里启用的平台。
+		config = {"platforms": {"boss": {"enabled": False}, "zhilian": {"enabled": True}}}
+		self.assertEqual(resolve_check_platforms(config, None), ["zhilian"])
+		# 本次任务明确选的平台优先于配置。
+		self.assertEqual(
+			resolve_check_platforms(config, {"platform_order": ["51job"]}),
+			["51job"],
+		)
+		# 配置没写任何启用信息时，退到实际已登录的平台。
+		self.assertEqual(
+			resolve_check_platforms({}, None, {"liepin": {"status": "logged_in"}}),
+			["liepin"],
+		)
+		# 全都没有才回落到 BOSS 兜底。
+		self.assertEqual(resolve_check_platforms({}, None), ["boss"])
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_no_options_browser_check_uses_enabled_platforms_not_boss(self, diagnostics):
+		# v37②a：“检查一下能不能跑”/只看回复这类不带采集参数的预检，
+		# 以前只查 BOSS（智联已登录也看不见），现在查启用的平台。
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": None,
+			"zhilian_tab": {"targetId": "2"},
+			"zhilian_page": {"status": "ready"},
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+		config = {"platforms": {"boss": {"enabled": False}, "zhilian": {"enabled": True}}}
+
+		checks = check_browser_connection(config, None)
+
+		self.assertFalse(any(check["id"].startswith("boss") for check in checks))
+		self.assertEqual(next(check for check in checks if check["id"] == "zhilian_tab")["status"], "pass")
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_full_preflight_without_options_checks_configured_platforms(self, diagnostics):
+		# v37②a：全流程预检不带参数时，浏览器检查也要跟 full_options
+		# 的平台顺序走，不能只查 BOSS。
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": None,
+			"zhilian_tab": {"targetId": "2"},
+			"zhilian_page": {"status": "ready"},
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+		config = {
+			"search": {"keywords": ["人力"]},
+			"collection": {"default_order": ["boss", "zhilian", "51job", "liepin"]},
+			"platforms": {
+				"boss": {"enabled": False, "search": {"keywords": ["人力"], "cities": ["北京"]}},
+				"zhilian": {"enabled": True, "search": {"keywords": ["人力"], "cities": ["北京"]}},
+				"51job": {"enabled": False},
+				"liepin": {"enabled": False},
+			},
+			"profile": {"target_cities": ["北京"]},
+		}
+
+		checks = collect_preflight_checks("full", config)
+
+		self.assertFalse(any(check["id"].startswith("boss") for check in checks))
+		platform_check = next(check for check in checks if check["id"] == "full_flow_platform")
+		self.assertNotIn("boss", platform_check["detail"])
+		self.assertIn("zhilian", platform_check["detail"])
+		self.assertEqual(next(check for check in checks if check["id"] == "zhilian_tab")["status"], "pass")
+
 	@patch("bosshunter.web.preflight.check_ai_connection")
 	@patch("bosshunter.web.preflight.check_browser_connection")
 	def test_full_flow_uses_only_explicit_full_flow_platform_order(self, browser_check, ai_check):
@@ -192,6 +269,76 @@ class BrowserPreflightTests(unittest.TestCase):
 		self.assertEqual(platform_check["status"], "pass")
 		self.assertIn("执行顺序：boss", platform_check["detail"])
 		self.assertIn("只有支持投递的平台", platform_check["detail"])
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_implicit_platforms_missing_tabs_are_warnings_not_errors(self, diagnostics):
+		# v37②a（补）：默认/启用带进来的平台缺页只警告，不拦预检。
+		# 全新/默认配置下四个平台默认全开，浏览器连上但一个标签页
+		# 都没开时，full 预检必须通过（旧契约：只有 BOSS 警告）。
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": None,
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+		import tempfile
+		from pathlib import Path
+
+		with tempfile.TemporaryDirectory() as tmp:
+			resume_path = Path(tmp) / "resume.md"
+			resume_path.write_text("# Resume", encoding="utf-8")
+			config = {
+				"search": {"keywords": ["人力"]},
+				"collection": {"default_order": ["boss", "zhilian", "51job", "liepin"]},
+				"platforms": {
+					"boss": {"enabled": True, "search": {"keywords": ["人力"], "cities": ["北京"]}},
+					"zhilian": {"enabled": True, "search": {"keywords": ["人力"], "cities": ["北京"]}},
+					"51job": {"enabled": True, "search": {"keywords": ["人力"], "cities": ["北京"]}},
+					"liepin": {"enabled": True, "search": {"keywords": ["人力"], "cities": ["北京"]}},
+				},
+				"profile": {"resume_path": str(resume_path), "target_cities": ["北京"]},
+			}
+
+			checks = collect_preflight_checks("full", config)
+
+		self.assertFalse(any(check["status"] == "error" for check in checks))
+		for platform in ("zhilian", "51job", "liepin"):
+			tab = next(check for check in checks if check["id"] == f"{platform}_tab")
+			self.assertEqual(tab["status"], "warning")
+
+	@patch("bosshunter.web.preflight.run_browser_diagnostics")
+	def test_explicitly_selected_platform_missing_tab_still_errors(self, diagnostics):
+		# v37②a（补）：反向钉住——用户这次明确选了智联，缺页仍报错。
+		diagnostics.return_value = {
+			"node": {"available": True, "version": "v22"},
+			"runtime": True,
+			"chrome": True,
+			"browser_name": "Google Chrome",
+			"browser_product": "Chrome/138.0",
+			"boss_tab": None,
+			"errors": [],
+			"runtime_url": "http://127.0.0.1:3456",
+		}
+		config = {
+			"search": {"keywords": ["人力"]},
+			"platforms": {
+				"boss": {"enabled": False},
+				"zhilian": {"enabled": True, "search": {"keywords": ["人力"], "cities": ["北京"]}},
+			},
+			"profile": {"target_cities": ["北京"]},
+		}
+
+		checks = collect_preflight_checks(
+			"collect", config, {"platform_order": ["zhilian"]}
+		)
+
+		tab = next(check for check in checks if check["id"] == "zhilian_tab")
+		self.assertEqual(tab["status"], "error")
+		self.assertFalse(any(check["id"].startswith("boss") for check in checks))
 
 	@patch("bosshunter.web.preflight.run_browser_diagnostics")
 	def test_running_runtime_is_reused_when_node_is_not_on_path(self, diagnostics):

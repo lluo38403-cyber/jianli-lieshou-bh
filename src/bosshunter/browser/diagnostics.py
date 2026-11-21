@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -216,10 +217,66 @@ def _find_tab_by_domain(targets: list[dict[str, Any]] | None, domain: str) -> di
     复用 run_browser_diagnostics 已取到的 targets，不再为每个平台
     单独调一次 get_page_targets（每次都会重新触发 ensure_runtime）。
     """
-    for target in targets or []:
-        if isinstance(target, dict) and domain in str(target.get("url") or ""):
-            return target
-    return None
+    tabs = _find_tabs_by_domain(targets, domain)
+    return tabs[0] if tabs else None
+
+
+def _find_tabs_by_domain(targets: list[dict[str, Any]] | None, domain: str) -> list[dict[str, Any]]:
+    """Return every tab whose URL contains the domain, in target order."""
+    return [
+        target
+        for target in targets or []
+        if isinstance(target, dict) and domain in str(target.get("url") or "")
+    ]
+
+
+# BOSS 登录页精确判定：与 preflight.is_boss_login_url 同一正则
+# /\/web\/user\/(?:login|\?ka=header-login)/i —— 只有登录页才算离线，
+# 个人中心页 https://www.zhipin.com/web/user/ 是已登录。两处改了要同步改。
+_BOSS_LOGIN_URL_RE = re.compile(r"/web/user/(?:login|\?ka=header-login)", re.IGNORECASE)
+
+
+def _pick_boss_tab(targets: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    """Pick the BOSS tab that best reflects the login state.
+
+    v37②b：用户常同时开着登录页和已登录的岗位页，只取第一个会误判
+    掉线——优先取不停在登录页的那一页，都停在登录页才取第一个。
+    """
+    tabs = _find_tabs_by_domain(targets, "zhipin.com")
+    for tab in tabs:
+        if not _BOSS_LOGIN_URL_RE.search(str(tab.get("url") or "")):
+            return tab
+    return tabs[0] if tabs else None
+
+
+# 智联 / 51job / 猎聘页面状态的优劣：ready 证明已登录；login_required
+# 说明要登录；blocked 是拦截；其余（结构未识别/检查失败）最弱。
+_PAGE_STATE_RANK = {"ready": 0, "login_required": 1, "blocked": 2}
+
+
+def _pick_best_platform_tab(
+    targets: list[dict[str, Any]] | None, domain: str, inspect
+) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    """Pick the tab whose DOM state best reflects the platform login state.
+
+    v37②b：同站多个标签页时（登录页 + 已登录的搜索页并存），只查第
+    一个会把已登录误判成未登录/要求登录——最多查前 3 个，取状态最好
+    的那一页；ready 出现就直接取，不再往下查。
+    """
+    tabs = _find_tabs_by_domain(targets, domain)
+    if not tabs:
+        return None, None
+    best_tab: dict[str, Any] | None = None
+    best_page: dict[str, str] | None = None
+    best_rank: int | None = None
+    for tab in tabs[:3]:
+        page = inspect(tab)
+        rank = _PAGE_STATE_RANK.get(str(page.get("status") or ""), 3)
+        if best_rank is None or rank < best_rank:
+            best_tab, best_page, best_rank = tab, page, rank
+            if rank == 0:
+                break
+    return best_tab, best_page
 
 
 def discover_browsers(config: dict[str, Any] | None = None) -> dict[str, str | None]:
@@ -359,15 +416,25 @@ def run_browser_diagnostics(config: dict[str, Any] | None = None, allow_launch: 
         # so browser product/version information is available to diagnostics.
         health = runtime_health(config) or health
     # 只读本轮已取到的 targets，不再为找标签页触发新的 ensure_runtime。
-    boss_tab = _find_tab_by_domain(targets, "zhipin.com") if runtime_ready else None
-    zhilian_tab = _find_tab_by_domain(targets, "zhaopin.com") if runtime_ready else None
-    zhilian_page = inspect_zhilian_page(zhilian_tab) if runtime_ready and zhilian_tab else None
+    # 同站多个标签页时按登录态取最好的那一页（v37②b），不是第一个。
+    boss_tab = _pick_boss_tab(targets) if runtime_ready else None
+    zhilian_tab, zhilian_page = (
+        _pick_best_platform_tab(targets, "zhaopin.com", inspect_zhilian_page)
+        if runtime_ready
+        else (None, None)
+    )
     # 51job / 猎聘：复用已取到的 targets 找标签页，只读已打开页面的 DOM，
     # 不新开页面、不触发额外请求。
-    job51_tab = _find_tab_by_domain(targets, "51job.com") if runtime_ready else None
-    liepin_tab = _find_tab_by_domain(targets, "liepin.com") if runtime_ready else None
-    job51_page = inspect_51job_page(job51_tab) if runtime_ready and job51_tab else None
-    liepin_page = inspect_liepin_page(liepin_tab) if runtime_ready and liepin_tab else None
+    job51_tab, job51_page = (
+        _pick_best_platform_tab(targets, "51job.com", inspect_51job_page)
+        if runtime_ready
+        else (None, None)
+    )
+    liepin_tab, liepin_page = (
+        _pick_best_platform_tab(targets, "liepin.com", inspect_liepin_page)
+        if runtime_ready
+        else (None, None)
+    )
     browser_product, browser_name = _browser_identity(health)
     discovered = discover_browsers(config)
     selected = resolve_browser_executable(config)

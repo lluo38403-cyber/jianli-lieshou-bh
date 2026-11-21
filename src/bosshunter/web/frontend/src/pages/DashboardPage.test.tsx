@@ -723,15 +723,19 @@ describe('DashboardPage persisted preflight and platform login status', () => {
   })
 
   it('replaces stale logged-out rows with fresh diagnostics on mount', async () => {
+    // v37②b：按后端真实信封形状 mock（原始诊断在 diagnostics 里）。
     const diagnostics = {
-      ok: true, chrome: true,
-      boss_tab: { targetId: '1', url: 'https://www.zhipin.com/web/geek/job' },
-      zhilian_tab: { targetId: '2', url: 'https://www.zhaopin.com/' },
-      zhilian_page: { status: 'ready', message: '已发现智联搜索框，未发现登录墙' },
-      job51_tab: { targetId: '3', url: 'https://we.51job.com/pc/search' },
-      job51_page: { status: 'ready', message: '已发现前程无忧搜索框，未发现登录墙' },
-      liepin_tab: { targetId: '4', url: 'https://www.liepin.com/zhaopin/' },
-      liepin_page: { status: 'ready', message: '已发现猎聘搜索框，未发现登录墙' },
+      ok: true,
+      diagnostics: {
+        chrome: true,
+        boss_tab: { targetId: '1', url: 'https://www.zhipin.com/web/geek/job' },
+        zhilian_tab: { targetId: '2', url: 'https://www.zhaopin.com/' },
+        zhilian_page: { status: 'ready', message: '已发现智联搜索框，未发现登录墙' },
+        job51_tab: { targetId: '3', url: 'https://we.51job.com/pc/search' },
+        job51_page: { status: 'ready', message: '已发现前程无忧搜索框，未发现登录墙' },
+        liepin_tab: { targetId: '4', url: 'https://www.liepin.com/zhaopin/' },
+        liepin_page: { status: 'ready', message: '已发现猎聘搜索框，未发现登录墙' },
+      },
     }
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input) === '/api/browser/diagnostics') return jsonResponse(diagnostics)
@@ -749,15 +753,19 @@ describe('DashboardPage persisted preflight and platform login status', () => {
   })
 
   it('refreshes only the login states from the card button', async () => {
+    // v37②b：按后端真实信封形状 mock（原始诊断在 diagnostics 里）。
     const diagnostics = {
-      ok: true, chrome: true,
-      boss_tab: { targetId: '1', url: 'https://www.zhipin.com/web/geek/job' },
-      zhilian_tab: { targetId: '2', url: 'https://www.zhaopin.com/' },
-      zhilian_page: { status: 'login_required', message: '智联页面要求登录' },
-      job51_tab: { targetId: '3', url: 'https://we.51job.com/pc/search' },
-      job51_page: { status: 'ready', message: '已发现前程无忧搜索框，未发现登录墙' },
-      liepin_tab: { targetId: '4', url: 'https://www.liepin.com/zhaopin/' },
-      liepin_page: { status: 'ready', message: '已发现猎聘搜索框，未发现登录墙' },
+      ok: true,
+      diagnostics: {
+        chrome: true,
+        boss_tab: { targetId: '1', url: 'https://www.zhipin.com/web/geek/job' },
+        zhilian_tab: { targetId: '2', url: 'https://www.zhaopin.com/' },
+        zhilian_page: { status: 'login_required', message: '智联页面要求登录' },
+        job51_tab: { targetId: '3', url: 'https://we.51job.com/pc/search' },
+        job51_page: { status: 'ready', message: '已发现前程无忧搜索框，未发现登录墙' },
+        liepin_tab: { targetId: '4', url: 'https://www.liepin.com/zhaopin/' },
+        liepin_page: { status: 'ready', message: '已发现猎聘搜索框，未发现登录墙' },
+      },
     }
     const stubFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input) === '/api/browser/diagnostics' && init?.method === 'POST') return jsonResponse(diagnostics)

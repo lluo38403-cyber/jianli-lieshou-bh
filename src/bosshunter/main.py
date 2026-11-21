@@ -79,6 +79,20 @@ def _prompt_setup(port: int = 8686) -> None:
 @click.pass_context
 def cli(ctx: click.Context, config_path: str | None) -> None:
     """BossHunter - 某直聘智能求职Agent"""
+    # v37 单实例互斥：web 分支在加载配置、初始化本地服务之前先抢
+    # Windows Named Mutex；已有实例在跑时把它的窗口前置后立即退出。
+    # 同一进程内重复抢锁（launcher.main 已抢过）返回已持有的那把，
+    # 不会误判。非 web 子命令不受影响；抢锁异常绝不挡启动。
+    if ctx.invoked_subcommand == "web":
+        try:
+            from bosshunter.single_instance import ensure_single_instance
+
+            if ensure_single_instance() is None:
+                raise SystemExit(0)
+        except SystemExit:
+            raise
+        except Exception:
+            pass
     ctx.ensure_object(dict)
     path = Path(config_path).resolve() if config_path else None
     base_dir = _runtime_base_dir(path)
