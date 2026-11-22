@@ -2,7 +2,12 @@
 # 手动触发：仓库 Actions 页 → 打 Windows exe → Run workflow。
 # 产物在 Actions 运行记录的 Artifacts 里，名字叫「简历猎手-windows」，
 # 下载后解压，双击里面的「简历猎手.exe」。
-# 打完之后自动跑 Windows 冒烟测试（smoke job）：用构建产物本身启动面板验一遍。
+# 同一次构建还用 Inno Setup 编译安装程序（installer/jianli-lieshou.iss），
+# 第二个 artifact 叫「简历猎手-安装程序-windows」，里面是
+# 简历猎手-安装程序-<版本号>.exe（默认装到安装包所在目录下的
+# zhaopinglieshou 文件夹）。
+# 打完之后自动跑 Windows 冒烟测试（smoke job）：用构建产物本身启动面板验一遍，
+# 再对安装程序跑一遍静默安装 → 核对 → 静默卸载（scripts/ci/smoke-installer.ps1）。
 name: 打 Windows exe
 
 on:
@@ -43,6 +48,27 @@ jobs:
         with:
           name: 简历猎手-windows
           path: dist/简历猎手
+      - name: 安装 Inno Setup
+        run: choco install innosetup --yes --no-progress
+      - name: 编译安装程序
+        shell: pwsh
+        run: |
+          $line = Get-Content pyproject.toml | Select-String -Pattern '^version = "(.*)"$' | Select-Object -First 1
+          if (-not $line) { throw 'pyproject.toml 里没找到 version' }
+          $version = $line.Matches.Groups[1].Value
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue)?.Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { throw '找不到 Inno Setup 编译器 ISCC.exe（choco 安装可能失败）' }
+          & $iscc /DMyAppVersion=$version installer\jianli-lieshou.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc 编译失败，退出码 $LASTEXITCODE" }
+          $built = Get-ChildItem dist-installer\*.exe
+          if (-not $built) { throw 'dist-installer 里没有安装程序产物' }
+          Write-Host "安装程序：$($built.Name)"
+      - name: 上传安装程序
+        uses: actions/upload-artifact@v4
+        with:
+          name: 简历猎手-安装程序-windows
+          path: dist-installer
 
   # Windows 冒烟测试：用上面 build 好的产物本身跑一遍，不走蓝奏云下载。
   # 只做浅测：不登录任何真实招聘平台、不投递真实简历、不填 AI Key、
@@ -102,3 +128,14 @@ jobs:
         run: |
           if ('${{ steps.neg-package.outcome }}' -ne 'failure') { throw '负向验证没起作用：空产物目录，冒烟居然通过了' }
           Write-Host '负向验证通过：空产物被冒烟测试抓住了'
+      - name: 下载安装程序产物
+        uses: actions/download-artifact@v4
+        with:
+          name: 简历猎手-安装程序-windows
+          path: installer-artifact
+      - name: "安装程序冒烟：静默安装 → 核对 → 静默卸载"
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem installer-artifact\*.exe | Select-Object -First 1
+          if (-not $installer) { throw '安装程序产物没下载到' }
+          pwsh -File scripts/ci/smoke-installer.ps1 -InstallerExe $installer.FullName -ExpectedVersion "${{ steps.version.outputs.version }}"

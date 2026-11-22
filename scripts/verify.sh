@@ -130,6 +130,17 @@ else
   warn "中转健康未确认（沙箱出网受限可能调不通，见 /tmp/jl-verify-relay.log；上线前需另行核对）"
 fi
 
+# 8. 安装/卸载口径一致性（v39）：Inno 脚本与 src/bosshunter/installer.py
+# 必须是同一份口径（默认路径、清理清单、安全谓词、停进程判定）。
+# Inno 编译本身只能在 Windows CI 里跑，Linux 上只核对两处文本一致。
+section "8. 安装/卸载口径一致性"
+if "$ROOT/.venv/bin/python" "$ROOT/scripts/check-installer-consistency.py" > /tmp/jl-verify-installer.log 2>&1; then
+  pass "Inno 脚本与 installer.py 口径一致（日志 /tmp/jl-verify-installer.log）"
+else
+  fail "安装/卸载口径不一致（日志 /tmp/jl-verify-installer.log）"
+  cat /tmp/jl-verify-installer.log
+fi
+
 echo
 if [ $FAIL -eq 0 ]; then echo "VERIFY: ALL HARD CHECKS PASSED"; else echo "VERIFY: FAILED"; fi
 exit $FAIL
