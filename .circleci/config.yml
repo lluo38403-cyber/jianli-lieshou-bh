@@ -52,7 +52,56 @@
 # 额度估算：windows.medium 40 credits/分钟；build 约 5–10 分钟、
 #   smoke 约 5–10 分钟，一次全流程约 400–800 credits；
 #   每月 30,000 credits 约够 40–70 次。
+#
+# update-flow 移植（v39，2026-11-22，lucky 定“走 CircleCI 跑验证”）：
+#   GitHub 那边的 .github/workflows/update-flow-test.yml（workflow_dispatch，
+#   三个 job：Main / Lock / Retry）搬过来，逻辑一字不改——脚本
+#   scripts/ci/update-flow-windows.ps1 本来就是 pwsh 写的，CircleCI
+#   镜像里有 pwsh，直接 pwsh -File 调；它用 $env:RUNNER_TEMP，取不到
+#   时自动回落到 $env:TEMP，CircleCI 上走回落分支。
+#   触发方式：pipeline 参数（见文件顶部的 parameters）。默认
+#   run_update_flow=false，push 时不跑；手动触发时传 true + 参数。
+#   网页触发：CircleCI 项目页 → Trigger Pipeline → 填参数；
+#   API 触发：curl -X POST https://circleci.com/api/v2/project/gh/
+#   lluo38403-cyber/jianli-lieshou-bh/pipeline -H "Circle-Token: <写权限
+#   token>" -d '{"branch":"main","parameters":{"run_update_flow":true,
+#   "from_version":"1.1.24","from_run_id":"44995985867","to_version":"1.1.25"}}'
+#   （注意：只读 token muse-sandbox-read 触发不了，API 触发要另建
+#   Write 权限的 token；网页触发不用 token。）
+#   前置条件（缺一不可，见任务汇报）：
+#   ① GH_TOKEN：旧版产物仍走 gh run download（GitHub API，不耗
+#      Actions 额度），CircleCI 里没有 GitHub token，必须在项目设置 →
+#      Environment Variables 里加 GH_TOKEN（细粒度 PAT，Actions 只读
+#      即可；from_run_id=44995985867 已核实是 v38 的打 exe run，
+#      headSha eca180b）。没设会直接失败，不静默跳过。
+#   ② v39 已上中转：新版包从中转下，中转还是 1.1.24 时 check
+#      找不到 1.1.25，必失败。
+#   ③ 旧版 exe 仍从 GitHub 取（中转只留最新包，没有旧版下载口），
+#      所以 GH_TOKEN 不能省。
+#   无输出超时：脚本的 ready 轮询最长 900 秒不打印、等 bat 自删最长
+#   600 秒不打印，CircleCI 默认 10 分钟无输出就杀步骤，所以脚本那步
+#   设了 no_output_timeout: 30m；gh 下载那步 20m。三个场景并行，
+#   一次全流程约 1200–1500 credits。
+#   负向验证（只在 Main 场景）：to_version 写 9.9.9 那次必须失败，
+#   与 GH 的做法一致（GH 是两步：continue-on-error + 断言步；这里
+#   合并成一步，exit 0 就 throw）。
 version: 2.1
+
+# 流水线参数：只给 update-flow 用。默认值 = v38→v39 这一轮的值，
+# 触发时按需覆盖。run_update_flow 默认 false——push 不跑它。
+parameters:
+  run_update_flow:
+    type: boolean
+    default: false
+  from_version:
+    type: string
+    default: "1.1.24"
+  from_run_id:
+    type: string
+    default: "44995985867"
+  to_version:
+    type: string
+    default: ""
 
 executors:
   windows:
@@ -296,6 +345,95 @@ jobs:
             pwsh -File scripts/ci/smoke-installer.ps1 -InstallerExe $installer.FullName -ExpectedVersion "$version"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+  # 更新全流程测试：GitHub Actions 的 update-flow-test.yml 的移植。
+  # 三个场景（Main / Lock / Retry）是同一个 job 的三次调用，各跑在
+  # 自己的机器上、各自从旧版 run 下产物，互不干扰；判定逻辑全在
+  # scripts/ci/update-flow-windows.ps1 里（ready 900 秒超时、bat 自删
+  # 后才读 verdict、data/ 哈希排除运行时文件），这里只负责搭台子。
+  # 注意：这个 job 绝不能在每次 push 时跑（一次约 1200–1500 credits），
+  # 只由带 run_update_flow=true 的流水线触发。
+  update-flow:
+    parameters:
+      scenario:
+        type: enum
+        enum: ["Main", "Lock", "Retry"]
+        default: "Main"
+      from_version:
+        type: string
+      from_run_id:
+        type: string
+      to_version:
+        type: string
+      negative_check:
+        type: boolean
+        default: false
+    executor: windows
+    steps:
+      - checkout
+      - run:
+          name: 装 GitHub CLI（取旧版产物用）
+          command: |
+            if (Get-Command gh -ErrorAction SilentlyContinue) {
+              Write-Host "gh 已在镜像里：$(gh --version | Select-Object -First 1)"
+            } else {
+              Write-Host '镜像里没有 gh，choco 装一个'
+              choco install gh --yes --no-progress
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              # choco 改的是机器 PATH；当前进程要从注册表重读。
+              $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+              $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+              $env:Path = "$machinePath;$userPath"
+              gh --version
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+      - run:
+          name: 读目标版本号
+          command: |
+            if ('<< parameters.to_version >>' -ne '') {
+              $version = '<< parameters.to_version >>'
+            } else {
+              $line = Get-Content pyproject.toml | Select-String -Pattern '^version = "(.*)"$' | Select-Object -First 1
+              if (-not $line) { throw 'pyproject.toml 里没找到 version' }
+              $version = $line.Matches.Groups[1].Value
+            }
+            Write-Host "目标版本：v$version（旧版 v<< parameters.from_version >>，产物 run << parameters.from_run_id >>，场景 << parameters.scenario >>）"
+            $version | Out-File -FilePath "$env:TEMP\updateflow-to-version.txt" -Encoding utf8 -NoNewline
+      - run:
+          name: 下载旧版产物
+          no_output_timeout: 20m
+          command: |
+            # gh run download 只调 GitHub API，不耗 Actions 额度；但 CircleCI
+            # 里没有 GitHub token，必须事先在项目设置 → Environment Variables
+            # 里加 GH_TOKEN（细粒度 PAT，Actions 只读即可）。没设就明确失败。
+            if (-not $env:GH_TOKEN) { throw '没拿到 GH_TOKEN：取旧版产物要 GitHub token（actions: read），去 CircleCI 项目设置 → Environment Variables 里加 GH_TOKEN 再触发' }
+            gh run download << parameters.from_run_id >> --name 简历猎手-windows --dir prev-artifact -R lluo38403-cyber/jianli-lieshou-bh
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if (-not (Test-Path prev-artifact\简历猎手.exe)) { throw '旧版产物下载后没有 简历猎手.exe' }
+            Write-Host '旧版产物就绪'
+      - run:
+          name: "更新全流程（场景 << parameters.scenario >>）"
+          no_output_timeout: 30m
+          command: |
+            # 注意：脚本的 ready 轮询最长 900 秒不打印、等 bat 自删最长
+            # 600 秒不打印，CircleCI 默认 10 分钟无输出就杀步骤，所以
+            # 这步设了 no_output_timeout: 30m（见本步骤定义）。
+            $version = Get-Content "$env:TEMP\updateflow-to-version.txt" -Raw
+            Copy-Item -Recurse prev-artifact "$env:TEMP\update-run-<< parameters.scenario >>"
+            pwsh -File scripts/ci/update-flow-windows.ps1 -ExeDir "$env:TEMP\update-run-<< parameters.scenario >>" -FromVersion "<< parameters.from_version >>" -ToVersion "$version" -Scenario << parameters.scenario >>
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - run:
+          name: "负向验证：目标版本故意写错，更新流程必须失败"
+          when: << parameters.negative_check >>
+          no_output_timeout: 30m
+          command: |
+            # GH 那边是两步（continue-on-error 跑一次 + 断言步）；这里
+            # 合并成一步：9.9.9 那次必须失败，exit 0 就直接 throw。
+            # 只在 Main 场景跑（negative_check=true），Lock/Retry 不跑。
+            Copy-Item -Recurse prev-artifact "$env:TEMP\update-neg"
+            pwsh -File scripts/ci/update-flow-windows.ps1 -ExeDir "$env:TEMP\update-neg" -FromVersion "<< parameters.from_version >>" -ToVersion "9.9.9" -Scenario << parameters.scenario >>
+            if ($LASTEXITCODE -eq 0) { throw '负向验证没起作用：目标版本写错 9.9.9，更新流程居然通过了' }
+            Write-Host '负向验证通过：错目标版本被更新流程测试抓住了'
+
 workflows:
   version: 2
   build-and-smoke:
@@ -307,6 +445,39 @@ workflows:
       - smoke:
           requires:
             - build
+          filters:
+            branches:
+              only: main
+  # 手动触发专用：默认 run_update_flow=false，push 时整个 workflow
+  # 直接跳过，不烧额度。触发时三个场景并行，各跑各的机器。
+  update-flow:
+    when: << pipeline.parameters.run_update_flow >>
+    jobs:
+      - update-flow:
+          name: update-flow-main
+          scenario: Main
+          from_version: << pipeline.parameters.from_version >>
+          from_run_id: << pipeline.parameters.from_run_id >>
+          to_version: << pipeline.parameters.to_version >>
+          negative_check: true
+          filters:
+            branches:
+              only: main
+      - update-flow:
+          name: update-flow-lock
+          scenario: Lock
+          from_version: << pipeline.parameters.from_version >>
+          from_run_id: << pipeline.parameters.from_run_id >>
+          to_version: << pipeline.parameters.to_version >>
+          filters:
+            branches:
+              only: main
+      - update-flow:
+          name: update-flow-retry
+          scenario: Retry
+          from_version: << pipeline.parameters.from_version >>
+          from_run_id: << pipeline.parameters.from_run_id >>
+          to_version: << pipeline.parameters.to_version >>
           filters:
             branches:
               only: main

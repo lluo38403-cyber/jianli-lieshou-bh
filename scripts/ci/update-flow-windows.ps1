@@ -1,5 +1,8 @@
-# 简历猎手 Windows 更新全流程测试（GitHub Actions 专用）
+# 简历猎手 Windows 更新全流程测试（GitHub Actions / CircleCI 通用）
 #
+# 用法（GitHub Actions）：见 .github/workflows/update-flow-test.yml。
+# 用法（CircleCI）：.circleci/config.yml 的 update-flow workflow，
+#   pipeline 参数触发（run_update_flow=true），三个场景并行跑。
 # 用法：
 #   pwsh scripts/ci/update-flow-windows.ps1 -ExeDir <v10 产物目录> -FromVersion 1.0.6 -ToVersion 1.0.7 [-Port 18686] [-TimeoutSeconds 150] [-ResumeDir tests/fixtures/resume_samples] [-Scenario Main|Lock|Retry]
 #
