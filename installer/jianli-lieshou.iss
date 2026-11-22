@@ -156,7 +156,7 @@ begin
     '改成别的目录就按所选路径安装，不再追加子文件夹；最终路径以这里为准。';
 end;
 
-procedure InitializeUninstall();
+function InitializeUninstall(): Boolean;
 var
   Page: TInputOptionWizardPage;
 begin
@@ -174,6 +174,9 @@ begin
   DeleteDataCheckBox.Width := Page.SurfaceWidth;
   DeleteDataCheckBox.Caption := '同时删除用户数据（config.yaml、简历、数据库）';
   DeleteDataCheckBox.Checked := False;
+  { InitializeUninstall 是事件函数，必须返回 Boolean：True 才继续卸载。
+    本函数没有“某条件不允许卸载”的设计，建完卸载选项页后一律返回 True。 }
+  Result := True;
 end;
 
 function StopProcessesBeforeUninstall(): Boolean;

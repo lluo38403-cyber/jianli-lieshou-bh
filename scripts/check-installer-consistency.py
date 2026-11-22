@@ -216,6 +216,24 @@ def main() -> int:
           "卸载选项默认保留用户数据（复选框默认不勾选）")
     check("GetUserProfile" in code and "GetEnv('USERPROFILE')" in code,
           "GetUserProfile 脚本常量取 %USERPROFILE%（Inno 没有 {userprofile} 常量）")
+    # 事件函数原型：对照 Inno 官方文档核对（流水线 #6 教训：
+    # InitializeUninstall 写成 procedure 会报 Invalid prototype）。
+    check("function InitializeUninstall(): Boolean;" in code,
+          "InitializeUninstall 是 function Boolean（不是 procedure）")
+    check("procedure InitializeUninstall" not in code,
+          "InitializeUninstall 没有写成 procedure")
+    m_uninst = re.search(
+        r"function InitializeUninstall\(\): Boolean;(.*?)end;", code, re.S
+    )
+    check(m_uninst is not None and "Result := True" in m_uninst.group(1),
+          "InitializeUninstall 返回 True（允许继续卸载）")
+    check("procedure InitializeWizard();" in code,
+          "InitializeWizard 是 procedure")
+    check(
+        "procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);"
+        in code,
+        "CurUninstallStepChanged 原型正确（procedure + TUninstallStep）",
+    )
     nested = find_nested_brace_comments(code)
     for p in nested:
         print(f"  注释花括号嵌套：{p}")
