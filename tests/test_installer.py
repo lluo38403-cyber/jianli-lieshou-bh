@@ -293,6 +293,57 @@ class UninstallCleanupTests(unittest.TestCase):
             # 没产生过用户数据：保留选项下安装目录也可以整体删。
             self.assertTrue(plan.install_dir_removable)
 
+    def test_remove_if_empty_dirs_are_delete_when_empty_only(self):
+        # 空时删的目录只有 data/：安装程序 ssPostInstall 写 marker 时
+        # 建 data/，卸载删完里面文件后它就空了才删；保留用户数据时
+        # data/ 里还有 db 与 resumes，非空就不删（dirifempty 语义，
+        # 不是 filesandordirs 删整个目录——那会连保留的数据一起删）。
+        # 断言只认 installer.py 自己的口径，不编造 Inno 行为。
+        self.assertEqual(installer.REMOVE_IF_EMPTY_RELATIVE, (Path("data"),))
+        with tempfile.TemporaryDirectory() as tmp:
+            install, home, tempdir = self._layout(tmp)
+            plan = installer.uninstall_cleanup_paths(install, home, tempdir)
+            # 保留用户数据：data/ 与安装目录都只在空了时才删（.jianli-lieshou
+            # 是浏览器配置目录的父目录，同样只在空了时才删）。
+            self.assertEqual(
+                plan.remove_if_empty,
+                [install / "data", install, home / ".jianli-lieshou"],
+            )
+            self.assertFalse(plan.install_dir_removable)
+        with tempfile.TemporaryDirectory() as tmp:
+            install, home, tempdir = self._layout(tmp)
+            plan = installer.uninstall_cleanup_paths(
+                install, home, tempdir, keep_user_data=False
+            )
+            # 全删：安装目录整体可删，只剩浏览器配置目录的父目录还按
+            # 空了才删。
+            self.assertEqual(plan.remove_if_empty, [home / ".jianli-lieshou"])
+            self.assertTrue(plan.install_dir_removable)
+
+    def test_smoke_layout_leaves_empty_data_dir_removable(self):
+        # 冒烟场景（流水线 #22）：安装时 data/ 已存在（marker），但从
+        # 不运行 exe、没有任何用户数据——卸载后 data/ 空了就删、安装
+        # 目录整体可删，不留空目录。
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "jianpinglieshou"
+            home = Path(tmp) / "home"
+            tempdir = Path(tmp) / "temp"
+            for d in (install, home, tempdir):
+                d.mkdir(parents=True)
+            (install / "data").mkdir()
+            (install / "data" / "desktop_shortcut_created").write_text(
+                "1.1.27", encoding="utf-8"
+            )
+            plan = installer.uninstall_cleanup_paths(install, home, tempdir)
+            self.assertEqual(
+                plan.remove_if_empty,
+                [install / "data", install, home / ".jianli-lieshou"],
+            )
+            self.assertTrue(plan.install_dir_removable)
+            self.assertIn(
+                install / "data" / "desktop_shortcut_created", plan.remove_paths
+            )
+
     def test_temp_scan_never_touches_other_dirs(self):
         with tempfile.TemporaryDirectory() as tmp:
             install = Path(tmp) / "jianpinglieshou"

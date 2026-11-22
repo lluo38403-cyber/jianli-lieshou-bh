@@ -107,6 +107,15 @@ Type: files; Name: "{app}\data\bosshunter.db"; Check: DeleteUserData
 Type: files; Name: "{app}\data\bosshunter.db-wal"; Check: DeleteUserData
 Type: files; Name: "{app}\data\bosshunter.db-shm"; Check: DeleteUserData
 Type: filesandordirs; Name: "{app}\data\resumes"; Check: DeleteUserData
+; 空了才删的目录：data/ 只在删完里面文件后是空的才删——用户数据被
+; 删掉或从未产生时（冒烟测试从不运行 exe，data/ 里只有安装时写的
+; 快捷方式 marker）；保留用户数据时 data/ 里还有 db 与 resumes，
+; 非空就不删，目录按原设计留下来。Inno 不会自动清掉变空的子目录
+; （只自动移除空的 {app} 本身），不加这一行，空 data/ 会让安装
+; 目录删不干净（流水线 #22 冒烟教训）。对应 installer.py
+; REMOVE_IF_EMPTY_RELATIVE；绝不要改成 filesandordirs 删整个 data/，
+; 那会在用户选“保留用户数据”时也删掉 db 与 resumes。
+Type: dirifempty; Name: "{app}\data"
 ; 安装目录外：工作浏览器配置目录整个删（登录态在里面，卸载即清）。
 ; 对应 installer.py browser_profile_dir。注意：Inno 没有 {userprofile}
 ; 常量（写了会在编译时报 Unknown constant），这里用 [Code] 段的
@@ -119,8 +128,9 @@ Type: files; Name: "{%TEMP}\bosshunter_resume.html"
 Type: files; Name: "{%TEMP}\bosshunter_resume_*.html"
 Type: files; Name: "{%TEMP}\bosshunter-browser-*.lock"
 Type: filesandordirs; Name: "{%TEMP}\jianli-update-*"
-; 注意：{app} 本身由 Inno 在文件删完、目录为空时自动移除；保留用户
-; 数据时 {app}\config.yaml 与 data\ 会留下来，这是故意的。
+; 注意：{app} 本身由 Inno 在文件删完、目录为空时自动移除（data/ 这
+; 类子目录不会自动清，上面那行 dirifempty 负责）；保留用户数据时
+; {app}\config.yaml 与 data\ 会留下来，这是故意的。
 ; %AppData% / %LocalAppData% 下没有我方写的东西，卸载清单里不碰。
 
 [Code]

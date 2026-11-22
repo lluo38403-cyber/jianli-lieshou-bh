@@ -16,6 +16,8 @@ r"""核对 Inno 安装脚本与 installer.py 口径一致（v41）。
   安装后按勾选写 desktop_shortcut_created / _declined marker；
 - [UninstallDelete] 覆盖 installer.py 的全部运行产物、用户数据
   （带 Check: DeleteUserData）、浏览器配置目录、%TEMP% 三个前缀；
+- 空了才删的目录（dirifempty）与 installer.py REMOVE_IF_EMPTY_RELATIVE
+  一致，且在 data 文件条目之后、安装目录外条目之前；
 - 停进程脚本：参数化（v41）——POST /api/exit → 3 轮杀进程 +
   Wait-PidsGone 轮询等 PID 真正消失 → 句柄探针（独占打开 exe 与
   db）→ 最后一招按产品自己的 exe 名枚举 PID 杀；ExecutablePath
@@ -382,6 +384,47 @@ def main() -> int:
             user_data_ok = False
             print(f"  用户数据缺 Check: DeleteUserData：{win}")
     check(user_data_ok, "用户数据只在打勾时删（Check: DeleteUserData）")
+    # data/ 空了才删：安装程序 ssPostInstall 写 marker 时建 data/，
+    # 卸载删完里面文件后它就空了；Inno 不自动清变空的子目录，不加
+    # dirifempty，空 data/ 会让安装目录删不干净（流水线 #22 冒烟教训：
+    # 冒烟从不运行 exe，data/ 里没有任何用户数据，只剩空目录）。
+    # 位置在 data 文件条目之后、安装目录外条目之前；只删空目录，
+    # 保留用户数据时 data/ 非空就不动（绝不是 filesandordirs 删整个
+    # data/——那会连保留的 db 与 resumes 一起删掉）。
+    expected_dirifempty = [
+        'Type: dirifempty; Name: "{app}\\' + str(rel).replace("/", "\\") + '"'
+        for rel in installer.REMOVE_IF_EMPTY_RELATIVE
+    ]
+    dirifempty_lines = [
+        ln.strip()
+        for ln in section.splitlines()
+        if ln.strip().startswith("Type: dirifempty;")
+    ]
+    check(
+        dirifempty_lines == expected_dirifempty,
+        "空时删的目录与 installer.py REMOVE_IF_EMPTY_RELATIVE 一致（dirifempty 条目）",
+    )
+    code_lines = section_code.splitlines()
+    dirifempty_idx = next(
+        (i for i, ln in enumerate(code_lines) if "dirifempty" in ln), -1
+    )
+    last_data_idx = max(
+        i for i, ln in enumerate(code_lines) if "data\\resumes" in ln
+    )
+    outside_idx = next(
+        (i for i, ln in enumerate(code_lines) if "{code:GetUserProfile}" in ln),
+        -1,
+    )
+    check(
+        dirifempty_idx > last_data_idx
+        and 0 <= outside_idx
+        and dirifempty_idx < outside_idx,
+        "dirifempty 条目在 data 文件条目之后、安装目录外条目之前",
+    )
+    check(
+        'Type: filesandordirs; Name: "{app}\\data"' not in section_code,
+        "不 filesandordirs 删整个 data/（保留用户数据时 db 与 resumes 会被一起删掉）",
+    )
     check(
         "{code:GetUserProfile}\\.jianli-lieshou" in section,
         "浏览器配置目录 {code:GetUserProfile}\\.jianli-lieshou 在清理清单里",

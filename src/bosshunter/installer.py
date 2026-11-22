@@ -98,6 +98,17 @@ USER_DATA_RELATIVE = (
 	Path("data") / "resumes",
 )
 
+# 安装目录内“空了才删的目录”：卸载删完文件后目录空了才删，里面还
+# 留着用户数据时不动。对应 Inno [UninstallDelete] 里的
+# Type: dirifempty 条目。data/ 是唯一一个：安装程序在 ssPostInstall
+# 写桌面快捷方式 marker 时建 data/（.iss CurStepChanged），卸载删
+# 完里面的文件后它就空了；Inno 不会自动清掉变空的子目录（只自动
+# 移除空的 {app} 本身），不加这条空 data/ 会留下、安装目录删不
+# 干净（流水线 #22 冒烟教训：冒烟从不运行 exe，data/ 里没有任何
+# 用户数据，只剩空目录）。绝不要改成 filesandordirs 删整个 data/——
+# 那会在用户选“保留用户数据”时也删掉 db 与 resumes。
+REMOVE_IF_EMPTY_RELATIVE = (Path("data"),)
+
 # 安装目录内“程序运行产物”：卸载时一律删（与 keep_user_data 无关）。
 _RUNTIME_RELATIVE = (
 	Path("data") / "logs",
@@ -313,7 +324,9 @@ def uninstall_cleanup_paths(install_dir: str | Path, home: str | Path,
 	if keep_user_data:
 		plan.keep_paths = user_data
 		plan.install_dir_removable = not any(p.exists() for p in user_data)
-		plan.remove_if_empty = [install / "data", install]
+		plan.remove_if_empty = [
+			install / rel for rel in REMOVE_IF_EMPTY_RELATIVE
+		] + [install]
 	else:
 		plan.remove_paths.extend(user_data)
 		plan.install_dir_removable = True
