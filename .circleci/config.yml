@@ -33,8 +33,12 @@
 #   镜像每月更新，版本号会漂；GH 锁的是 Python 3.12 与 Node 20，
 #   所以 build 里用 choco --allow-downgrade 装回 3.12.0 / 20.11.0
 #   并验版本，验不过直接失败（不要静默用错版本打出来）。
-#   若以后 choco 降级被镜像的新版缠住，先看这一步的报错，再定是
-#   改 choco 逻辑还是跟进镜像默认版本。
+#   流水线 #1 实测：镜像已漂到 Node v26.12.1，且 choco 装完 Node 20 后
+#   同一步内 node 仍解析到 v26——光从注册表刷新 PATH 不够，镜像 Node 26
+#   的目录排在 choco 的 Node 20 前面；修法是把磁盘上的 v20 node.exe
+#   所在目录顶到 PATH 最前面（本步会话 + 机器注册表，后续步骤继承）。
+#   若以后磁盘上根本找不到 v20（降级没落盘），再看这一步打出的候选
+#   列表定是先卸镜像 Node 还是跟进镜像默认版本。
 #
 # 额度估算：windows.medium 40 credits/分钟；build 约 5–10 分钟、
 #   smoke 约 5–10 分钟，一次全流程约 400–800 credits；
@@ -70,14 +74,43 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             choco install nodejs --version=20.11.0 --allow-downgrade --yes --no-progress
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            # choco 改的是机器 PATH，本步内手动刷新一次；后续步骤是新 shell，本来就会读到新 PATH。
-            $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
+            # choco 改的是机器 PATH；当前进程要从注册表重读（等价于 refreshenv，
+            # choco 的 refreshenv 只对 cmd 有效，PowerShell 里自己读注册表）。
+            $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+            $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+            $env:Path = "$machinePath;$userPath"
             $pyVer = python --version 2>&1
             $nodeVer = node --version 2>&1
             Write-Host "python：$pyVer"
-            Write-Host "node：$nodeVer"
+            Write-Host "node：$nodeVer（解析自 $((Get-Command node -ErrorAction SilentlyContinue).Source)）"
             if ($pyVer -notmatch '3\.12\.') { throw "Python 不是 3.12.x（现在是 $pyVer），构建用的版本不对" }
-            if ($nodeVer -notmatch 'v20\.') { throw "Node 不是 v20.x（现在是 $nodeVer），构建用的版本不对" }
+            if ($nodeVer -notmatch 'v20\.') {
+              # 流水线 #1 在这里失败：node 仍是镜像自带的 v26。只刷新 PATH 不够——
+              # 镜像 Node 26 的目录排在 choco 的 Node 20 前面（或根本不在同一目录）。
+              # 把磁盘上所有 node.exe 都列出来，挑 v20 的那个顶到 PATH 最前面；
+              # 只修本步不够，还要写回机器 PATH（注册表），后续步骤的新 shell
+              # 读注册表才能继承（CircleCI Windows 上每个 run 步骤都是新 shell）。
+              $candidates = @()
+              foreach ($c in (Get-Command node -All -ErrorAction SilentlyContinue).Source) { $candidates += $c }
+              foreach ($p in @("$env:ProgramFiles\nodejs\node.exe", "${env:ProgramFiles(x86)}\nodejs\node.exe", "$env:ProgramData\chocolatey\bin\node.exe")) {
+                if (Test-Path $p) { $candidates += $p }
+              }
+              $candidates = @($candidates | Select-Object -Unique)
+              Write-Host '磁盘上的 node 候选：'
+              $node20Dir = $null
+              foreach ($p in $candidates) {
+                $v = & $p --version 2>&1
+                Write-Host "  $p -> $v"
+                if ((-not $node20Dir) -and ($v -match '^v20\.')) { $node20Dir = Split-Path $p }
+              }
+              if (-not $node20Dir) { throw '磁盘上找不到 Node v20.x（choco 的降级没落盘，见上方候选列表）；不要静默用镜像的 Node 26 打包' }
+              $env:Path = "$node20Dir;$env:Path"
+              [System.Environment]::SetEnvironmentVariable('Path', "$node20Dir;$machinePath", 'Machine')
+              Write-Host "已把 $node20Dir 顶到 PATH 最前面（本步会话 + 机器注册表）"
+              $nodeVer = node --version 2>&1
+              Write-Host "置顶后 node：$nodeVer（解析自 $((Get-Command node -ErrorAction SilentlyContinue).Source)）"
+              if ($nodeVer -notmatch 'v20\.') { throw "Node 仍不是 v20.x（现在是 $nodeVer），放弃" }
+            }
       - run:
           name: 构建前端
           working_directory: src/bosshunter/web/frontend
