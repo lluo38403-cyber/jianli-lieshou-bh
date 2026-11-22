@@ -257,6 +257,15 @@ def main() -> int:
           "停进程用 ExecutablePath 前缀规则")
     check("GetCurrentProcessId()" in code,
           "停进程排除卸载程序自己的 PID（不自杀）")
+    # 卸载程序是两阶段的：第一阶段 unins000.exe 在安装目录里，第二阶段
+    # _unins.tmp 在 %TEMP% 里；GetCurrentProcessId() 只排除当前阶段的
+    # PID，第二阶段跑脚本时第一阶段的 PID 不在排除里，只靠 PID 排除
+    # 会把第一阶段杀掉——被杀的第一阶段退出码是 -1（TerminateProcess
+    # -1），等它退出的调用方就看到卸载失败（流水线 #9 重跑教训）。
+    # 所以第一循环还要按名排除两个阶段的卸载程序。
+    check("$p.Name -ne " in code and "unins000.exe" in code
+          and "_unins.tmp" in code,
+          "停进程按名排除卸载程序两阶段（unins000.exe / _unins.tmp），不杀第一阶段")
     check("CommandLine" in code and "Contains($profile)" in code,
           "工作浏览器只按命令行里的配置目录杀")
     check("Stop-Process -Name" not in code,
@@ -313,12 +322,15 @@ def main() -> int:
     check(not nested, "[Code] 段花括号注释里没有内层花括号（注释不支持嵌套）")
     check("MsgBox" in code and "卸载日志" in code,
           "删不掉的残留记日志并在完成页告知用户")
+    check("LogUninstall('进入 usDone。')" in code,
+          "usDone 入口记一行日志（下次失败直接证明走到哪）")
 
     # Python 侧的停进程脚本与 iss 里的文本判定一致（关键子串都在）。
     py_script = installer.uninstall_stop_processes_script(
         "C:\\app", "C:\\Users\\x\\.jianli-lieshou\\browser-profile", 1234
     )
-    for needle in ("StartsWith($prefix", "Contains($profile)", "ProcessId -ne 1234"):
+    for needle in ("StartsWith($prefix", "Contains($profile)", "ProcessId -ne 1234",
+                   "Name -ne 'unins000.exe'", "Name -ne '_unins.tmp'"):
         check(needle in py_script, f"installer.py 停进程脚本含 {needle}")
 
     print()

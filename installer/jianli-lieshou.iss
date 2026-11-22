@@ -202,7 +202,14 @@ begin
     PowerShell 扫尾：只认 ExecutablePath 在安装目录下的进程（排除
     卸载程序自己的 PID，不自杀），工作浏览器只杀命令行里带本程序
     配置目录的 chrome.exe / msedge.exe。绝不按映像名杀 node /
-    chrome（v28 教训：会误杀用户浏览器和其他 node）。 }
+    chrome（v28 教训：会误杀用户浏览器和其他 node）。
+    注意 PID 只排除当前阶段：Inno 卸载是两阶段的，第一阶段
+    unins000.exe 在安装目录里、第二阶段 _unins.tmp 在 %TEMP% 里；
+    第二阶段跑脚本时 GetCurrentProcessId 是第二阶段的 PID，第一阶段
+    的 PID 不在排除里，只靠 PID 排除会把第一阶段杀掉——被杀的第一
+    阶段退出码是 -1（TerminateProcess -1），等它退出的调用方就看到
+    卸载失败（流水线 #9 重跑教训）。所以第一循环还要按名排除
+    unins000.exe 与 _unins.tmp 两个阶段的卸载程序。 }
   Script :=
     'try { Invoke-WebRequest -Uri ' + Q + 'http://127.0.0.1:8686/api/exit' + Q +
     ' -Method Post -TimeoutSec 3 | Out-Null; Start-Sleep -Seconds 4 } catch { }' + #13#10 +
@@ -211,7 +218,9 @@ begin
     '$killed = 0; $failed = 0; $browser = 0; ' +
     'foreach ($p in Get-CimInstance Win32_Process) { ' +
     'if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)' +
-    ' -and $p.ProcessId -ne ' + IntToStr(GetCurrentProcessId()) + ') ' +
+    ' -and $p.ProcessId -ne ' + IntToStr(GetCurrentProcessId()) +
+    ' -and $p.Name -ne ' + Q + 'unins000.exe' + Q +
+    ' -and $p.Name -ne ' + Q + '_unins.tmp' + Q + ') ' +
     '{ try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } } }; ' +
     '$profile = ' + Q + ProfileDir + Q + '; ' +
     'foreach ($p in Get-CimInstance Win32_Process) { ' +
@@ -292,6 +301,7 @@ begin
   end;
   if CurUninstallStep = usDone then
   begin
+    LogUninstall('进入 usDone。');
     { 删不掉的残留不静默跳过：如实记日志、完成页告知用户手动处理。 }
     InstallDir := ExpandConstant('{app}');
     if DirExists(InstallDir) then

@@ -319,6 +319,13 @@ def uninstall_stop_processes_script(install_dir: str | Path,
 	不误杀），exclude_pid 跳过卸载程序自己（它自己也在安装目录里，
 	不排除会自杀）；绝不按映像名杀 node.exe / chrome.exe（v28 教训：
 	会误杀用户浏览器和其他 node）。
+	另外必须按名排除卸载程序本身的两个阶段：Inno 卸载是两阶段的，
+	第一阶段 unins000.exe 在安装目录里、第二阶段 _unins.tmp 在 %TEMP%
+	里；exclude_pid 只排除当前阶段的 PID，第二阶段跑脚本时第一阶段
+	的 PID 不在排除里，只靠 PID 排除会把第一阶段杀掉——被杀的第一
+	阶段退出码是 -1（TerminateProcess -1），等它退出的调用方就看到
+	卸载失败（流水线 #9 重跑教训）。所以第一循环还要加
+	$p.Name -ne 'unins000.exe' 与 $p.Name -ne '_unins.tmp'。
 	工作浏览器是例外：它拉的是系统 Chrome/Edge，ExecutablePath 不在
 	安装目录里——只杀命令行里带本程序浏览器配置目录
 	（%USERPROFILE%\\.jianli-lieshou\\browser-profile）的 chrome.exe /
@@ -338,6 +345,7 @@ def uninstall_stop_processes_script(install_dir: str | Path,
 		"foreach ($p in Get-CimInstance Win32_Process) { "
 		"if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)"
 		+ exclude
+		+ " -and $p.Name -ne 'unins000.exe' -and $p.Name -ne '_unins.tmp'"
 		+ ") { try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } } }; "
 		f"$profile = {_ps_quote(profile)}; "
 		"foreach ($p in Get-CimInstance Win32_Process) { "

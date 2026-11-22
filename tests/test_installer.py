@@ -310,6 +310,21 @@ class StopProcessesScriptTests(unittest.TestCase):
         self.assertNotIn("-Name chrome", script)
         self.assertNotIn("-Name node", script)
 
+    def test_excludes_uninstaller_both_phases_by_name(self):
+        script = installer.uninstall_stop_processes_script(
+            "/tmp/app/zhaopinglieshou",
+            "/tmp/home/.jianli-lieshou/browser-profile",
+            exclude_pid=1234,
+        )
+        # 卸载程序是两阶段的：第一阶段 unins000.exe 在安装目录里，第二阶段
+        # _unins.tmp 在 %TEMP% 里；exclude_pid 只排除当前阶段的 PID，第二阶段
+        # 跑脚本时第一阶段的 PID 不在排除里，只靠 PID 排除会把第一阶段杀掉
+        # ——被杀的第一阶段退出码是 -1（TerminateProcess -1），等它退出的
+        # 调用方就看到卸载失败（流水线 #9 重跑教训）。所以第一循环还要按名
+        # 排除两个阶段的卸载程序。
+        self.assertIn("$p.Name -ne 'unins000.exe'", script)
+        self.assertIn("$p.Name -ne '_unins.tmp'", script)
+
     def test_browser_kill_is_keyed_on_our_profile_dir(self):
         profile = "/tmp/home/.jianli-lieshou/browser-profile"
         script = installer.uninstall_stop_processes_script(
