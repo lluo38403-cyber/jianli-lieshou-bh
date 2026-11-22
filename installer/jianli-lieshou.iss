@@ -1,4 +1,4 @@
-﻿; 简历猎手 · Inno Setup 6 安装 / 卸载脚本（v40，1.1.26）。
+﻿; 简历猎手 · Inno Setup 6 安装 / 卸载脚本（v41，1.1.27）。
 ;
 ; 口径唯一来源是 src/bosshunter/installer.py：默认路径、卸载清理清单、
 ; 安全谓词、停进程判定都必须与那个模块逐项一致，对应关系由
@@ -6,11 +6,11 @@
 ;
 ; 编译（Windows，CI 里由 build-exe.yml 跑）：
 ;   choco install innosetup -y
-;   iscc /DMyAppVersion=1.1.26 installer\jianli-lieshou.iss
+;   iscc /DMyAppVersion=1.1.27 installer\jianli-lieshou.iss
 ; 不传 /DMyAppVersion 时用下面 #define 的默认值（发版时记得与
 ; pyproject.toml 的 version 保持一致，verify.sh 不校验这一项，
 ; CI 里读 pyproject.toml 传值才是准的）。
-; 产物：dist-installer\简历猎手-安装程序-1.1.26.exe。
+; 产物：dist-installer\简历猎手-安装程序-1.1.27.exe。
 ; 编译前必须先跑 pyinstaller（dist\简历猎手\ 要有内容），[Files]
 ; 直接把 dist 产物原样打进安装包。
 ;
@@ -25,7 +25,10 @@
 ;   InstallLocation / UninstallString / Publisher / DisplayIcon）。
 ; - 桌面快捷方式名「简历猎手.lnk」与 updater._DESKTOP_SHORTCUT_NAME
 ;   同名；应用第一次启动时 ensure_desktop_shortcut 也会建同一个，
-;   两边不打架。
+;   但安装时用户不勾选桌面快捷方式时，安装程序写
+;   data\desktop_shortcut_declined marker，程序启动时见到它就不再
+;   补建（v41，否则向导里的勾选框等于没生效）；开始菜单快捷方式
+;   程序从不自建，只有安装程序建。
 ; - 默认 config.yaml 不是安装包里直接带的文件：dist 里只有
 ;   _internal\config.example.yaml，launcher 首次启动时复制为
 ;   安装目录下的 config.yaml（原有行为不变）。
@@ -36,7 +39,7 @@
 ;   InitializeUninstall 的注释），所以改问 SuppressibleMsgBox 对话框。
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.26"
+  #define MyAppVersion "1.1.27"
 #endif
 
 [Setup]
@@ -48,6 +51,7 @@ AppPublisher=聚梦Muse AI
 AppPublisherURL=https://www.16688.com.cn/shop/S542647
 DefaultDirName={src}\jianpinglieshou
 DefaultGroupName=简历猎手
+DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist-installer
 OutputBaseFilename=简历猎手-安装程序-{#MyAppVersion}
@@ -66,9 +70,13 @@ Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.i
 Source: "..\dist\简历猎手\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\简历猎手"; Filename: "{app}\简历猎手.exe"; WorkingDir: "{app}"
-Name: "{group}\卸载简历猎手"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\简历猎手"; Filename: "{app}\简历猎手.exe"; WorkingDir: "{app}"
+; 快捷方式是否创建由“准备安装”页的两个勾选框决定（默认都勾选）：
+; 桌面入口认 ShouldCreateDesktopShortcut，开始菜单两个入口认
+; ShouldCreateStartMenuShortcut。开始菜单文件夹选择页已用
+; DisableProgramGroupPage=yes 删掉，组名固定用 DefaultGroupName。
+Name: "{group}\简历猎手"; Filename: "{app}\简历猎手.exe"; WorkingDir: "{app}"; Check: ShouldCreateStartMenuShortcut
+Name: "{group}\卸载简历猎手"; Filename: "{uninstallexe}"; Check: ShouldCreateStartMenuShortcut
+Name: "{userdesktop}\简历猎手"; Filename: "{app}\简历猎手.exe"; WorkingDir: "{app}"; Check: ShouldCreateDesktopShortcut
 
 [Run]
 Filename: "{app}\简历猎手.exe"; Description: "启动简历猎手"; Flags: nowait postinstall skipifsilent
@@ -83,6 +91,7 @@ Type: files; Name: "{app}\data\launched-browser.json"
 Type: files; Name: "{app}\data\window-geometry.json"
 Type: files; Name: "{app}\data\.startup-failed.json"
 Type: files; Name: "{app}\data\desktop_shortcut_created"
+Type: files; Name: "{app}\data\desktop_shortcut_declined"
 Type: files; Name: "{app}\data\auth_cache.json"
 Type: files; Name: "{app}\data\cities.cache.json"
 Type: files; Name: "{app}\data\.star_hint_*"
@@ -95,6 +104,8 @@ Type: filesandordirs; Name: "{app}\update-backup-*"
 ; 对应 installer.py USER_DATA_RELATIVE。
 Type: files; Name: "{app}\config.yaml"; Check: DeleteUserData
 Type: files; Name: "{app}\data\bosshunter.db"; Check: DeleteUserData
+Type: files; Name: "{app}\data\bosshunter.db-wal"; Check: DeleteUserData
+Type: files; Name: "{app}\data\bosshunter.db-shm"; Check: DeleteUserData
 Type: filesandordirs; Name: "{app}\data\resumes"; Check: DeleteUserData
 ; 安装目录外：工作浏览器配置目录整个删（登录态在里面，卸载即清）。
 ; 对应 installer.py browser_profile_dir。注意：Inno 没有 {userprofile}
@@ -116,6 +127,10 @@ Type: filesandordirs; Name: "{%TEMP}\jianli-update-*"
 var
   DeleteUserDataFlag: Boolean;
   UninstallLogPath: String;
+  DesktopShortcutCheckBox: TNewCheckBox;
+  StartMenuShortcutCheckBox: TNewCheckBox;
+  CreateDesktopShortcutFlag: Boolean;
+  CreateStartMenuShortcutFlag: Boolean;
 
 function DeleteUserData(): Boolean;
 begin
@@ -161,16 +176,107 @@ var
   DirNote: TNewStaticText;
 begin
   { 目录选择页下写用户指定的说明：默认装到安装包所在目录下的
-    jianpinglieshou 文件夹；改成别的目录就按所选路径安装。 }
+    jianpinglieshou 文件夹；改成别的目录就按所选路径安装。
+    v41 修裁切（lucky 真机：第二行“路径安装。”上半截被截断）：
+    旧版 DirNote 高度写死 36px、AutoSize 关着——说明 60 个字在
+    DirEdit 宽度（约 332px）下要折两行，行高随系统 DPI 缩放
+    （125% 约 19px、150% 约 22px，两行 38–45px），36px 装不下，
+    第二行就被控件底边裁掉。改成 AutoSize=True + WordWrap=True
+    （Inno 自家标签就是这么自适应高度的），初始高度也给到 48px，
+    Top 往上收 4px，整段文字在各 DPI 下都完整显示；目录页下面只
+    有底部的 DiskSpaceLabel（Top 216），说明再长也碰不到它。 }
   DirNote := TNewStaticText.Create(WizardForm);
   DirNote.Parent := WizardForm.SelectDirPage;
   DirNote.Left := WizardForm.DirEdit.Left;
-  DirNote.Top := WizardForm.DirEdit.Top + WizardForm.DirEdit.Height + 12;
+  DirNote.Top := WizardForm.DirEdit.Top + WizardForm.DirEdit.Height + 8;
   DirNote.Width := WizardForm.DirEdit.Width;
-  DirNote.Height := 36;
-  DirNote.AutoSize := False;
+  DirNote.Height := 48;
+  DirNote.AutoSize := True;
   DirNote.WordWrap := True;
   DirNote.Caption := '默认安装到安装包所在目录下的 jianpinglieshou 文件夹；若修改为其他目录，则按所选路径安装';
+
+  { 准备安装页下方放两个快捷方式勾选框（默认都勾选）：ReadyMemo
+    几乎占满整页（Top 24 + Height 205，页高 237），下面只剩 8px
+    空白，不够放两行勾选框——先把 ReadyMemo 缩短 48px，再在腾出
+    的空位放两框（第一框 Top = Memo 底 + 8，第二框再往下 24px，
+    两框底边 230px，页高 237，刚好放下；Memo 有滚动条，内容长了
+    可以滚）。状态先存进两个 Flag（默认 True），用户在准备安装页
+    点“下一步”时 NextButtonClick 再从勾选框同步一次；静默安装不
+    走向导，Flag 保持默认 True，两个快捷方式照常创建（冒烟测试
+    断言的就是这一点）。 }
+  WizardForm.ReadyMemo.Height := WizardForm.ReadyMemo.Height - 48;
+  DesktopShortcutCheckBox := TNewCheckBox.Create(WizardForm);
+  DesktopShortcutCheckBox.Parent := WizardForm.ReadyPage;
+  DesktopShortcutCheckBox.Left := WizardForm.ReadyMemo.Left;
+  DesktopShortcutCheckBox.Top := WizardForm.ReadyMemo.Top + WizardForm.ReadyMemo.Height + 8;
+  DesktopShortcutCheckBox.Width := WizardForm.ReadyMemo.Width;
+  DesktopShortcutCheckBox.Height := 17;
+  DesktopShortcutCheckBox.Caption := '创建桌面快捷方式';
+  DesktopShortcutCheckBox.Checked := True;
+  StartMenuShortcutCheckBox := TNewCheckBox.Create(WizardForm);
+  StartMenuShortcutCheckBox.Parent := WizardForm.ReadyPage;
+  StartMenuShortcutCheckBox.Left := WizardForm.ReadyMemo.Left;
+  StartMenuShortcutCheckBox.Top := DesktopShortcutCheckBox.Top + DesktopShortcutCheckBox.Height + 7;
+  StartMenuShortcutCheckBox.Width := WizardForm.ReadyMemo.Width;
+  StartMenuShortcutCheckBox.Height := 17;
+  StartMenuShortcutCheckBox.Caption := '创建开始菜单快捷方式';
+  StartMenuShortcutCheckBox.Checked := True;
+  CreateDesktopShortcutFlag := True;
+  CreateStartMenuShortcutFlag := True;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  { 离开准备安装页时把勾选框状态同步进 Flag，[Icons] 的 Check
+    函数安装时读 Flag。静默安装不经过这里，Flag 保持默认 True。 }
+  if CurPageID = wpReady then
+  begin
+    CreateDesktopShortcutFlag := DesktopShortcutCheckBox.Checked;
+    CreateStartMenuShortcutFlag := StartMenuShortcutCheckBox.Checked;
+  end;
+end;
+
+function ShouldCreateDesktopShortcut(): Boolean;
+begin
+  Result := CreateDesktopShortcutFlag;
+end;
+
+function ShouldCreateStartMenuShortcut(): Boolean;
+begin
+  Result := CreateStartMenuShortcutFlag;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  DataDir: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    { 按勾选状态写快捷方式 marker：程序启动时
+      ensure_desktop_shortcut 认 marker——勾选桌面时写
+      desktop_shortcut_created（程序不再重复建），不勾选时写
+      desktop_shortcut_declined（程序启动时不再补建，否则勾选框
+      等于没生效）。两个 marker 互斥：写一个就删另一个（覆盖安装
+      时旧 marker 可能还在）。写失败不挡安装（最坏是程序启动时
+      按老行为补建一次桌面快捷方式）；开始菜单快捷方式程序从不
+      自建，不用 marker。 }
+    DataDir := ExpandConstant('{app}\data');
+    try
+      ForceDirectories(DataDir);
+      if CreateDesktopShortcutFlag then
+      begin
+        DeleteFile(DataDir + '\desktop_shortcut_declined');
+        SaveStringToFile(DataDir + '\desktop_shortcut_created', '{#MyAppVersion}' + #13#10, False);
+      end
+      else
+      begin
+        DeleteFile(DataDir + '\desktop_shortcut_created');
+        SaveStringToFile(DataDir + '\desktop_shortcut_declined', '{#MyAppVersion}' + #13#10, False);
+      end;
+    except
+    end;
+  end;
 end;
 
 function InitializeUninstall(): Boolean;
@@ -188,84 +294,95 @@ end;
 
 function StopProcessesBeforeUninstall(): Boolean;
 var
-  Q: Char;
   Script, ScriptPath: String;
   ResultCode: Integer;
   InstallDir, ProfileDir: String;
 begin
   Result := True;
-  Q := Chr(39);
   InstallDir := ExpandConstant('{app}');
   ProfileDir := GetEnv('USERPROFILE') + '\.jianli-lieshou\browser-profile';
-  { 先走应用内完整退出清理（POST /api/exit：停任务 → 停 runtime /
-    拉起的 Chrome → 安装目录扫尾），调不通就跳过，不挡卸载；
-    再跑同一份判定（installer.uninstall_stop_processes_script）的
-    PowerShell 扫尾，最多 3 遍、每遍之间睡 2 秒，扫不到目标就提前停，
-    最后再扫一遍核实残留（stuck-procs，只记日志、不拦卸载）：
-    循环 1 只认 ExecutablePath 在安装目录下的进程（主程序、
-    patchright 驱动 node.exe）；循环 2 只认命令行里带安装目录的
-    node.exe / cmd.exe / robocopy.exe / powershell.exe（系统 node
-    跑的 cdp-proxy、跑 update.bat 的 cmd.exe、更新时的 robocopy、
-    bat 拉起的 powershell，可执行路径在安装目录外、循环 1 够不着，
-    也兜底 ExecutablePath 读不到的进程）；循环 3 只杀命令行里带本
-    程序配置目录的 chrome.exe / msedge.exe（工作浏览器）。绝不按
-    映像名杀 node / chrome（v28 教训：会误杀用户浏览器和其他 node），
-    所有杀操作都必须同时有路径证据。
-    注意 PID 只排除当前阶段：Inno 卸载是两阶段的，第一阶段
-    unins000.exe 在安装目录里、第二阶段 _unins.tmp 在 %TEMP% 里；
-    第二阶段跑脚本时 GetCurrentProcessId 是第二阶段的 PID，第一阶段
-    的 PID 不在排除里，只靠 PID 排除会把第一阶段杀掉——被杀的第一
-    阶段退出码是 -1（TerminateProcess -1），等它退出的调用方就看到
-    卸载失败（流水线 #9 重跑教训）。所以循环 1、2 还要按名排除
-    unins000.exe 与 _unins.tmp 两个阶段的卸载程序；循环 2 还排除
-    $PID（扫尾脚本自己的 powershell.exe，万一安装目录是 %TEMP%
-    的祖先目录，不排除会自杀）。 }
+  // 卸载前停进程（v41 设计，脚本全文见 installer.py
+  // uninstall_stop_processes_script，.iss 里这段 Pascal 拼出来的
+  // 文本必须与它逐字一致，由 check-installer-consistency.py 核对）：
+  // 参数化脚本——安装目录、浏览器配置目录、卸载日志路径、要排除
+  // 的 PID、exe 名都不写进脚本文件，由下面 Exec 的命令行传参，
+  // 所以 .ps1 全文只用 ASCII（SaveStringToFile 写临时文件时非
+  // ASCII 可能走系统代码页）；命令行是 Unicode，中文路径没问题。
+  // 流程：先 POST /api/exit 走应用内优雅退出 → 最多 3 轮按路径证据
+  // 杀进程，每轮杀完轮询等 PID 真正消失（最多 10 秒）→ 探句柄：
+  // 独占打开 exe 与 bosshunter.db，5 秒没释放就再 POST 一次等
+  // 30 秒 → 还占着就按产品自己的 exe 名枚举 PID 再杀一轮 → 全程
+  // 写进卸载日志（以前扫尾的输出只打到 powershell stdout，Exec
+  // 不收，日志里只剩一个退出码，根本看不出扫尾干了什么）。
+  // 判定红线不变：只认 ExecutablePath 前缀 / 命令行里的安装目录 /
+  // 命令行里的浏览器配置目录；绝不按映像名 broad 杀 node / chrome；
+  // 按名排除卸载程序两阶段 unins000.exe 与 _unins.tmp；循环 2 还
+  // 排除 $PID（扫尾脚本自己的 powershell.exe）。最后一招按名枚举
+  // 只认产品自己的 exe 名，且只在句柄探针已证明我方文件被占着、
+  // 优雅退出已试过两轮的前提下才动手，按 PID 杀，不是 broad 杀
+  // 映像名。
   Script :=
-    'try { Invoke-WebRequest -Uri ' + Q + 'http://127.0.0.1:8686/api/exit' + Q +
-    ' -Method Post -TimeoutSec 3 | Out-Null; Start-Sleep -Seconds 4 } catch { }' + #13#10 +
-    '$installDir = ' + Q + InstallDir + Q + '; ' +
-    '$prefix = $installDir + ' + Q + '\' + Q + '; ' +
-    '$profile = ' + Q + ProfileDir + Q + '; ' +
-    '$killed = 0; $failed = 0; $browser = 0; ' +
-    'for ($pass = 1; $pass -le 3; $pass++) { ' +
-    '$found = 0; ' +
-    'foreach ($p in Get-CimInstance Win32_Process) { ' +
-    'if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)' +
-    ' -and $p.ProcessId -ne ' + IntToStr(GetCurrentProcessId()) +
-    ' -and $p.Name -ne ' + Q + 'unins000.exe' + Q +
-    ' -and $p.Name -ne ' + Q + '_unins.tmp' + Q + ') ' +
-    '{ $found += 1; try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } } }; ' +
-    'foreach ($p in Get-CimInstance Win32_Process) { ' +
-    'if (@(' + Q + 'node.exe' + Q + ',' + Q + 'cmd.exe' + Q + ',' + Q + 'robocopy.exe' + Q + ',' + Q + 'powershell.exe' + Q + ') -contains $p.Name' +
-    ' -and $p.CommandLine -and $p.CommandLine.IndexOf($installDir, [System.StringComparison]::OrdinalIgnoreCase) -ge 0' +
-    ' -and $p.ProcessId -ne ' + IntToStr(GetCurrentProcessId()) +
-    ' -and $p.ProcessId -ne $PID' +
-    ' -and $p.Name -ne ' + Q + 'unins000.exe' + Q +
-    ' -and $p.Name -ne ' + Q + '_unins.tmp' + Q + ') ' +
-    '{ $found += 1; try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } } }; ' +
-    'foreach ($p in Get-CimInstance Win32_Process) { ' +
-    'if (($p.Name -eq ' + Q + 'chrome.exe' + Q + ' -or $p.Name -eq ' + Q + 'msedge.exe' + Q +
-    ') -and $p.CommandLine -and $p.CommandLine.Contains($profile)) ' +
-    '{ $found += 1; try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $browser += 1 } catch { $failed += 1 } } }; ' +
-    'if ($found -eq 0) { break }; ' +
-    'Start-Sleep -Seconds 2 }; ' +
-    '$stuck = @(); ' +
-    'foreach ($p in Get-CimInstance Win32_Process) { ' +
-    'if (($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)' +
-    ' -and $p.ProcessId -ne ' + IntToStr(GetCurrentProcessId()) +
-    ' -and $p.Name -ne ' + Q + 'unins000.exe' + Q +
-    ' -and $p.Name -ne ' + Q + '_unins.tmp' + Q + ') -or ' +
-    '(@(' + Q + 'node.exe' + Q + ',' + Q + 'cmd.exe' + Q + ',' + Q + 'robocopy.exe' + Q + ',' + Q + 'powershell.exe' + Q + ') -contains $p.Name' +
-    ' -and $p.CommandLine -and $p.CommandLine.IndexOf($installDir, [System.StringComparison]::OrdinalIgnoreCase) -ge 0' +
-    ' -and $p.ProcessId -ne ' + IntToStr(GetCurrentProcessId()) +
-    ' -and $p.ProcessId -ne $PID' +
-    ' -and $p.Name -ne ' + Q + 'unins000.exe' + Q +
-    ' -and $p.Name -ne ' + Q + '_unins.tmp' + Q + ') -or ' +
-    '(($p.Name -eq ' + Q + 'chrome.exe' + Q + ' -or $p.Name -eq ' + Q + 'msedge.exe' + Q +
-    ') -and $p.CommandLine -and $p.CommandLine.Contains($profile))) ' +
-    '{ $stuck += "$($p.Name) PID $($p.ProcessId)" } }; ' +
-    'Write-Output "killed=$killed failed=$failed browser=$browser stuck=$($stuck.Count)"; ' +
-    'if ($stuck.Count -gt 0) { Write-Output ("stuck-procs: " + ($stuck -join ' + Q + '; ' + Q + ')) }';
+    'param([string]$installDir, [string]$profile, [string]$logPath, [int]$excludePid, [string]$exeName)' + #13#10 +
+    'function Write-StopLog([string]$text) { try { Add-Content -Path $logPath -Value $text -Encoding Ascii -ErrorAction Stop } catch { } }' + #13#10 +
+    '$prefix = $installDir + ''\''' + #13#10 +
+    '$exePath = Join-Path $installDir $exeName' + #13#10 +
+    '$dbPath = Join-Path $installDir ''data\bosshunter.db''' + #13#10 +
+    'function Get-TargetPids {' + #13#10 +
+    '  $procs = @(Get-CimInstance Win32_Process)' + #13#10 +
+    '  $ids = @()' + #13#10 +
+    '  foreach ($p in $procs) { if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) -and $p.ProcessId -ne $excludePid -and $p.Name -ne ''unins000.exe'' -and $p.Name -ne ''_unins.tmp'') { $ids += $p.ProcessId } }' + #13#10 +
+    '  foreach ($p in $procs) { if (@(''node.exe'',''cmd.exe'',''robocopy.exe'',''powershell.exe'') -contains $p.Name -and $p.CommandLine -and $p.CommandLine.IndexOf($installDir, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and $p.ProcessId -ne $excludePid -and $p.ProcessId -ne $PID -and $p.Name -ne ''unins000.exe'' -and $p.Name -ne ''_unins.tmp'') { $ids += $p.ProcessId } }' + #13#10 +
+    '  foreach ($p in $procs) { if (($p.Name -eq ''chrome.exe'' -or $p.Name -eq ''msedge.exe'') -and $p.CommandLine -and $p.CommandLine.Contains($profile)) { $ids += $p.ProcessId } }' + #13#10 +
+    '  return ($ids | Select-Object -Unique)' + #13#10 +
+    '}' + #13#10 +
+    'function Wait-PidsGone($pids, [int]$seconds) {' + #13#10 +
+    '  $deadline = (Get-Date).AddSeconds($seconds)' + #13#10 +
+    '  while ((Get-Date) -lt $deadline) {' + #13#10 +
+    '    $alive = @()' + #13#10 +
+    '    foreach ($id in $pids) { if (Get-Process -Id $id -ErrorAction SilentlyContinue) { $alive += $id } }' + #13#10 +
+    '    if ($alive.Count -eq 0) { return @() }' + #13#10 +
+    '    Start-Sleep -Milliseconds 500' + #13#10 +
+    '  }' + #13#10 +
+    '  $alive = @()' + #13#10 +
+    '  foreach ($id in $pids) { if (Get-Process -Id $id -ErrorAction SilentlyContinue) { $alive += $id } }' + #13#10 +
+    '  return $alive' + #13#10 +
+    '}' + #13#10 +
+    'function Test-FileLocked([string]$path) {' + #13#10 +
+    '  if (-not (Test-Path $path)) { return $false }' + #13#10 +
+    '  try { $s = [IO.File]::Open($path, ''Open'', ''ReadWrite'', ''None''); $s.Close(); return $false } catch { return $true }' + #13#10 +
+    '}' + #13#10 +
+    'function Wait-FilesFree([int]$seconds) {' + #13#10 +
+    '  $deadline = (Get-Date).AddSeconds($seconds)' + #13#10 +
+    '  while ((Get-Date) -lt $deadline) {' + #13#10 +
+    '    if (-not (Test-FileLocked $exePath) -and -not (Test-FileLocked $dbPath)) { return $true }' + #13#10 +
+    '    Start-Sleep -Milliseconds 1000' + #13#10 +
+    '  }' + #13#10 +
+    '  return ((-not (Test-FileLocked $exePath)) -and (-not (Test-FileLocked $dbPath)))' + #13#10 +
+    '}' + #13#10 +
+    'try { Invoke-WebRequest -Uri ''http://127.0.0.1:8686/api/exit'' -Method Post -TimeoutSec 3 | Out-Null } catch { }' + #13#10 +
+    '$killed = 0; $failed = 0' + #13#10 +
+    'for ($round = 1; $round -le 3; $round++) {' + #13#10 +
+    '  $targets = @(Get-TargetPids)' + #13#10 +
+    '  if ($targets.Count -eq 0) { break }' + #13#10 +
+    '  foreach ($id in $targets) { try { Stop-Process -Id $id -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } }' + #13#10 +
+    '  $still = @(Wait-PidsGone $targets 10)' + #13#10 +
+    '  if ($still.Count -eq 0) { break }' + #13#10 +
+    '}' + #13#10 +
+    '$probeOk = Wait-FilesFree 5' + #13#10 +
+    'if (-not $probeOk) {' + #13#10 +
+    '  try { Invoke-WebRequest -Uri ''http://127.0.0.1:8686/api/exit'' -Method Post -TimeoutSec 3 | Out-Null } catch { }' + #13#10 +
+    '  $probeOk = Wait-FilesFree 30' + #13#10 +
+    '}' + #13#10 +
+    'if (-not $probeOk) {' + #13#10 +
+    '  $byName = @(Get-CimInstance Win32_Process -Filter "Name = ''$exeName''" | ForEach-Object { $_.ProcessId })' + #13#10 +
+    '  $byName = @($byName | Where-Object { $_ -ne $excludePid })' + #13#10 +
+    '  foreach ($id in $byName) { try { Stop-Process -Id $id -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } }' + #13#10 +
+    '  if ($byName.Count -gt 0) { $null = Wait-PidsGone $byName 10; $probeOk = Wait-FilesFree 5 }' + #13#10 +
+    '}' + #13#10 +
+    '$stuck = @(Get-TargetPids)' + #13#10 +
+    'Write-StopLog ("stop-sweep: killed=$killed failed=$failed stuck=$($stuck.Count) probe-ok=$probeOk")' + #13#10 +
+    'if ($stuck.Count -gt 0) { Write-StopLog ("stuck-procs: " + ($stuck -join ''; '')) }' + #13#10 +
+    'Write-Output "killed=$killed failed=$failed stuck=$($stuck.Count) probe-ok=$probeOk"';
   ScriptPath := ExpandConstant('{tmp}\jl-stop-processes.ps1');
   if not SaveStringToFile(ScriptPath, Script, False) then
   begin
@@ -273,7 +390,8 @@ begin
     Exit;
   end;
   if Exec('powershell.exe',
-    '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + ScriptPath + '"',
+    '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + ScriptPath + '"' +
+    ' -InstallDir "' + InstallDir + '" -ProfileDir "' + ProfileDir + '" -LogPath "' + UninstallLogPath + '" -ExcludePid ' + IntToStr(GetCurrentProcessId()) + ' -ExeName "简历猎手.exe"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     LogUninstall('卸载前停进程：powershell 退出码 ' + IntToStr(ResultCode))
   else

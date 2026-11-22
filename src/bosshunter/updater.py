@@ -1794,6 +1794,12 @@ def cleanup_stale_update_processes(install_dir: str | Path | None = None) -> boo
 # 桌面快捷方式的 marker：建过一次就留着，用户手动删了快捷方式也不再
 # 补建；面板更新不碰 data/，所以更新后 marker 还在，不会重复建。
 DESKTOP_SHORTCUT_MARKER_FILENAME = "desktop_shortcut_created"
+# 安装时用户不勾选“创建桌面快捷方式”：安装程序写这个 marker，
+# 与 installer.DESKTOP_SHORTCUT_DECLINED_MARKER_FILENAME 同名；
+# 见到它就不再补建，否则安装向导里的勾选框等于没生效。
+# （v41 核实：程序启动时确实会自建桌面快捷方式，见 ensure_desktop_shortcut；
+# 开始菜单快捷方式程序从不自建，只有安装程序建，不用 marker。）
+DESKTOP_SHORTCUT_DECLINED_MARKER_FILENAME = "desktop_shortcut_declined"
 _DESKTOP_SHORTCUT_NAME = "简历猎手.lnk"
 
 # 快捷方式带上产品 logo 的版本：1.1.12 起 spec 给 exe 嵌了 logo.ico，
@@ -1912,11 +1918,20 @@ def ensure_desktop_shortcut(
 
     只在 Windows + frozen 的 exe 里做；任何一步出错都悄悄返回
     False，绝不挡启动。新建或刷新成功才返回 True。
+
+    v41：安装时用户不勾选“创建桌面快捷方式”，安装程序会在
+    data/ 下写 desktop_shortcut_declined marker——见到它直接返回
+    False，不再补建。没有这一条，安装向导里取消勾选也会在第一次
+    启动时被这里补建回来，勾选框等于没生效。declined 优先于
+    created（两个 marker 理论上互斥，安装程序写一个就删另一个）。
     """
     if not _is_windows() or not _is_frozen():
         return False
     target = Path(install_dir) if install_dir is not None else get_install_dir()
     if target is None:
+        return False
+    declined = target / "data" / DESKTOP_SHORTCUT_DECLINED_MARKER_FILENAME
+    if declined.is_file():
         return False
     exe = Path(exe_path) if exe_path is not None else Path(sys.executable).resolve()
     marker = target / "data" / DESKTOP_SHORTCUT_MARKER_FILENAME

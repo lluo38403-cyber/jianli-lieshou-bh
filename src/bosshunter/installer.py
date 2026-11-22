@@ -1,4 +1,4 @@
-"""简历猎手 · 安装 / 卸载口径（v40，1.1.26）。
+"""简历猎手 · 安装 / 卸载口径（v41，1.1.27）。
 
 这一模块是安装程序与卸载程序的**唯一口径来源**：Inno Setup 脚本
 （installer/jianli-lieshou.iss）里的规则必须与这里逐项一致，对应关系
@@ -9,14 +9,19 @@
 进程停止、实际删除）在 Linux CI 里测不了，见本文件末尾的界限说明。
 
 已核实的写盘位置（删之前逐项对过源码，不许凭想象扩清单）：
-- 安装目录内：config.yaml；data/bosshunter.db（server.py:229 DATA_DIR）、
+- 安装目录内：config.yaml；data/bosshunter.db（server.py:229 DATA_DIR）
+  与它的 WAL 伴生文件 data/bosshunter.db-wal / data/bosshunter.db-shm
+  （db.py:103 PRAGMA journal_mode=WAL；伴生文件与主库同进退：保留用户
+  数据时一起留、删用户数据时一起删，单删 -wal 会丢掉未落盘的事务）；
   data/resumes/（config.py:155 默认 resume_output_dir）、data/logs/
   （launcher.py 日志轮换）、data/update-cache/ + update-ready.json
   （updater.py:1489 UPDATE_CACHE_DIRNAME/MANIFEST）、data/.instance.json
   与 data/launched-browser.json（browser/runtime/__init__.py:42-43）、
   data/window-geometry.json（server.py:5111）、data/.startup-failed.json
-  （server.py:4747）、data/desktop_shortcut_created（updater.py:1797）、
-  data/.star_hint_<版本>（main.py:40）、data/auth_cache.json
+  （server.py:4747）、data/desktop_shortcut_created（updater.py:1797）与
+  data/desktop_shortcut_declined（v41：安装时用户不勾选桌面快捷方式，
+  安装程序写这个 marker，程序启动时 ensure_desktop_shortcut 见到它
+  就不再补建——否则勾选框等于没生效）、data/auth_cache.json
   （server.py:1772 传给 auth/client.py 的 cache_path，24 小时离线宽限
   缓存，应用进程内持有句柄）与 data/cities.cache.json
   （server.py:4327 调 refresh_city_cache 写的城市列表缓存，
@@ -55,9 +60,12 @@ from pathlib import Path
 
 APP_NAME = "简历猎手"
 APP_EXE_NAME = "简历猎手.exe"
-APP_VERSION = "1.1.26"
+APP_VERSION = "1.1.27"
 INSTALL_SUBDIR = "jianpinglieshou"
 DESKTOP_SHORTCUT_NAME = "简历猎手.lnk"  # 与 updater._DESKTOP_SHORTCUT_NAME 同名
+# 安装时用户不勾选“创建桌面快捷方式”，安装程序写这个 marker；
+# 与 updater.DESKTOP_SHORTCUT_DECLINED_MARKER_FILENAME 同名。
+DESKTOP_SHORTCUT_DECLINED_MARKER_FILENAME = "desktop_shortcut_declined"
 START_MENU_GROUP = "简历猎手"
 
 # Inno AppId：卸载注册表项就是这个名字 + "_is1"。
@@ -81,9 +89,12 @@ BROWSER_PROFILE_RELATIVE = Path(".jianli-lieshou") / "browser-profile"
 TEMP_PREFIXES = ("bosshunter_resume", "bosshunter-browser-", "jianli-update-")
 
 # 安装目录内“用户数据”：默认保留，卸载向导打勾才删。
+# bosshunter.db-wal / .db-shm 是 WAL 模式的伴生文件，与主库同进退。
 USER_DATA_RELATIVE = (
 	Path("config.yaml"),
 	Path("data") / "bosshunter.db",
+	Path("data") / "bosshunter.db-wal",
+	Path("data") / "bosshunter.db-shm",
 	Path("data") / "resumes",
 )
 
@@ -96,6 +107,7 @@ _RUNTIME_RELATIVE = (
 	Path("data") / "window-geometry.json",
 	Path("data") / ".startup-failed.json",
 	Path("data") / "desktop_shortcut_created",
+	Path("data") / "desktop_shortcut_declined",
 	Path("data") / "auth_cache.json",
 	Path("data") / "cities.cache.json",
 	Path("update.bat"),
@@ -318,15 +330,15 @@ def uninstall_cleanup_paths(install_dir: str | Path, home: str | Path,
 
 # ─── 卸载前停进程（复用已有退出清理的判定） ─────────────────────────────
 
-def _ps_quote(value: str) -> str:
-	"""包进 PowerShell 单引号字符串：单引号本身翻倍。"""
-	return "'" + value.replace("'", "''") + "'"
-
-
-def uninstall_stop_processes_script(install_dir: str | Path,
-		browser_profile_dir_path: str | Path,
-		exclude_pid: int | None = None) -> str:
+def uninstall_stop_processes_script() -> str:
 	"""卸载前停进程的 PowerShell 脚本（文本，供 Inno 脚本原样执行）。
+
+	参数化脚本：安装目录、浏览器配置目录、卸载日志路径、要排除的
+	PID、exe 名都不写进脚本文件，由 Inno 在命令行上传参
+	（-InstallDir / -ProfileDir / -LogPath / -ExcludePid / -ExeName），
+	所以脚本全文只用 ASCII——Inno 的 SaveStringToFile 写临时 .ps1
+	时非 ASCII 可能走系统代码页，脚本里不写中文就没这个风险；
+	命令行是 Unicode，中文路径/文件名传参没问题。
 
 	红线（与 updater._install_dir_kill_script 同款，不许改）：
 	只认 ExecutablePath 前缀（安装目录 + '\\'，目录边界在内，兄弟目录
@@ -343,8 +355,7 @@ def uninstall_stop_processes_script(install_dir: str | Path,
 	卸载失败（流水线 #9 重跑教训）。所以循环 1、2 还要加
 	$p.Name -ne 'unins000.exe' 与 $p.Name -ne '_unins.tmp'。
 
-	三轮循环（v40，1.1.26；v39 只有单遍、无复核，进程残留就直接删，
-	撞上占用就报残留）：
+	三轮判定（与 v40 相同，v41 只改“杀完之后怎么办”）：
 	- 循环 1：可执行路径在安装目录下——主程序 简历猎手.exe、
 	  patchright 驱动 node.exe（_internal\\patchright\\driver\\node.exe）
 	  等打包进来的进程。
@@ -366,64 +377,106 @@ def uninstall_stop_processes_script(install_dir: str | Path,
 	  不在安装目录里，只杀命令行里带本程序浏览器配置目录
 	  （%USERPROFILE%\\.jianli-lieshou\\browser-profile）的 chrome.exe /
 	  msedge.exe 进程，用户的日常浏览器命令行里没有这个目录，不会误杀。
-	三轮循环最多跑 3 遍，每遍之间睡 2 秒；一遍扫不到目标就提前停。
-	最后再扫一遍核实：还活着的按名 + PID 记进 stuck-procs（不拦
-	卸载，只写日志供诊断）。
-	另外，卸载程序应先试 POST http://127.0.0.1:8686/api/exit（走应用内
-	完整的 _perform_exit_cleanup：停任务 → 停 runtime/Chrome → 扫尾），
-	调不通或等不到退出再跑这段脚本扫尾——脚本本身只是第二道防线。
-	输出 killed=<数> failed=<数> browser=<数> stuck=<数>，调用方写进
-	卸载日志；stuck>0 时再出一行 stuck-procs: <名 PID; …>。
-	新脚本只用 ASCII 字面量（进程名、路径变量全是 ASCII）：Inno 的
-	SaveStringToFile 写临时 .ps1 时非 ASCII 可能走系统代码页，脚本里
-	不写中文就没这个风险。
+
+	v41 为什么改（v40 卸载仍报 data / bosshunter.db 被占用，根因已核实）：
+	1. /api/exit 是异步的（server.py:1731：先回包，后台线程 1.5 秒后
+	   才开始清理；_stop_active_tasks 最多 3 轮 × wait 5 秒 +
+	   shutdown_browser_resources 最多 10+10 秒，优雅退出要 2 秒到
+	   35 秒以上），v40 只在 POST 返回后固定睡 4 秒——应用还在
+	   关 Chrome、停任务，扫尾就已经跑完了。
+	2. v40 杀完只固定睡 2 秒、扫不到就提前停，从不等被杀的进程真正
+	   退出；Stop-Process -Force 只发终止请求就返回，杀失败
+	   （例如目标是管理员进程、卸载程序没权限）只记 failed，不重试、
+	   不等待、不拦删除——删除直接撞上还没死的进程。
+	3. Get-CimInstance 对管理员进程返回空的 ExecutablePath /
+	   CommandLine（卸载程序是普通权限，PrivilegesRequired=lowest）：
+	   三个循环全都看不见提权跑的主程序，$found=0 就提前停——
+	   “没扫到”被当成“没在跑”，而应用其实还活着、还拿着数据库。
+	4. v40 扫尾的输出（killed/stuck-procs）只打到 powershell 标准
+	   输出，Inno 的 Exec 不收 stdout——卸载日志里只剩一个退出码，
+	   扫尾到底跑没跑、杀没杀掉、谁还活着，全都不可见。
+	所以 v41 改成“杀 + 等真退出 + 探句柄 + 写日志”：
+	- 每轮杀完轮询等 PID 真正消失（500ms 一轮，最多 10 秒），
+	  有残留就再扫一轮（最多 3 轮，覆盖扫尾后又被拉起来的进程，
+	  例如更新中的 update.bat 重拉 exe）；
+	- 杀完探句柄：独占打开 {app}\\简历猎手.exe 与
+	  {app}\\data\\bosshunter.db（[IO.File]::Open ReadWrite + None，
+	  文件不存在算不占用），5 秒内没释放就再 POST 一次 /api/exit
+	  等 30 秒（覆盖优雅退出的最长路径）；
+	- 还占着时走最后一招：按产品自己的 exe 名（简历猎手.exe，只
+	  有我方产品用这个名字）枚举 PID、按 PID 杀、再等 10 秒、再探
+	  5 秒——只在句柄探针已证明“我方文件被占着”、且优雅退出已试
+	  过两轮的前提下才动手，不是 broad 按映像名杀；
+	- 全程写进卸载日志（Write-StopLog，ASCII 行）：
+	  stop-sweep: killed=N failed=N stuck=N probe-ok=True/False，
+	  有残留再加一行 stuck-procs: <PID; …>。
+	正常情况（应用没跑或很快退出）探针第一下就通过，整个扫尾
+	1–2 秒结束；只有真卡住时才走到后面的有界等待，最长约 80 秒。
 	"""
-	install = str(Path(install_dir))
-	profile = str(Path(browser_profile_dir_path))
-	exclude = f" -and $p.ProcessId -ne {int(exclude_pid)}" if exclude_pid is not None else ""
-	# 循环 1 的条件（前缀规则 + 排除自己与卸载程序两阶段）。
-	loop1 = (
-		"$p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)"
-		+ exclude
-		+ " -and $p.Name -ne 'unins000.exe' -and $p.Name -ne '_unins.tmp'"
-	)
-	# 循环 2 的条件（命令行里带安装目录，只认四个名字 + 排除自己）。
-	loop2 = (
-		"@('node.exe','cmd.exe','robocopy.exe','powershell.exe') -contains $p.Name"
-		" -and $p.CommandLine -and $p.CommandLine.IndexOf($installDir, [System.StringComparison]::OrdinalIgnoreCase) -ge 0"
-		+ exclude
-		+ " -and $p.ProcessId -ne $PID -and $p.Name -ne 'unins000.exe' -and $p.Name -ne '_unins.tmp'"
-	)
-	# 循环 3 的条件（工作浏览器：命令行里带本程序配置目录）。
-	loop3 = (
-		"($p.Name -eq 'chrome.exe' -or $p.Name -eq 'msedge.exe')"
-		" -and $p.CommandLine -and $p.CommandLine.Contains($profile)"
-	)
-	return (
-		f"$installDir = {_ps_quote(install)}; "
-		"$prefix = $installDir + '\\'; "
-		f"$profile = {_ps_quote(profile)}; "
-		"$killed = 0; $failed = 0; $browser = 0; "
-		"for ($pass = 1; $pass -le 3; $pass++) { "
-		"$found = 0; "
-		"foreach ($p in Get-CimInstance Win32_Process) { "
-		"if (" + loop1 + ") "
-		"{ $found += 1; try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } } }; "
-		"foreach ($p in Get-CimInstance Win32_Process) { "
-		"if (" + loop2 + ") "
-		"{ $found += 1; try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } } }; "
-		"foreach ($p in Get-CimInstance Win32_Process) { "
-		"if (" + loop3 + ") "
-		"{ $found += 1; try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $browser += 1 } catch { $failed += 1 } } }; "
-		"if ($found -eq 0) { break }; "
-		"Start-Sleep -Seconds 2 }; "
-		"$stuck = @(); "
-		"foreach ($p in Get-CimInstance Win32_Process) { "
-		"if ((" + loop1 + ") -or (" + loop2 + ") -or (" + loop3 + ")) "
-		"{ $stuck += \"$($p.Name) PID $($p.ProcessId)\" } }; "
-		"Write-Output \"killed=$killed failed=$failed browser=$browser stuck=$($stuck.Count)\"; "
-		"if ($stuck.Count -gt 0) { Write-Output (\"stuck-procs: \" + ($stuck -join '; ')) }"
-	)
+	lines = [
+		"param([string]$installDir, [string]$profile, [string]$logPath, [int]$excludePid, [string]$exeName)",
+		"function Write-StopLog([string]$text) { try { Add-Content -Path $logPath -Value $text -Encoding Ascii -ErrorAction Stop } catch { } }",
+		"$prefix = $installDir + '\\'",
+		"$exePath = Join-Path $installDir $exeName",
+		"$dbPath = Join-Path $installDir 'data\\bosshunter.db'",
+		"function Get-TargetPids {",
+		"  $procs = @(Get-CimInstance Win32_Process)",
+		"  $ids = @()",
+		"  foreach ($p in $procs) { if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) -and $p.ProcessId -ne $excludePid -and $p.Name -ne 'unins000.exe' -and $p.Name -ne '_unins.tmp') { $ids += $p.ProcessId } }",
+		"  foreach ($p in $procs) { if (@('node.exe','cmd.exe','robocopy.exe','powershell.exe') -contains $p.Name -and $p.CommandLine -and $p.CommandLine.IndexOf($installDir, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and $p.ProcessId -ne $excludePid -and $p.ProcessId -ne $PID -and $p.Name -ne 'unins000.exe' -and $p.Name -ne '_unins.tmp') { $ids += $p.ProcessId } }",
+		"  foreach ($p in $procs) { if (($p.Name -eq 'chrome.exe' -or $p.Name -eq 'msedge.exe') -and $p.CommandLine -and $p.CommandLine.Contains($profile)) { $ids += $p.ProcessId } }",
+		"  return ($ids | Select-Object -Unique)",
+		"}",
+		"function Wait-PidsGone($pids, [int]$seconds) {",
+		"  $deadline = (Get-Date).AddSeconds($seconds)",
+		"  while ((Get-Date) -lt $deadline) {",
+		"    $alive = @()",
+		"    foreach ($id in $pids) { if (Get-Process -Id $id -ErrorAction SilentlyContinue) { $alive += $id } }",
+		"    if ($alive.Count -eq 0) { return @() }",
+		"    Start-Sleep -Milliseconds 500",
+		"  }",
+		"  $alive = @()",
+		"  foreach ($id in $pids) { if (Get-Process -Id $id -ErrorAction SilentlyContinue) { $alive += $id } }",
+		"  return $alive",
+		"}",
+		"function Test-FileLocked([string]$path) {",
+		"  if (-not (Test-Path $path)) { return $false }",
+		"  try { $s = [IO.File]::Open($path, 'Open', 'ReadWrite', 'None'); $s.Close(); return $false } catch { return $true }",
+		"}",
+		"function Wait-FilesFree([int]$seconds) {",
+		"  $deadline = (Get-Date).AddSeconds($seconds)",
+		"  while ((Get-Date) -lt $deadline) {",
+		"    if (-not (Test-FileLocked $exePath) -and -not (Test-FileLocked $dbPath)) { return $true }",
+		"    Start-Sleep -Milliseconds 1000",
+		"  }",
+		"  return ((-not (Test-FileLocked $exePath)) -and (-not (Test-FileLocked $dbPath)))",
+		"}",
+		"try { Invoke-WebRequest -Uri 'http://127.0.0.1:8686/api/exit' -Method Post -TimeoutSec 3 | Out-Null } catch { }",
+		"$killed = 0; $failed = 0",
+		"for ($round = 1; $round -le 3; $round++) {",
+		"  $targets = @(Get-TargetPids)",
+		"  if ($targets.Count -eq 0) { break }",
+		"  foreach ($id in $targets) { try { Stop-Process -Id $id -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } }",
+		"  $still = @(Wait-PidsGone $targets 10)",
+		"  if ($still.Count -eq 0) { break }",
+		"}",
+		"$probeOk = Wait-FilesFree 5",
+		"if (-not $probeOk) {",
+		"  try { Invoke-WebRequest -Uri 'http://127.0.0.1:8686/api/exit' -Method Post -TimeoutSec 3 | Out-Null } catch { }",
+		"  $probeOk = Wait-FilesFree 30",
+		"}",
+		"if (-not $probeOk) {",
+		"  $byName = @(Get-CimInstance Win32_Process -Filter \"Name = '$exeName'\" | ForEach-Object { $_.ProcessId })",
+		"  $byName = @($byName | Where-Object { $_ -ne $excludePid })",
+		"  foreach ($id in $byName) { try { Stop-Process -Id $id -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } }",
+		"  if ($byName.Count -gt 0) { $null = Wait-PidsGone $byName 10; $probeOk = Wait-FilesFree 5 }",
+		"}",
+		"$stuck = @(Get-TargetPids)",
+		"Write-StopLog (\"stop-sweep: killed=$killed failed=$failed stuck=$($stuck.Count) probe-ok=$probeOk\")",
+		"if ($stuck.Count -gt 0) { Write-StopLog (\"stuck-procs: \" + ($stuck -join '; ')) }",
+		"Write-Output \"killed=$killed failed=$failed stuck=$($stuck.Count) probe-ok=$probeOk\"",
+	]
+	return "\n".join(lines)
 
 # ─── 卸载残留上报 ────────────────────────────────────────────────────────
 
@@ -445,7 +498,7 @@ def format_leftover_notice(leftovers: list[str], log_path: str | Path) -> str:
 
 # ─── Windows 真机界限（Linux CI 测不了的部分） ──────────────────────────
 # 以下行为只在 Windows 真机上发生，本模块与单元测试覆盖不到，
-# 留给 lucky 在无影云电脑上实测（见改动清单 XLIII「未验证」）：
+# 留给 lucky 在无影云电脑上实测（见改动清单 XLIV「未验证」）：
 # - Inno 安装向导：默认路径是不是 {src}\\jianpinglieshou、向导说明
 #   文案是否清晰无乱码、改目录后不再追加子文件夹、注册表卸载项与
 #   开始菜单/桌面快捷方式、装完启动；

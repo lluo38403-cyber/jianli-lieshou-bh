@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-r"""核对 Inno 安装脚本与 installer.py 口径一致（v40）。
+r"""核对 Inno 安装脚本与 installer.py 口径一致（v41）。
 
 用法：python3 scripts/check-installer-consistency.py
 退出码 0 = 一致；1 = 有不一致（打印哪一项对不上）。
@@ -9,10 +9,18 @@ r"""核对 Inno 安装脚本与 installer.py 口径一致（v40）。
 - 普通权限安装：PrivilegesRequired=lowest（卸载项进 HKCU）；
 - 卸载注册表项：AppId 与 installer.py 的 UNINSTALL_REGISTRY_KEY 一致；
 - 桌面快捷方式名与 updater._DESKTOP_SHORTCUT_NAME 同名；
+- 目录说明标签：AutoSize + 48px 高（v41：定高 36px 在高 DPI 下裁切）；
+- 开始菜单文件夹选择页已删（DisableProgramGroupPage=yes），
+  但 [Icons] 里 {group} 快捷方式还在；
+- 准备安装页两个勾选框（默认都勾选），[Icons] 的 Check 条件认它们，
+  安装后按勾选写 desktop_shortcut_created / _declined marker；
 - [UninstallDelete] 覆盖 installer.py 的全部运行产物、用户数据
   （带 Check: DeleteUserData）、浏览器配置目录、%TEMP% 三个前缀；
-- 停进程脚本：ExecutablePath 前缀规则 + 排除自己 PID + 工作浏览器
-  只按命令行里的配置目录杀，不按映像名杀；
+- 停进程脚本：参数化（v41）——POST /api/exit → 3 轮杀进程 +
+  Wait-PidsGone 轮询等 PID 真正消失 → 句柄探针（独占打开 exe 与
+  db）→ 最后一招按产品自己的 exe 名枚举 PID 杀；ExecutablePath
+  前缀规则 + 排除自己 PID + 工作浏览器只按命令行里的配置目录杀，
+  不按映像名杀；结果写进卸载日志；
 - 脚本默认版本号与 pyproject / bosshunter.__version__ 一致。
 """
 
@@ -35,11 +43,13 @@ def check(ok: bool, label: str) -> None:
 
 
 def eval_pascal_stop_script(code: str) -> str | None:
-    """把 .iss 里 Script := '...' + Q + ... 的拼接求值成 PowerShell 文本。
+    """把 .iss 里 Script := '...' + #13#10 + ... 的拼接求值成 PowerShell 文本。
 
-    只处理 StopProcessesBeforeUninstall 里的 Script 赋值：单引号字面量、
-    Q（Chr(39) 的简写变量）、#13#10（换行）、InstallDir / ProfileDir /
-    IntToStr(GetCurrentProcessId()) 三个非字面量用占位符代替。
+    只处理 StopProcessesBeforeUninstall 里的 Script 赋值：单引号字面量
+    （'' 是转义的单引号）、#13#10（换行）。v41 的脚本是参数化的，
+    安装目录等都不写进脚本文件，所以求值结果不含任何占位符；
+    Q / InstallDir / ProfileDir / IntToStr(GetCurrentProcessId()) 的
+    占位分支是 v40 遗留，留着防回归（脚本里再出现这些记号时不静默吞掉）。
     结构对不上返回 None（检查跳过，不误报）。
     """
     m = re.search(r"Script :=\s*(.*?);\s*\n\s*ScriptPath :=", code, re.S)
@@ -261,6 +271,82 @@ def main() -> int:
         "OutputBaseFilename=" in iss and "MyAppVersion" in iss,
         "安装程序文件名带版本号（OutputBaseFilename 用 MyAppVersion）",
     )
+    # v41 项 2：开始菜单文件夹选择页已删，但 {group} 快捷方式还在。
+    check(
+        "DisableProgramGroupPage=yes" in iss,
+        "开始菜单文件夹选择页已删（DisableProgramGroupPage=yes）",
+    )
+    icons = re.split(r"(?m)^\[Icons\]\s*$", iss, maxsplit=1)[1]
+    icons = re.split(r"(?m)^\[[^\]]+\]\s*$", icons, maxsplit=1)[0]
+    check(
+        "{group}\\简历猎手" in icons and "{group}\\卸载简历猎手" in icons,
+        "[Icons] 里开始菜单快捷方式还在（{group}，默认组名即应用名）",
+    )
+    check(
+        "Check: ShouldCreateStartMenuShortcut" in icons,
+        "开始菜单快捷方式认 ShouldCreateStartMenuShortcut（勾选框决定）",
+    )
+    check(
+        "Check: ShouldCreateDesktopShortcut" in icons,
+        "桌面快捷方式认 ShouldCreateDesktopShortcut（勾选框决定）",
+    )
+    # v41 项 1：目录说明标签不再定高裁切。
+    check(
+        "DirNote.AutoSize := True" in iss
+        and "DirNote.Height := 48" in iss
+        and "DirNote.Top := WizardForm.DirEdit.Top + WizardForm.DirEdit.Height + 8"
+        in iss,
+        "目录说明标签 AutoSize + 高 48px + 距输入框 8px（高 DPI 下不裁切）",
+    )
+    # v41 项 3：准备安装页两个勾选框，默认都勾选；状态经 Flag 进 [Icons]。
+    check(
+        "DesktopShortcutCheckBox" in iss
+        and "StartMenuShortcutCheckBox" in iss
+        and iss.count("TNewCheckBox.Create(WizardForm)") == 2
+        and "WizardForm.ReadyMemo.Height := WizardForm.ReadyMemo.Height - 48"
+        in iss,
+        "准备安装页有两个 TNewCheckBox（ReadyMemo 先缩短 48px 腾出空位）",
+    )
+    check(
+        iss.count("Checked := True") >= 2,
+        "两个快捷方式勾选框默认都勾选（Checked := True）",
+    )
+    check(
+        "CreateDesktopShortcutFlag := True" in iss
+        and "CreateStartMenuShortcutFlag := True" in iss,
+        "两个 Flag 默认 True（静默安装不走向导，快捷方式照常创建）",
+    )
+    check(
+        "function NextButtonClick(CurPageID: Integer): Boolean;" in iss
+        and "CurPageID = wpReady" in iss,
+        "离开准备安装页时 NextButtonClick 把勾选框状态同步进 Flag",
+    )
+    check(
+        "function ShouldCreateDesktopShortcut(): Boolean;" in iss
+        and "function ShouldCreateStartMenuShortcut(): Boolean;" in iss,
+        "[Icons] 的 Check 条件是 ShouldCreate*Shortcut 函数",
+    )
+    check(
+        "procedure CurStepChanged(CurStep: TSetupStep);" in iss,
+        "CurStepChanged 原型正确（procedure + TSetupStep）",
+    )
+    check(
+        "desktop_shortcut_declined" in iss
+        and "desktop_shortcut_created" in iss
+        and "SaveStringToFile(DataDir + '\\desktop_shortcut_declined'" in iss
+        and "SaveStringToFile(DataDir + '\\desktop_shortcut_created'" in iss,
+        "安装后按勾选写 marker：勾选写 created、不勾选写 declined",
+    )
+    check(
+        "DeleteFile(DataDir + '\\desktop_shortcut_created')" in iss
+        and "DeleteFile(DataDir + '\\desktop_shortcut_declined')" in iss,
+        "两个 marker 互斥：写一个就删另一个（覆盖安装时旧 marker 不残留）",
+    )
+    check(
+        installer.DESKTOP_SHORTCUT_DECLINED_MARKER_FILENAME
+        == "desktop_shortcut_declined",
+        "installer.py 的 declined marker 名与 .iss 一致",
+    )
 
     # [UninstallDelete] 段：运行产物与用户数据必须都在。
     # 只认行首的段头：注释里提到段名（如 [Code]）不算，否则 split 会提前截断。
@@ -323,9 +409,30 @@ def main() -> int:
     code = re.split(r"(?m)^\[Code\]\s*$", iss, maxsplit=1)[1]
     check("ExecutablePath" in code and "StartsWith($prefix" in code,
           "停进程用 ExecutablePath 前缀规则")
-    # v40 三遍扫尾：最多 3 遍、每遍睡 2 秒、扫不到提前停、最后核实残留。
-    check("for ($pass = 1" in code and "Start-Sleep -Seconds 2" in code,
-          "停进程最多跑 3 遍、每遍之间睡 2 秒")
+    # v41 参数化脚本：安装目录等由 Exec 命令行传参，脚本文件全文 ASCII。
+    check("param([string]$installDir" in code
+          and "-InstallDir " in code and "-ProfileDir " in code
+          and "-LogPath " in code and "-ExcludePid " in code
+          and '-ExeName "简历猎手.exe"' in code,
+          "停进程脚本是参数化的（Exec 命令行传安装目录/配置目录/日志/PID/exe 名）")
+    # v41 流程：先 POST /api/exit → 最多 3 轮杀进程，每轮杀完轮询
+    # Wait-PidsGone 等 PID 真正消失（最多 10 秒）→ 句柄探针。
+    check("for ($round = 1; $round -le 3; $round++)" in code
+          and "Wait-PidsGone $targets 10" in code,
+          "停进程最多 3 轮，每轮杀完轮询等 PID 真正消失（Wait-PidsGone 10 秒）")
+    check("Test-FileLocked" in code and "Wait-FilesFree" in code
+          and "'ReadWrite'" in code and "Wait-FilesFree 5" in code
+          and "Wait-FilesFree 30" in code,
+          "停进程等句柄释放：独占打开 exe 与 db 探针（ReadWrite），5 秒不行再等 30 秒")
+    check("Win32_Process -Filter " in code and "Name = " in code
+          and "Stop-Process -Id $id" in code,
+          "最后一招按产品自己的 exe 名枚举 PID 再杀（按 PID 杀，不 broad 杀映像名）")
+    check("Write-StopLog" in code and "stop-sweep: killed=" in code
+          and "probe-ok=" in code,
+          "停进程结果写进卸载日志（stop-sweep / probe-ok，不再只打 stdout）")
+    check("Start-Sleep -Seconds 4" not in code
+          and "Start-Sleep -Seconds 2" not in code,
+          "v40 的固定 4 秒 / 每遍 2 秒睡眠已删（改成有界轮询，不再睡死数）")
     check("IndexOf($installDir" in code,
           "停进程第二轮按命令行里的安装目录杀（系统 node / cmd / robocopy）")
     # .iss 里四个名字是 Q 拼接的，原文里不连续；逐个查，精确的整串
@@ -408,38 +515,42 @@ def main() -> int:
           "usDone 入口记一行日志（下次失败直接证明走到哪）")
 
     # Python 侧的停进程脚本与 iss 里的文本判定一致（关键子串都在）。
-    py_script = installer.uninstall_stop_processes_script(
-        "C:\\app", "C:\\Users\\x\\.jianli-lieshou\\browser-profile", 1234
-    )
-    for needle in ("StartsWith($prefix", "Contains($profile)", "ProcessId -ne 1234",
+    py_script = installer.uninstall_stop_processes_script()
+    for needle in ("param([string]$installDir", "StartsWith($prefix",
+                   "Contains($profile)", "ProcessId -ne $excludePid",
                    "Name -ne 'unins000.exe'", "Name -ne '_unins.tmp'",
-                   "for ($pass = 1", "IndexOf($installDir",
+                   "for ($round = 1", "IndexOf($installDir",
                    "ProcessId -ne $PID", "stuck=$($stuck.Count)",
-                   "@('node.exe','cmd.exe','robocopy.exe','powershell.exe')"):
+                   "@('node.exe','cmd.exe','robocopy.exe','powershell.exe')",
+                   "Wait-PidsGone", "Test-FileLocked", "Wait-FilesFree",
+                   "Write-StopLog", "probe-ok="):
         check(needle in py_script, f"installer.py 停进程脚本含 {needle}")
-    # .iss 里 Pascal 拼出来的脚本必须与 installer.py 生成的逐字一致
-    # （只差 InstallDir/ProfileDir/PID 三个运行时值）：Linux 上编不了
-    # Inno，拼错了只能靠这一项发现——v40 之前只核对子串，拼错引号
-    # 也发现不了。
+    # .iss 里 Pascal 拼出来的脚本必须与 installer.py 生成的逐字一致：
+    # v41 的脚本是参数化的，不含任何运行时值，不再需要第一行剥离或
+    # 占位替换（v40 的那套归一化已删——留着反而会把真正的差异盖住）。
+    # Linux 上编不了 Inno，拼错了只能靠这一项发现——v40 之前只核对
+    # 子串，拼错引号也发现不了。
     assembled = eval_pascal_stop_script(code)
     check(assembled is not None, "能从 .iss 里求值出停进程脚本")
     if assembled is not None:
-        sweep = assembled.split("\n", 1)[1] if "\n" in assembled else assembled
-        py_norm = (
-            py_script.replace("'C:\\app'", "'<INSTALLDIR>'")
-            .replace(
-                "'C:\\Users\\x\\.jianli-lieshou\\browser-profile'",
-                "'<PROFILEDIR>'",
-            )
-            .replace("ProcessId -ne 1234", "ProcessId -ne <PID>")
-        )
         check(
-            sweep == py_norm,
+            assembled == py_script,
             ".iss 拼出的停进程脚本与 installer.py 生成的逐字一致",
         )
+        if assembled != py_script:
+            a_lines = assembled.split("\n")
+            p_lines = py_script.split("\n")
+            for i, (a, p) in enumerate(zip(a_lines, p_lines)):
+                if a != p:
+                    print(f"  首个差异在第 {i + 1} 行：")
+                    print(f"    .iss: {a!r}")
+                    print(f"    .py : {p!r}")
+                    break
+            if len(a_lines) != len(p_lines):
+                print(f"  行数不同：.iss {len(a_lines)} 行，.py {len(p_lines)} 行")
         check(
             all(
-                sweep.count(a) == sweep.count(b)
+                assembled.count(a) == assembled.count(b)
                 for a, b in (("{", "}"), ("(", ")"), ("[", "]"))
             ),
             "拼出的停进程脚本括号平衡",

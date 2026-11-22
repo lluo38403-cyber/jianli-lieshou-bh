@@ -219,6 +219,61 @@ class EnsureDesktopShortcutTests(unittest.TestCase):
                 self.assertFalse(updater.ensure_desktop_shortcut(install, exe))
             self.assertFalse((install / "data" / "desktop_shortcut_created").exists())
 
+    def test_declined_marker_means_do_not_create(self):
+        # v41：安装时用户不勾选“创建桌面快捷方式”，安装程序写
+        # desktop_shortcut_declined marker——启动时见到它就不再补建，
+        # 否则向导里的勾选框等于没生效（v41 核实前程序每次启动都会
+        # 自建桌面快捷方式）。
+        with tempfile.TemporaryDirectory() as tmp:
+            install, exe = self._install(tmp)
+            declined = install / "data" / "desktop_shortcut_declined"
+            declined.parent.mkdir(parents=True)
+            declined.write_text("1.1.27\n", encoding="utf-8")
+            win, frozen = self._windows_frozen()
+            with (
+                win,
+                frozen,
+                patch("bosshunter.updater.subprocess.run") as run,
+            ):
+                self.assertFalse(updater.ensure_desktop_shortcut(install, exe))
+            run.assert_not_called()
+            # declined marker 本身不动，created marker 不写。
+            self.assertTrue(declined.is_file())
+            self.assertFalse(
+                (install / "data" / "desktop_shortcut_created").exists()
+            )
+
+    def test_declined_marker_beats_created_marker(self):
+        # 两个 marker 理论上互斥（安装程序写一个就删另一个），万一
+        # 同时存在，declined 优先：不建。
+        with tempfile.TemporaryDirectory() as tmp:
+            install, exe = self._install(tmp)
+            for name in (
+                "desktop_shortcut_created",
+                "desktop_shortcut_declined",
+            ):
+                marker = install / "data" / name
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("1.1.27\n", encoding="utf-8")
+            win, frozen = self._windows_frozen()
+            with (
+                win,
+                frozen,
+                patch("bosshunter.updater.subprocess.run") as run,
+            ):
+                self.assertFalse(updater.ensure_desktop_shortcut(install, exe))
+            run.assert_not_called()
+
+    def test_declined_marker_name_matches_installer(self):
+        # 安装程序写 marker、程序启动时认它，两个模块必须用同一个
+        # 文件名，否则勾选框等于没生效。
+        from bosshunter import installer
+
+        self.assertEqual(
+            updater.DESKTOP_SHORTCUT_DECLINED_MARKER_FILENAME,
+            installer.DESKTOP_SHORTCUT_DECLINED_MARKER_FILENAME,
+        )
+
     def test_ps_quote_doubles_single_quotes(self):
         self.assertEqual(updater._ps_quote("C:\\a'b"), "'C:\\a''b'")
 
