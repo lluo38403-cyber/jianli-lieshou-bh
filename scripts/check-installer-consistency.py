@@ -34,6 +34,75 @@ def check(ok: bool, label: str) -> None:
         FAILURES.append(label)
 
 
+def find_nested_brace_comments(code: str) -> list[str]:
+    """[Code] 段里 { ... } 注释不支持嵌套：注释内再出现 { 会提前闭合。
+
+    流水线 #5 教训：GetUserProfile 的注释里写了 {userprofile}，注释在
+    那个 } 处提前闭合，同一行剩下的文字被当成代码，iscc 在第 122 行
+    第 27 列报 Syntax error。返回问题描述列表（空 = 干净）。
+    字符串里的花括号（如 PowerShell 脚本、ExpandConstant('{app}')）
+    与 // 行注释里的花括号不算。
+    """
+    problems: list[str] = []
+    i = 0
+    n = len(code)
+    line = 1
+    in_str = False
+    in_line_comment = False
+    in_star_comment = False
+    brace_start_line = 0
+    while i < n:
+        c = code[i]
+        if c == "\n":
+            line += 1
+            in_line_comment = False
+            i += 1
+            continue
+        if in_line_comment:
+            i += 1
+            continue
+        if in_star_comment:
+            if c == "*" and i + 1 < n and code[i + 1] == ")":
+                in_star_comment = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_str:
+            if c == "'":
+                if i + 1 < n and code[i + 1] == "'":
+                    i += 2
+                    continue
+                in_str = False
+            i += 1
+            continue
+        if brace_start_line:
+            if c == "{":
+                problems.append(
+                    f"第 {line} 行：花括号注释里又出现 {{（注释在第一个 }} 处提前闭合）"
+                )
+            elif c == "}":
+                brace_start_line = 0
+            i += 1
+            continue
+        if c == "'":
+            in_str = True
+        elif c == "/" and i + 1 < n and code[i + 1] == "/":
+            in_line_comment = True
+            i += 2
+            continue
+        elif c == "(" and i + 1 < n and code[i + 1] == "*":
+            in_star_comment = True
+            i += 2
+            continue
+        elif c == "{":
+            brace_start_line = line
+        i += 1
+    if brace_start_line:
+        problems.append(f"第 {brace_start_line} 行起的花括号注释没有闭合")
+    return problems
+
+
 def main() -> int:
     iss_path = ROOT / "installer" / "jianli-lieshou.iss"
     if not iss_path.is_file():
@@ -147,6 +216,10 @@ def main() -> int:
           "卸载选项默认保留用户数据（复选框默认不勾选）")
     check("GetUserProfile" in code and "GetEnv('USERPROFILE')" in code,
           "GetUserProfile 脚本常量取 %USERPROFILE%（Inno 没有 {userprofile} 常量）")
+    nested = find_nested_brace_comments(code)
+    for p in nested:
+        print(f"  注释花括号嵌套：{p}")
+    check(not nested, "[Code] 段花括号注释里没有内层花括号（注释不支持嵌套）")
     check("MsgBox" in code and "卸载日志" in code,
           "删不掉的残留记日志并在完成页告知用户")
 

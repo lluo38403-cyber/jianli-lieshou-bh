@@ -119,10 +119,13 @@ end;
 
 function GetUserProfile(Param: String): String;
 begin
-  { Inno 没有 {userprofile} 常量（v39 曾误用，iscc 报 Unknown constant，
-    流水线 #4 因此失败）：用户目录只能从环境变量取，与
-    StopProcessesBeforeUninstall 里的 GetEnv('USERPROFILE') 同款写法。
-    供 [UninstallDelete] 的 {code:GetUserProfile} 用。 }
+  // Inno 没有 userprofile 常量（v39 曾误用，iscc 报 Unknown constant，
+  // 流水线 #4 因此失败）：用户目录只能从环境变量取，与
+  // StopProcessesBeforeUninstall 里的 GetEnv('USERPROFILE') 同款写法。
+  // 供 [UninstallDelete] 的 code:GetUserProfile 用。
+  // 注意：Pascal Script 的花括号注释不支持嵌套，注释里不能出现花括号
+  // （流水线 #5 教训：注释里的 userprofile 后那个右花括号提前闭合了
+  // 注释，iscc 在第 122 行报 Syntax error）。
   Result := GetEnv('USERPROFILE');
 end;
 
