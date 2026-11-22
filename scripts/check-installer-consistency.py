@@ -34,6 +34,56 @@ def check(ok: bool, label: str) -> None:
         FAILURES.append(label)
 
 
+def strip_pascal_comments(code: str) -> str:
+    """去掉 [Code] 段里的注释（// 行注释、{ } 块注释、(* *) 注释）。
+
+    只去掉注释：字符串里的花括号/斜杠不算（PowerShell 脚本、
+    ExpandConstant('{app}') 都是字符串）。块注释不支持嵌套，
+    第一个 } 即闭合（与 find_nested_brace_comments 同款判定）。
+    禁令类检查（某函数名不得出现）要对去掉注释后的文本做，
+    否则注释里提到名字也会误报。
+    """
+    out: list[str] = []
+    i, n = 0, len(code)
+    in_str = False
+    while i < n:
+        c = code[i]
+        if in_str:
+            out.append(c)
+            if c == "'":
+                if i + 1 < n and code[i + 1] == "'":
+                    out.append(code[i + 1])
+                    i += 2
+                    continue
+                in_str = False
+            i += 1
+            continue
+        if c == "'":
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and code[i + 1] == "/":
+            while i < n and code[i] != "\n":
+                i += 1
+            continue
+        if c == "(" and i + 1 < n and code[i + 1] == "*":
+            j = code.find("*)", i + 2)
+            if j == -1:
+                break
+            i = j + 2
+            continue
+        if c == "{":
+            j = code.find("}", i)
+            if j == -1:
+                break
+            i = j + 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def find_nested_brace_comments(code: str) -> list[str]:
     """[Code] 段里 { ... } 注释不支持嵌套：注释内再出现 { 会提前闭合。
 
@@ -212,8 +262,31 @@ def main() -> int:
     check("Stop-Process -Name" not in code,
           "不按映像名杀进程（Stop-Process -Name 不出现）")
     check("/api/exit" in code, "卸载前先试应用内 /api/exit 完整退出清理")
-    check("DeleteUserData" in code and "Checked := False" in code,
-          "卸载选项默认保留用户数据（复选框默认不勾选）")
+    check("DeleteUserData" in code and "DeleteUserDataFlag" in code,
+          "删用户数据只认 DeleteUserDataFlag（默认保留）")
+    check("SuppressibleMsgBox" in code and "IDNO" in code,
+          "删用户数据先问用户，静默默认保留（SuppressibleMsgBox 默认 IDNO）")
+    check("UserDataExists" in code,
+          "没用户数据时不问用户（UserDataExists 守门）")
+    check("SuppressibleMsgBox(Notice, mbInformation, MB_OK, IDOK)" in code,
+          "残留告知用 SuppressibleMsgBox（静默不弹窗、不挂住）")
+    # Inno 的 Create*Page 系列与 WizardSilent 在卸载程序里被禁
+    # （sfNoUninstall）：调了卸载直接退 1（流水线 #8 教训：退出码 1
+    # = Setup failed to initialize）。CreateInputOptionPage 在
+    # InitializeUninstall 里建卸载选项页就是这么死的。
+    # 对去掉注释后的文本查：注释里提到名字不算（InitializeUninstall
+    # 的注释就写明了这个禁令）。
+    code_nocomments = strip_pascal_comments(code)
+    for _fname in ("CreateCustomPage", "CreateInputQueryPage",
+                   "CreateInputOptionPage", "CreateInputDirPage",
+                   "CreateInputFilePage", "CreateOutputMsgPage",
+                   "CreateOutputMsgMemoPage", "CreateOutputProgressPage",
+                   "CreateOutputMarqueeProgressPage"):
+        check(_fname not in code_nocomments, f"卸载程序禁用的 {_fname} 不出现")
+    check("WizardSilent" not in code_nocomments,
+          "卸载程序禁用的 WizardSilent 不出现")
+    check("DeleteDataCheckBox" not in code_nocomments,
+          "卸载选项页的 DeleteDataCheckBox 已移除")
     check("GetUserProfile" in code and "GetEnv('USERPROFILE')" in code,
           "GetUserProfile 脚本常量取 %USERPROFILE%（Inno 没有 {userprofile} 常量）")
     # 事件函数原型：对照 Inno 官方文档核对（流水线 #6 教训：

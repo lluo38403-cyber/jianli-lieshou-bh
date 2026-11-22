@@ -29,8 +29,11 @@
 ; - 默认 config.yaml 不是安装包里直接带的文件：dist 里只有
 ;   _internal\config.example.yaml，launcher 首次启动时复制为
 ;   安装目录下的 config.yaml（原有行为不变）。
-; - 卸载不静默删用户数据：向导里默认保留 config.yaml、
-;   data\bosshunter.db、data\resumes\，打勾才删（见下面的卸载选项页）。
+; - 卸载不静默删用户数据：默认保留 config.yaml、
+;   data\bosshunter.db、data\resumes\，卸载时问一次（用户选“是”才删）。
+;   注意：Inno 的卸载程序里建不了自定义向导页（CreateInputOptionPage
+;   等 Create*Page 函数在卸载程序里被禁，调了卸载直接退 1，见
+;   InitializeUninstall 的注释），所以改问 SuppressibleMsgBox 对话框。
 
 #ifndef MyAppVersion
   #define MyAppVersion "1.1.25"
@@ -86,7 +89,7 @@ Type: files; Name: "{app}\update.log"
 Type: files; Name: "{app}\update-pending.json"
 Type: files; Name: "{app}\update-result.json"
 Type: filesandordirs; Name: "{app}\update-backup-*"
-; 用户数据：只在卸载向导里打勾“同时删除用户数据”时删，默认保留。
+; 用户数据：只在卸载时用户确认“同时删除用户数据”时删，默认保留。
 ; 对应 installer.py USER_DATA_RELATIVE。
 Type: files; Name: "{app}\config.yaml"; Check: DeleteUserData
 Type: files; Name: "{app}\data\bosshunter.db"; Check: DeleteUserData
@@ -109,12 +112,25 @@ Type: filesandordirs; Name: "{%TEMP}\jianli-update-*"
 
 [Code]
 var
-  DeleteDataCheckBox: TNewCheckBox;
+  DeleteUserDataFlag: Boolean;
   UninstallLogPath: String;
 
 function DeleteUserData(): Boolean;
 begin
-  Result := (DeleteDataCheckBox <> nil) and DeleteDataCheckBox.Checked;
+  { 删用户数据只认这一面旗：默认 False（保留）；卸载时用户在对话框
+    里选“是”才置 True。静默卸载不弹窗，旗保持 False，即保留。 }
+  Result := DeleteUserDataFlag;
+end;
+
+function UserDataExists(): Boolean;
+var
+  AppDir: String;
+begin
+  { 有任一项用户数据才值得问用户；一项都没有就不问，直接保留。 }
+  AppDir := ExpandConstant('{app}');
+  Result := FileExists(AppDir + '\config.yaml') or
+    FileExists(AppDir + '\data\bosshunter.db') or
+    DirExists(AppDir + '\data\resumes');
 end;
 
 function GetUserProfile(Param: String): String;
@@ -157,25 +173,15 @@ begin
 end;
 
 function InitializeUninstall(): Boolean;
-var
-  Page: TInputOptionWizardPage;
 begin
   UninstallLogPath := GetEnv('TEMP') + '\简历猎手-卸载日志.txt';
-  { 卸载选项页：默认保留用户数据，打勾才删。静默卸载（/VERYSILENT）
-    不显示此页，复选框默认不勾选，即保留用户数据。 }
-  Page := CreateInputOptionPage(wpWelcome,
-    '删除用户数据', '默认保留您的配置、简历和数据库',
-    '卸载默认只删除程序文件与缓存、临时数据。' +
-    '下面的选项打勾后，才会同时删除您的配置文件、简历和数据库，删了找不回来。',
-    False, False);
-  DeleteDataCheckBox := TNewCheckBox.Create(Page);
-  DeleteDataCheckBox.Parent := Page.Surface;
-  DeleteDataCheckBox.Top := 8;
-  DeleteDataCheckBox.Width := Page.SurfaceWidth;
-  DeleteDataCheckBox.Caption := '同时删除用户数据（config.yaml、简历、数据库）';
-  DeleteDataCheckBox.Checked := False;
   { InitializeUninstall 是事件函数，必须返回 Boolean：True 才继续卸载。
-    本函数没有“某条件不允许卸载”的设计，建完卸载选项页后一律返回 True。 }
+    本函数没有“某条件不允许卸载”的设计，一律返回 True。
+    注意：这里不能建卸载选项页——Inno 的 CreateInputOptionPage 等
+    Create*Page 函数在卸载程序里被禁（sfNoUninstall），调了就报脚本错、
+    卸载以退出码 1（Setup failed to initialize）失败（流水线 #8 教训）。
+    删用户数据的选择改在 CurUninstallStepChanged (usAppMutexCheck)
+    里问 SuppressibleMsgBox 对话框。 }
   Result := True;
 end;
 
@@ -259,6 +265,21 @@ var
   Notice: String;
   InstallDir: String;
 begin
+  if CurUninstallStep = usAppMutexCheck then
+  begin
+    { 删用户数据先问用户，默认保留。问在这里（确认卸载之后、真正删
+      文件之前），不用 InitializeUninstall 里问（那时还在确认卸载前）。
+      SuppressibleMsgBox：静默卸载（/SUPPRESSMSGBOXES）不弹窗，直接
+      按默认值 IDNO（保留）走，不会挂住；交互卸载才弹是/否对话框，
+      默认按钮是否（MB_DEFBUTTON2）。没用户数据时不问。 }
+    if UserDataExists() then
+    begin
+      if SuppressibleMsgBox('卸载将删除程序文件与缓存、临时数据。' + #13#10 +
+          '是否同时删除用户数据（config.yaml、简历、数据库）？删了找不回来。',
+          mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
+        DeleteUserDataFlag := True;
+    end;
+  end;
   if CurUninstallStep = usUninstall then
   begin
     { 先停进程再删文件：删的是 [UninstallDelete] 清单与 Inno 自动
@@ -293,7 +314,9 @@ begin
             Notice := Notice + '  ……共 ' + IntToStr(Count) + ' 项。' + #13#10;
           Notice := Notice + '请关闭占用它们的程序后手动删除，或重启电脑后再删除。' + #13#10 +
             '卸载日志：' + UninstallLogPath;
-          MsgBox(Notice, mbInformation, MB_OK);
+          { 用 SuppressibleMsgBox：静默卸载不弹窗（按 IDOK 直接返回），
+            否则普通 MsgBox 在静默模式下也会弹窗、没人点就挂住。 }
+          SuppressibleMsgBox(Notice, mbInformation, MB_OK, IDOK);
         end;
       finally
         Leftovers.Free();

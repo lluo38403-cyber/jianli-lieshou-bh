@@ -86,6 +86,14 @@ try {
   exit 0
 } catch {
   Write-Host "SMOKE_FAIL $($_.Exception.Message)"
+  # 失败自带证据：卸载程序的日志（若已产生）打印出来再退出，
+  # 否则下一次卸载失败又只能看到一个退出码（流水线 #8 教训）。
+  $uninstLog = Join-Path $env:TEMP '简历猎手-卸载日志.txt'
+  if (Test-Path $uninstLog) {
+    Write-Host '--- 卸载日志（%TEMP%\简历猎手-卸载日志.txt） ---'
+    Get-Content $uninstLog -Raw | Write-Host
+    Write-Host '--- 卸载日志结束 ---'
+  }
   if ($installed -and (Test-Path (Join-Path $installDir 'unins000.exe'))) {
     Write-Host '收尾：尝试静默卸载残留的安装…'
     Start-Process -FilePath (Join-Path $installDir 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -ErrorAction SilentlyContinue | Out-Null
