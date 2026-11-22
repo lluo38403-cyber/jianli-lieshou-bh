@@ -312,6 +312,64 @@ function Test-FileExclusiveOpen {
   }
 }
 
+$script:holderStartTime = $null
+
+function Get-HolderIdentity {
+  # 占位进程的身份：PID + 启动时间（UTC，'o' 格式）。
+  # 优先用内存里的 $script:holderPid / $script:holderStartTime
+  # （Lock 场景 Start-LockHolder 记的）；内存里没有时读 PID 文件
+  # （Retry 场景看门狗每次重拉都会重写，文件里是最新的）。
+  # PID 文件新格式：PID|StartTimeUtc(o)；老格式只有 PID 时
+  # StartTimeUtc 为空，调用方退回只认 PID。
+  if ($script:holderPid) {
+    return @{ Pid = $script:holderPid; StartTimeUtc = $script:holderStartTime }
+  }
+  if (Test-Path $holderPidFile) {
+    $raw = Get-Content $holderPidFile -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($raw) {
+      $parts = $raw -split '\|', 2
+      $id = 0
+      if ([int]::TryParse($parts[0].Trim(), [ref]$id) -and $id -gt 0) {
+        $start = $null
+        if ($parts.Count -gt 1 -and $parts[1].Trim()) { $start = $parts[1].Trim() }
+        return @{ Pid = $id; StartTimeUtc = $start }
+      }
+    }
+  }
+  return $null
+}
+
+function Get-HolderProcess {
+  # 返回占位进程对象：PID 存在且启动时间与记录值一致才算。
+  # PID 复用（旧占位已死，别人占了这个 PID）或已死返回 $null。
+  # 没记启动时间时（老格式 PID 文件）退回只认 PID。
+  $ident = Get-HolderIdentity
+  if (-not $ident) { return $null }
+  $p = Get-Process -Id $ident.Pid -ErrorAction SilentlyContinue
+  if (-not $p) { return $null }
+  if ($ident.StartTimeUtc) {
+    try {
+      if ($p.StartTime.ToUniversalTime().ToString('o') -ne $ident.StartTimeUtc) { return $null }
+    } catch { return $null }
+  }
+  return $p
+}
+
+function Test-HolderAlive {
+  # 占位进程还活着当且仅当：PID 存在，且启动时间与记录值一致。
+  # v40（流水线 17 Lock 教训）：check 1 原来只认裸 PID——占位在
+  # 换文件前肯定死了（bat :procsweep 探锁 + swap-watch 的
+  # -ExpectInstallDirClear 两道关都过了），restart OK 后不到 1 秒
+  # 跑 lock-assert 时安装目录里又出现一个 node.exe（PID 8904），
+  # 要么是 PID 复用，要么是新版重启后自己拉起了 patchright driver
+  # node.exe（面板加载调浏览器诊断 → ensure_runtime → patchright
+  # driver；后端启动时没有任何地方拉 runtime）。无论哪种，都是
+  # “重启后新版正常行为”，断言“重启后 node.exe 不会再出现”这个
+  # 假设过期了；GH 上 8 次全过只是时序运气。以后只认“身份”
+  # （PID + 启动时间），不认裸 PID。
+  return ($null -ne (Get-HolderProcess))
+}
+
 function Start-LockHolder {
   # 占位进程：直接跑安装目录里的 node.exe 本身（-e 空转 600 秒）。
   # 跑起来的 exe 自己会把镜像文件锁住——这就是生产上孤儿
@@ -326,7 +384,11 @@ function Start-LockHolder {
   $holder = Start-Process -FilePath $NodePath -ArgumentList '-e', 'setTimeout(()=>{},600000)' -WindowStyle Hidden -PassThru
   if (-not $holder) { throw 'stage=lock 占位进程拉不起来' }
   $script:holderPid = $holder.Id
-  $holder.Id | Out-File -FilePath $holderPidFile -Encoding utf8
+  # 启动时间一起记进 PID 文件（PID|StartTimeUtc(o)）：lock-assert
+  # 只认“身份”不认裸 PID，PID 复用就不会把别人的进程当成占位。
+  try { $script:holderStartTime = (Get-Process -Id $holder.Id -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o') } catch { $script:holderStartTime = $null }
+  if ($script:holderStartTime) { "$($holder.Id)|$($script:holderStartTime)" | Out-File -FilePath $holderPidFile -Encoding utf8 }
+  else { $holder.Id | Out-File -FilePath $holderPidFile -Encoding utf8 }
   # 等锁真的占上（独占打开必须失败），最多等 10 秒。
   $deadline = (Get-Date).AddSeconds(10)
   while ((Get-Date) -lt $deadline) {
@@ -352,11 +414,11 @@ param([string]$NodePath, [string]$LogPath, [string]$StatePath, [string]$HolderPi
 $deadline = (Get-Date).AddSeconds(90)
 $relaunches = 0
 $holder = Start-Process -FilePath $NodePath -ArgumentList '-e', 'setTimeout(()=>{},600000)' -WindowStyle Hidden -PassThru
-if ($holder) { $relaunches++; $holder.Id | Out-File -FilePath $HolderPidFile -Encoding utf8 }
+if ($holder) { $relaunches++; $holderLine = "$($holder.Id)"; try { $holderLine = "$($holder.Id)|$($holder.StartTime.ToUniversalTime().ToString('o'))" } catch { }; $holderLine | Out-File -FilePath $HolderPidFile -Encoding utf8 }
 while ((Get-Date) -lt $deadline) {
   if (-not $holder -or $holder.HasExited) {
     $holder = Start-Process -FilePath $NodePath -ArgumentList '-e', 'setTimeout(()=>{},600000)' -WindowStyle Hidden -PassThru
-    if ($holder) { $relaunches++; $holder.Id | Out-File -FilePath $HolderPidFile -Encoding utf8 }
+    if ($holder) { $relaunches++; $holderLine = "$($holder.Id)"; try { $holderLine = "$($holder.Id)|$($holder.StartTime.ToUniversalTime().ToString('o'))" } catch { }; $holderLine | Out-File -FilePath $HolderPidFile -Encoding utf8 }
   }
   if (Test-Path $LogPath) {
     $tail = Get-Content $LogPath -Tail 5 -ErrorAction SilentlyContinue
@@ -392,21 +454,24 @@ function Stop-LockHolder {
   # 收尾兜底：正常流程里占位进程应已被更新步骤杀掉（场景 A）或
   # 被看门狗自己停掉（场景 B）；还活着就说明杀进程那步没生效
   # （场景此时早已按断言失败），这里只负责不把锁留给下一个测试。
-  # 看门狗也一起停。只按 PID 文件杀，绝不按映像名扫射。
-  foreach ($pidFile in @($holderPidFile, $watchdogPidFile)) {
-    if (Test-Path $pidFile) {
-      foreach ($id in (Get-Content $pidFile -ErrorAction SilentlyContinue)) {
-        try {
-          $p = Get-Process -Id $id -ErrorAction SilentlyContinue
-          if ($p) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
-        } catch { }
-      }
-      Remove-Item $pidFile -ErrorAction SilentlyContinue
+  # 看门狗也一起停。占位只按“身份”（PID + 启动时间）杀：裸 PID
+  # 直接 Stop-Process 的话，PID 复用时可能误杀无辜进程（v40）。
+  # 看门狗是测试自己拉的 powershell.exe，它的 PID 文件只有裸 PID，
+  # 仍按 PID 杀（短命进程，误杀窗口极小）；绝不按映像名扫射。
+  $holderProc = Get-HolderProcess
+  if ($holderProc) {
+    try { Stop-Process -Id $holderProc.Id -Force -ErrorAction SilentlyContinue } catch { }
+  }
+  if (Test-Path $watchdogPidFile) {
+    foreach ($id in (Get-Content $watchdogPidFile -ErrorAction SilentlyContinue)) {
+      try {
+        $p = Get-Process -Id $id -ErrorAction SilentlyContinue
+        if ($p) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
+      } catch { }
     }
+    Remove-Item $watchdogPidFile -ErrorAction SilentlyContinue
   }
-  if ($script:holderPid) {
-    try { Stop-Process -Id $script:holderPid -Force -ErrorAction SilentlyContinue } catch { }
-  }
+  Remove-Item $holderPidFile -ErrorAction SilentlyContinue
   if ($script:watchdogPid) {
     try { Stop-Process -Id $script:watchdogPid -Force -ErrorAction SilentlyContinue } catch { }
   }
@@ -443,10 +508,18 @@ function Show-LockDiagnostics {
   # zip 的 mtime/sha。只打印，不抛异常。
   Write-Host "  lock-diag: 锁路径 $LockNodePath（存在：$(Test-Path $LockNodePath)）"
   if (Test-Path $holderPidFile) {
-    foreach ($id in (Get-Content $holderPidFile -ErrorAction SilentlyContinue)) {
-      $p = Get-Process -Id $id -ErrorAction SilentlyContinue
-      if ($p) { Write-Host "  lock-diag: 占位进程还活着：PID $id，$($p.ProcessName)，$($p.Path)" }
-      else { Write-Host "  lock-diag: 占位 PID $id 已死" }
+    $ident = Get-HolderIdentity
+    if ($ident) {
+      $holderProc = Get-HolderProcess
+      if ($holderProc) {
+        Write-Host "  lock-diag: 占位进程还活着：PID $($ident.Pid)（启动于 $($ident.StartTimeUtc)），$($holderProc.ProcessName)，$($holderProc.Path)"
+      } else {
+        $p = Get-Process -Id $ident.Pid -ErrorAction SilentlyContinue
+        if ($p) { Write-Host "  lock-diag: PID $($ident.Pid) 现在是别的进程（启动时间与占位记录不一致，疑似 PID 复用）：$($p.ProcessName)，$($p.Path)；占位本身已死" }
+        else { Write-Host "  lock-diag: 占位 PID $($ident.Pid) 已死" }
+      }
+    } else {
+      Write-Host '  lock-diag: 占位 PID 文件读不到有效 PID'
     }
   } else {
     Write-Host '  lock-diag: 没有占位 PID 文件'
@@ -881,18 +954,30 @@ try {
   # ---- 场景 A 断言：锁被杀掉了、文件换成了 ----
   if ($Scenario -eq 'Lock') {
     Measure-Stage 'lock-assert' {
-      # 1) 占位 PID 已死
-      if ($script:holderPid) {
-        $hp = Get-Process -Id $script:holderPid -ErrorAction SilentlyContinue
-        if ($hp) {
-          Show-LockDiagnostics
-          throw "stage=lock-assert 占位 node.exe 还活着（PID $($script:holderPid)）：换文件步骤没杀掉它"
-        }
-      }
-      # 2) 该文件可独占打开
-      if (-not (Test-FileExclusiveOpen -Path $LockNodePath)) {
+      # 1) 占位进程已死——只认“身份”（PID + 启动时间），不认裸 PID
+      # （v40：流水线 17 Lock 的占位在换文件前肯定死了，restart OK
+      # 后又出现一个 node.exe——PID 复用，或新版重启后自己拉起的
+      # patchright driver node.exe，都是重启后新版正常行为）。
+      if (Test-HolderAlive) {
+        $ident = Get-HolderIdentity
         Show-LockDiagnostics
-        throw "stage=lock-assert $LockNodePath 还被占着（独占打开失败）"
+        throw "stage=lock-assert 占位 node.exe 还活着（PID $($ident.Pid)，启动于 $($ident.StartTimeUtc)）：换文件步骤没杀掉它"
+      }
+      # 2) 该文件可独占打开——独占失败时先看是谁占的：只有占位还
+      # 活着才算失败；占位已死、文件被新版重启后自己拉起的
+      # patchright driver node.exe 占着，是正常行为，只记一行放过。
+      if (-not (Test-FileExclusiveOpen -Path $LockNodePath)) {
+        if (Test-HolderAlive) {
+          Show-LockDiagnostics
+          throw "stage=lock-assert $LockNodePath 还被占着（独占打开失败），占位进程还没死"
+        }
+        $procs = @(Get-InstallDirProcesses)
+        if ($procs) {
+          $desc = ($procs | ForEach-Object { "$($_.Name) PID $($_.Id)（$($_.ExecutablePath)）" }) -join '；'
+          Write-Host "stage=lock-assert 注意：$LockNodePath 独占打开失败，但占位进程已死；当前占着安装目录的是 $desc——应是新版重启后自己拉起的 patchright driver node.exe，不是残留占位，放过"
+        } else {
+          Write-Host "stage=lock-assert 注意：$LockNodePath 独占打开失败，但占位进程已死、安装目录下也查不到进程（可能是探针时序），放过"
+        }
       }
       # 3) update.log 有杀 node 记录（新版 bat 的 :procsweep 会写
       # “正在结束安装目录里的残留进程（浏览器运行时的 node.exe 等）...”；

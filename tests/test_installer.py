@@ -1,4 +1,4 @@
-"""简历猎手 v39（1.1.25）· 安装 / 卸载口径测试。
+"""简历猎手 v40（1.1.26）· 安装 / 卸载口径测试。
 
 只测 src/bosshunter/installer.py 里的纯函数：默认路径、用户改目录、
 安全谓词、卸载清理清单、停进程脚本、残留上报。Windows 真机行为
@@ -13,11 +13,11 @@ from bosshunter import installer
 
 
 class DefaultInstallDirTests(unittest.TestCase):
-    def test_default_is_installer_dir_plus_zhaopinglieshou(self):
+    def test_default_is_installer_dir_plus_jianpinglieshou(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(
                 installer.default_install_dir(tmp),
-                Path(tmp) / "zhaopinglieshou",
+                Path(tmp) / "jianpinglieshou",
             )
 
     def test_default_rejects_empty_installer_dir(self):
@@ -32,11 +32,11 @@ class ResolveTargetDirTests(unittest.TestCase):
             for blank in (None, "", "   "):
                 self.assertEqual(
                     installer.resolve_target_dir(blank, tmp),
-                    Path(tmp) / "zhaopinglieshou",
+                    Path(tmp) / "jianpinglieshou",
                 )
 
     def test_user_choice_is_used_as_is_without_forced_subdir(self):
-        # 用户亲手改目录：以所选为准，不再强行追加一层 zhaopinglieshou。
+        # 用户亲手改目录：以所选为准，不再强行追加一层 jianpinglieshou。
         with tempfile.TemporaryDirectory() as tmp:
             chosen = Path(tmp) / "my-place"
             self.assertEqual(
@@ -48,7 +48,7 @@ class ResolveTargetDirTests(unittest.TestCase):
 
     def test_user_choice_inside_installer_dir_keeps_no_extra_layer(self):
         with tempfile.TemporaryDirectory() as tmp:
-            chosen = Path(tmp) / "zhaopinglieshou"
+            chosen = Path(tmp) / "jianpinglieshou"
             self.assertEqual(
                 installer.resolve_target_dir(str(chosen), tmp), chosen
             )
@@ -98,17 +98,17 @@ class SafetyPredicateTests(unittest.TestCase):
         )
         self.assertIsNone(
             installer.unsafe_reason(
-                str(home / "zhaopinglieshou"), home=home, tempdir=tempdir
+                str(home / "jianpinglieshou"), home=home, tempdir=tempdir
             )
         )
 
     def test_accepts_normal_dirs_including_program_files(self):
         for good in (
-            r"C:\Users\lucky\Downloads\zhaopinglieshou",
-            r"D:\zhaopinglieshou",
-            r"C:\Program Files\zhaopinglieshou",
-            "/home/lucky/zhaopinglieshou",
-            "/opt/zhaopinglieshou",
+            r"C:\Users\lucky\Downloads\jianpinglieshou",
+            r"D:\jianpinglieshou",
+            r"C:\Program Files\jianpinglieshou",
+            "/home/lucky/jianpinglieshou",
+            "/opt/jianpinglieshou",
         ):
             self.assertIsNone(
                 installer.unsafe_reason(good), f"{good!r} 应该被接受"
@@ -133,7 +133,7 @@ class SafetyPredicateTests(unittest.TestCase):
 
 class UninstallCleanupTests(unittest.TestCase):
     def _layout(self, tmp):
-        install = Path(tmp) / "zhaopinglieshou"
+        install = Path(tmp) / "jianpinglieshou"
         home = Path(tmp) / "home"
         tempdir = Path(tmp) / "temp"
         for d in (install, home, tempdir):
@@ -159,6 +159,8 @@ class UninstallCleanupTests(unittest.TestCase):
             "window-geometry.json",
             ".startup-failed.json",
             "desktop_shortcut_created",
+            "auth_cache.json",
+            "cities.cache.json",
         ):
             (install / "data" / name).write_text("{}", encoding="utf-8")
         (install / "update-pending.json").write_text("{}", encoding="utf-8")
@@ -212,6 +214,9 @@ class UninstallCleanupTests(unittest.TestCase):
                 "data/window-geometry.json",
                 "data/.startup-failed.json",
                 "data/desktop_shortcut_created",
+                # 两个缓存文件不属于用户数据，卸载时一律删（v40）。
+                "data/auth_cache.json",
+                "data/cities.cache.json",
                 "update-pending.json",
                 "update.log",
                 "update-backup-1.1.24",
@@ -261,7 +266,7 @@ class UninstallCleanupTests(unittest.TestCase):
 
     def test_install_dir_removable_when_no_user_data_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
-            install = Path(tmp) / "zhaopinglieshou"
+            install = Path(tmp) / "jianpinglieshou"
             home = Path(tmp) / "home"
             tempdir = Path(tmp) / "temp"
             for d in (install, home, tempdir):
@@ -272,7 +277,7 @@ class UninstallCleanupTests(unittest.TestCase):
 
     def test_temp_scan_never_touches_other_dirs(self):
         with tempfile.TemporaryDirectory() as tmp:
-            install = Path(tmp) / "zhaopinglieshou"
+            install = Path(tmp) / "jianpinglieshou"
             home = Path(tmp) / "home"
             tempdir = Path(tmp) / "temp"
             for d in (install, home, tempdir):
@@ -296,7 +301,7 @@ class UninstallCleanupTests(unittest.TestCase):
 class StopProcessesScriptTests(unittest.TestCase):
     def test_kills_by_install_dir_prefix_and_excludes_self(self):
         script = installer.uninstall_stop_processes_script(
-            "/tmp/app/zhaopinglieshou",
+            "/tmp/app/jianpinglieshou",
             "/tmp/home/.jianli-lieshou/browser-profile",
             exclude_pid=1234,
         )
@@ -312,7 +317,7 @@ class StopProcessesScriptTests(unittest.TestCase):
 
     def test_excludes_uninstaller_both_phases_by_name(self):
         script = installer.uninstall_stop_processes_script(
-            "/tmp/app/zhaopinglieshou",
+            "/tmp/app/jianpinglieshou",
             "/tmp/home/.jianli-lieshou/browser-profile",
             exclude_pid=1234,
         )
@@ -328,7 +333,7 @@ class StopProcessesScriptTests(unittest.TestCase):
     def test_browser_kill_is_keyed_on_our_profile_dir(self):
         profile = "/tmp/home/.jianli-lieshou/browser-profile"
         script = installer.uninstall_stop_processes_script(
-            "/tmp/app/zhaopinglieshou", profile, exclude_pid=1234
+            "/tmp/app/jianpinglieshou", profile, exclude_pid=1234
         )
         # 工作浏览器只按“命令行里带本程序配置目录”杀。
         self.assertIn("CommandLine", script)
@@ -339,6 +344,61 @@ class StopProcessesScriptTests(unittest.TestCase):
         self.assertIn("killed=", script)
         self.assertIn("browser=", script)
 
+    def test_three_pass_sweep_with_verify(self):
+        # v40：最多 3 遍、每遍睡 2 秒、扫不到提前停、最后核实残留。
+        script = installer.uninstall_stop_processes_script(
+            "/tmp/app/jianpinglieshou",
+            "/tmp/home/.jianli-lieshou/browser-profile",
+            exclude_pid=1234,
+        )
+        self.assertIn("for ($pass = 1; $pass -le 3; $pass++)", script)
+        self.assertIn("Start-Sleep -Seconds 2", script)
+        self.assertIn("if ($found -eq 0) { break }", script)
+        self.assertIn("stuck=$($stuck.Count)", script)
+        self.assertIn("stuck-procs:", script)
+        # 旧的单遍收尾（杀完只睡 1 秒）已不在。
+        self.assertNotIn("Start-Sleep -Seconds 1", script)
+
+    def test_cmdline_loop_catches_off_dir_processes(self):
+        # v40：命令行里带安装目录的进程也要杀——系统 node 跑的
+        # cdp-proxy（可执行路径在安装目录外）、跑 update.bat 的
+        # cmd.exe、更新时的 robocopy、bat 拉起的 powershell。
+        # 只认这四个名字 + 命令行证据，不按映像名扫射。
+        script = installer.uninstall_stop_processes_script(
+            "/tmp/app/jianpinglieshou",
+            "/tmp/home/.jianli-lieshou/browser-profile",
+            exclude_pid=1234,
+        )
+        self.assertIn(
+            "@('node.exe','cmd.exe','robocopy.exe','powershell.exe')",
+            script,
+        )
+        self.assertIn("IndexOf($installDir", script)
+        # 排除自己：卸载程序 PID、两阶段名、扫尾脚本自己的 $PID。
+        self.assertIn("ProcessId -ne 1234", script)
+        self.assertIn("ProcessId -ne $PID", script)
+        self.assertIn("$p.Name -ne 'unins000.exe'", script)
+        self.assertIn("$p.Name -ne '_unins.tmp'", script)
+
+    def test_stop_script_is_ascii_only_and_balanced(self):
+        # 扫尾脚本由 Inno 的 SaveStringToFile 写临时 .ps1，非 ASCII
+        # 可能走系统代码页；新脚本只用 ASCII 字面量，不写中文。
+        script = installer.uninstall_stop_processes_script(
+            "/tmp/app/jianpinglieshou",
+            "/tmp/home/.jianli-lieshou/browser-profile",
+            exclude_pid=1234,
+        )
+        self.assertEqual(
+            [c for c in script if ord(c) > 127],
+            [],
+        )
+        for open_c, close_c in (("{", "}"), ("(", ")"), ("[", "]")):
+            self.assertEqual(
+                script.count(open_c),
+                script.count(close_c),
+                f"括号不平衡：{open_c}{close_c}",
+            )
+
 
 class LeftoverNoticeTests(unittest.TestCase):
     def test_empty_leftovers_means_no_notice(self):
@@ -348,7 +408,7 @@ class LeftoverNoticeTests(unittest.TestCase):
 
     def test_leftovers_are_listed_honestly(self):
         notice = installer.format_leftover_notice(
-            ["C:\\app\\zhaopinglieshou\\简历猎手.exe"],
+            ["C:\\app\\jianpinglieshou\\简历猎手.exe"],
             "C:\\Users\\x\\AppData\\Local\\Temp\\uninstall.log",
         )
         self.assertIn("简历猎手.exe", notice)

@@ -1,4 +1,4 @@
-; 简历猎手 · Inno Setup 6 安装 / 卸载脚本（v39，1.1.25）。
+﻿; 简历猎手 · Inno Setup 6 安装 / 卸载脚本（v40，1.1.26）。
 ;
 ; 口径唯一来源是 src/bosshunter/installer.py：默认路径、卸载清理清单、
 ; 安全谓词、停进程判定都必须与那个模块逐项一致，对应关系由
@@ -6,17 +6,17 @@
 ;
 ; 编译（Windows，CI 里由 build-exe.yml 跑）：
 ;   choco install innosetup -y
-;   iscc /DMyAppVersion=1.1.25 installer\jianli-lieshou.iss
+;   iscc /DMyAppVersion=1.1.26 installer\jianli-lieshou.iss
 ; 不传 /DMyAppVersion 时用下面 #define 的默认值（发版时记得与
 ; pyproject.toml 的 version 保持一致，verify.sh 不校验这一项，
 ; CI 里读 pyproject.toml 传值才是准的）。
-; 产物：dist-installer\简历猎手-安装程序-1.1.25.exe。
+; 产物：dist-installer\简历猎手-安装程序-1.1.26.exe。
 ; 编译前必须先跑 pyinstaller（dist\简历猎手\ 要有内容），[Files]
 ; 直接把 dist 产物原样打进安装包。
 ;
 ; 关键约定：
-; - DefaultDirName={src}\zhaopinglieshou：默认装到安装包所在目录下的
-;   zhaopinglieshou 子文件夹；用户在向导里改目录后按所选路径安装，
+; - DefaultDirName={src}\jianpinglieshou：默认装到安装包所在目录下的
+;   jianpinglieshou 子文件夹；用户在向导里改目录后按所选路径安装，
 ;   不再强行追加一层子文件夹（installer.py resolve_target_dir 同款规则）。
 ; - PrivilegesRequired=lowest：不强制管理员权限，普通权限就能装到
 ;   自己选的目录；卸载注册表项因此写在 HKCU 下
@@ -36,7 +36,7 @@
 ;   InitializeUninstall 的注释），所以改问 SuppressibleMsgBox 对话框。
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.25"
+  #define MyAppVersion "1.1.26"
 #endif
 
 [Setup]
@@ -46,7 +46,7 @@ AppVerName=简历猎手 {#MyAppVersion}
 AppId=简历猎手
 AppPublisher=聚梦Muse AI
 AppPublisherURL=https://www.16688.com.cn/shop/S542647
-DefaultDirName={src}\zhaopinglieshou
+DefaultDirName={src}\jianpinglieshou
 DefaultGroupName=简历猎手
 PrivilegesRequired=lowest
 OutputDir=..\dist-installer
@@ -83,6 +83,8 @@ Type: files; Name: "{app}\data\launched-browser.json"
 Type: files; Name: "{app}\data\window-geometry.json"
 Type: files; Name: "{app}\data\.startup-failed.json"
 Type: files; Name: "{app}\data\desktop_shortcut_created"
+Type: files; Name: "{app}\data\auth_cache.json"
+Type: files; Name: "{app}\data\cities.cache.json"
 Type: files; Name: "{app}\data\.star_hint_*"
 Type: files; Name: "{app}\update.bat"
 Type: files; Name: "{app}\update.log"
@@ -158,8 +160,8 @@ procedure InitializeWizard();
 var
   DirNote: TNewStaticText;
 begin
-  { 目录选择页上写清楚最终安装路径的规则：默认是安装包所在目录下的
-    zhaopinglieshou；改成别的目录就按所选路径安装，不再追加子文件夹。 }
+  { 目录选择页下写用户指定的说明：默认装到安装包所在目录下的
+    jianpinglieshou 文件夹；改成别的目录就按所选路径安装。 }
   DirNote := TNewStaticText.Create(WizardForm);
   DirNote.Parent := WizardForm.SelectDirPage;
   DirNote.Left := WizardForm.DirEdit.Left;
@@ -168,8 +170,7 @@ begin
   DirNote.Height := 36;
   DirNote.AutoSize := False;
   DirNote.WordWrap := True;
-  DirNote.Caption := '默认装到安装包所在目录下的 zhaopinglieshou 文件夹。' +
-    '改成别的目录就按所选路径安装，不再追加子文件夹；最终路径以这里为准。';
+  DirNote.Caption := '默认安装到安装包所在目录下的 jianpinglieshou 文件夹；若修改为其他目录，则按所选路径安装';
 end;
 
 function InitializeUninstall(): Boolean;
@@ -199,36 +200,72 @@ begin
   { 先走应用内完整退出清理（POST /api/exit：停任务 → 停 runtime /
     拉起的 Chrome → 安装目录扫尾），调不通就跳过，不挡卸载；
     再跑同一份判定（installer.uninstall_stop_processes_script）的
-    PowerShell 扫尾：只认 ExecutablePath 在安装目录下的进程（排除
-    卸载程序自己的 PID，不自杀），工作浏览器只杀命令行里带本程序
-    配置目录的 chrome.exe / msedge.exe。绝不按映像名杀 node /
-    chrome（v28 教训：会误杀用户浏览器和其他 node）。
+    PowerShell 扫尾，最多 3 遍、每遍之间睡 2 秒，扫不到目标就提前停，
+    最后再扫一遍核实残留（stuck-procs，只记日志、不拦卸载）：
+    循环 1 只认 ExecutablePath 在安装目录下的进程（主程序、
+    patchright 驱动 node.exe）；循环 2 只认命令行里带安装目录的
+    node.exe / cmd.exe / robocopy.exe / powershell.exe（系统 node
+    跑的 cdp-proxy、跑 update.bat 的 cmd.exe、更新时的 robocopy、
+    bat 拉起的 powershell，可执行路径在安装目录外、循环 1 够不着，
+    也兜底 ExecutablePath 读不到的进程）；循环 3 只杀命令行里带本
+    程序配置目录的 chrome.exe / msedge.exe（工作浏览器）。绝不按
+    映像名杀 node / chrome（v28 教训：会误杀用户浏览器和其他 node），
+    所有杀操作都必须同时有路径证据。
     注意 PID 只排除当前阶段：Inno 卸载是两阶段的，第一阶段
     unins000.exe 在安装目录里、第二阶段 _unins.tmp 在 %TEMP% 里；
     第二阶段跑脚本时 GetCurrentProcessId 是第二阶段的 PID，第一阶段
     的 PID 不在排除里，只靠 PID 排除会把第一阶段杀掉——被杀的第一
     阶段退出码是 -1（TerminateProcess -1），等它退出的调用方就看到
-    卸载失败（流水线 #9 重跑教训）。所以第一循环还要按名排除
-    unins000.exe 与 _unins.tmp 两个阶段的卸载程序。 }
+    卸载失败（流水线 #9 重跑教训）。所以循环 1、2 还要按名排除
+    unins000.exe 与 _unins.tmp 两个阶段的卸载程序；循环 2 还排除
+    $PID（扫尾脚本自己的 powershell.exe，万一安装目录是 %TEMP%
+    的祖先目录，不排除会自杀）。 }
   Script :=
     'try { Invoke-WebRequest -Uri ' + Q + 'http://127.0.0.1:8686/api/exit' + Q +
     ' -Method Post -TimeoutSec 3 | Out-Null; Start-Sleep -Seconds 4 } catch { }' + #13#10 +
     '$installDir = ' + Q + InstallDir + Q + '; ' +
     '$prefix = $installDir + ' + Q + '\' + Q + '; ' +
+    '$profile = ' + Q + ProfileDir + Q + '; ' +
     '$killed = 0; $failed = 0; $browser = 0; ' +
+    'for ($pass = 1; $pass -le 3; $pass++) { ' +
+    '$found = 0; ' +
     'foreach ($p in Get-CimInstance Win32_Process) { ' +
     'if ($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)' +
     ' -and $p.ProcessId -ne ' + IntToStr(GetCurrentProcessId()) +
     ' -and $p.Name -ne ' + Q + 'unins000.exe' + Q +
     ' -and $p.Name -ne ' + Q + '_unins.tmp' + Q + ') ' +
-    '{ try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } } }; ' +
-    '$profile = ' + Q + ProfileDir + Q + '; ' +
+    '{ $found += 1; try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } } }; ' +
+    'foreach ($p in Get-CimInstance Win32_Process) { ' +
+    'if (@(' + Q + 'node.exe' + Q + ',' + Q + 'cmd.exe' + Q + ',' + Q + 'robocopy.exe' + Q + ',' + Q + 'powershell.exe' + Q + ') -contains $p.Name' +
+    ' -and $p.CommandLine -and $p.CommandLine.IndexOf($installDir, [System.StringComparison]::OrdinalIgnoreCase) -ge 0' +
+    ' -and $p.ProcessId -ne ' + IntToStr(GetCurrentProcessId()) +
+    ' -and $p.ProcessId -ne $PID' +
+    ' -and $p.Name -ne ' + Q + 'unins000.exe' + Q +
+    ' -and $p.Name -ne ' + Q + '_unins.tmp' + Q + ') ' +
+    '{ $found += 1; try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } } }; ' +
     'foreach ($p in Get-CimInstance Win32_Process) { ' +
     'if (($p.Name -eq ' + Q + 'chrome.exe' + Q + ' -or $p.Name -eq ' + Q + 'msedge.exe' + Q +
     ') -and $p.CommandLine -and $p.CommandLine.Contains($profile)) ' +
-    '{ try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $browser += 1 } catch { $failed += 1 } } }; ' +
-    'if (($killed + $browser) -gt 0) { Start-Sleep -Seconds 1 }; ' +
-    'Write-Output "killed=$killed failed=$failed browser=$browser"';
+    '{ $found += 1; try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $browser += 1 } catch { $failed += 1 } } }; ' +
+    'if ($found -eq 0) { break }; ' +
+    'Start-Sleep -Seconds 2 }; ' +
+    '$stuck = @(); ' +
+    'foreach ($p in Get-CimInstance Win32_Process) { ' +
+    'if (($p.ExecutablePath -and $p.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)' +
+    ' -and $p.ProcessId -ne ' + IntToStr(GetCurrentProcessId()) +
+    ' -and $p.Name -ne ' + Q + 'unins000.exe' + Q +
+    ' -and $p.Name -ne ' + Q + '_unins.tmp' + Q + ') -or ' +
+    '(@(' + Q + 'node.exe' + Q + ',' + Q + 'cmd.exe' + Q + ',' + Q + 'robocopy.exe' + Q + ',' + Q + 'powershell.exe' + Q + ') -contains $p.Name' +
+    ' -and $p.CommandLine -and $p.CommandLine.IndexOf($installDir, [System.StringComparison]::OrdinalIgnoreCase) -ge 0' +
+    ' -and $p.ProcessId -ne ' + IntToStr(GetCurrentProcessId()) +
+    ' -and $p.ProcessId -ne $PID' +
+    ' -and $p.Name -ne ' + Q + 'unins000.exe' + Q +
+    ' -and $p.Name -ne ' + Q + '_unins.tmp' + Q + ') -or ' +
+    '(($p.Name -eq ' + Q + 'chrome.exe' + Q + ' -or $p.Name -eq ' + Q + 'msedge.exe' + Q +
+    ') -and $p.CommandLine -and $p.CommandLine.Contains($profile))) ' +
+    '{ $stuck += "$($p.Name) PID $($p.ProcessId)" } }; ' +
+    'Write-Output "killed=$killed failed=$failed browser=$browser stuck=$($stuck.Count)"; ' +
+    'if ($stuck.Count -gt 0) { Write-Output ("stuck-procs: " + ($stuck -join ' + Q + '; ' + Q + ')) }';
   ScriptPath := ExpandConstant('{tmp}\jl-stop-processes.ps1');
   if not SaveStringToFile(ScriptPath, Script, False) then
   begin

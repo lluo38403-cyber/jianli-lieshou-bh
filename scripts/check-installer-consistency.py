@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-r"""核对 Inno 安装脚本与 installer.py 口径一致（v39）。
+r"""核对 Inno 安装脚本与 installer.py 口径一致（v40）。
 
 用法：python3 scripts/check-installer-consistency.py
 退出码 0 = 一致；1 = 有不一致（打印哪一项对不上）。
@@ -32,6 +32,62 @@ def check(ok: bool, label: str) -> None:
     print(("PASS: " if ok else "FAIL: ") + label)
     if not ok:
         FAILURES.append(label)
+
+
+def eval_pascal_stop_script(code: str) -> str | None:
+    """把 .iss 里 Script := '...' + Q + ... 的拼接求值成 PowerShell 文本。
+
+    只处理 StopProcessesBeforeUninstall 里的 Script 赋值：单引号字面量、
+    Q（Chr(39) 的简写变量）、#13#10（换行）、InstallDir / ProfileDir /
+    IntToStr(GetCurrentProcessId()) 三个非字面量用占位符代替。
+    结构对不上返回 None（检查跳过，不误报）。
+    """
+    m = re.search(r"Script :=\s*(.*?);\s*\n\s*ScriptPath :=", code, re.S)
+    if not m:
+        return None
+    rhs = m.group(1)
+    out: list[str] = []
+    i, n = 0, len(rhs)
+    while i < n:
+        c = rhs[i]
+        if c == "'":
+            j = i + 1
+            buf: list[str] = []
+            closed = False
+            while j < n:
+                if rhs[j] == "'":
+                    if j + 1 < n and rhs[j + 1] == "'":
+                        buf.append("'")
+                        j += 2
+                        continue
+                    closed = True
+                    break
+                buf.append(rhs[j])
+                j += 1
+            if not closed:
+                return None
+            out.append("".join(buf))
+            i = j + 1
+        elif rhs.startswith("Q", i) and (
+            i == 0 or not (rhs[i - 1].isalnum() or rhs[i - 1] == "_")
+        ):
+            out.append("'")
+            i += 1
+        elif rhs.startswith("#13#10", i):
+            out.append("\n")
+            i += 6
+        elif rhs.startswith("IntToStr(GetCurrentProcessId())", i):
+            out.append("<PID>")
+            i += len("IntToStr(GetCurrentProcessId())")
+        elif rhs.startswith("InstallDir", i):
+            out.append("<INSTALLDIR>")
+            i += len("InstallDir")
+        elif rhs.startswith("ProfileDir", i):
+            out.append("<PROFILEDIR>")
+            i += len("ProfileDir")
+        else:
+            i += 1
+    return "".join(out)
 
 
 def strip_pascal_comments(code: str) -> str:
@@ -158,11 +214,23 @@ def main() -> int:
     if not iss_path.is_file():
         print("FAIL: 找不到 installer/jianli-lieshou.iss")
         return 1
-    iss = iss_path.read_text(encoding="utf-8")
+    # .iss 必须带 UTF-8 BOM：iscc 无 BOM 时按系统 ANSI 读，中文向导文案
+    # 会乱码（v40 教训：lucky 真机上向导说明文案乱码）。utf-8-sig 读
+    # （有 BOM 去掉、没 BOM 与 utf-8 一样），下面的 BOM 检查单独断言。
+    check(
+        iss_path.read_bytes()[:3] == b"\xef\xbb\xbf",
+        ".iss 带 UTF-8 BOM（中文文案不乱码）",
+    )
+    iss = iss_path.read_text(encoding="utf-8-sig")
 
     check(
         f"DefaultDirName={{src}}\\{installer.INSTALL_SUBDIR}" in iss,
         f"默认安装目录是 {{src}}\\{installer.INSTALL_SUBDIR}",
+    )
+    check(
+        f"默认安装到安装包所在目录下的 {installer.INSTALL_SUBDIR} 文件夹；"
+        "若修改为其他目录，则按所选路径安装" in iss,
+        "向导说明文案是用户指定的句子（默认安装到安装包所在目录下…）",
     )
     check(
         "PrivilegesRequired=lowest" in iss,
@@ -255,6 +323,20 @@ def main() -> int:
     code = re.split(r"(?m)^\[Code\]\s*$", iss, maxsplit=1)[1]
     check("ExecutablePath" in code and "StartsWith($prefix" in code,
           "停进程用 ExecutablePath 前缀规则")
+    # v40 三遍扫尾：最多 3 遍、每遍睡 2 秒、扫不到提前停、最后核实残留。
+    check("for ($pass = 1" in code and "Start-Sleep -Seconds 2" in code,
+          "停进程最多跑 3 遍、每遍之间睡 2 秒")
+    check("IndexOf($installDir" in code,
+          "停进程第二轮按命令行里的安装目录杀（系统 node / cmd / robocopy）")
+    # .iss 里四个名字是 Q 拼接的，原文里不连续；逐个查，精确的整串
+    # 由下面“拼出的脚本与 installer.py 逐字一致”那项兜底。
+    check(all(n in code for n in ("node.exe", "cmd.exe", "robocopy.exe",
+                                   "powershell.exe")),
+          "命令行轮只认 node / cmd / robocopy / powershell 四个名字")
+    check("ProcessId -ne $PID" in code,
+          "停进程第二轮排除扫尾脚本自己的 powershell.exe（$PID，不自杀）")
+    check("stuck=$($stuck.Count)" in code and "stuck-procs:" in code,
+          "停进程最后核实残留并输出 stuck 计数（不拦卸载、只记日志）")
     check("GetCurrentProcessId()" in code,
           "停进程排除卸载程序自己的 PID（不自杀）")
     # 卸载程序是两阶段的：第一阶段 unins000.exe 在安装目录里，第二阶段
@@ -330,8 +412,38 @@ def main() -> int:
         "C:\\app", "C:\\Users\\x\\.jianli-lieshou\\browser-profile", 1234
     )
     for needle in ("StartsWith($prefix", "Contains($profile)", "ProcessId -ne 1234",
-                   "Name -ne 'unins000.exe'", "Name -ne '_unins.tmp'"):
+                   "Name -ne 'unins000.exe'", "Name -ne '_unins.tmp'",
+                   "for ($pass = 1", "IndexOf($installDir",
+                   "ProcessId -ne $PID", "stuck=$($stuck.Count)",
+                   "@('node.exe','cmd.exe','robocopy.exe','powershell.exe')"):
         check(needle in py_script, f"installer.py 停进程脚本含 {needle}")
+    # .iss 里 Pascal 拼出来的脚本必须与 installer.py 生成的逐字一致
+    # （只差 InstallDir/ProfileDir/PID 三个运行时值）：Linux 上编不了
+    # Inno，拼错了只能靠这一项发现——v40 之前只核对子串，拼错引号
+    # 也发现不了。
+    assembled = eval_pascal_stop_script(code)
+    check(assembled is not None, "能从 .iss 里求值出停进程脚本")
+    if assembled is not None:
+        sweep = assembled.split("\n", 1)[1] if "\n" in assembled else assembled
+        py_norm = (
+            py_script.replace("'C:\\app'", "'<INSTALLDIR>'")
+            .replace(
+                "'C:\\Users\\x\\.jianli-lieshou\\browser-profile'",
+                "'<PROFILEDIR>'",
+            )
+            .replace("ProcessId -ne 1234", "ProcessId -ne <PID>")
+        )
+        check(
+            sweep == py_norm,
+            ".iss 拼出的停进程脚本与 installer.py 生成的逐字一致",
+        )
+        check(
+            all(
+                sweep.count(a) == sweep.count(b)
+                for a, b in (("{", "}"), ("(", ")"), ("[", "]"))
+            ),
+            "拼出的停进程脚本括号平衡",
+        )
 
     print()
     if FAILURES:
