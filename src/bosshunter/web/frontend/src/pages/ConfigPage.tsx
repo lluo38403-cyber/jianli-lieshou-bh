@@ -621,6 +621,20 @@ export default function ConfigPage() {
               </div>
               <Switch checked={config.profile?.ai_greeting_enabled ?? false} onChange={v => updateConfig('profile.ai_greeting_enabled', v)} aria-label="智能定制打招呼（结合岗位与简历优化）" />
             </div>
+            <div>
+              <label className="text-xs text-foreground" htmlFor="fixed-greeting">自定义固定打招呼文案</label>
+              <textarea
+                id="fixed-greeting"
+                aria-label="自定义固定打招呼文案"
+                value={config.profile?.fixed_greeting ?? ''}
+                onChange={event => updateConfig('profile.fixed_greeting', event.target.value)}
+                placeholder="您好，我对贵公司的这个岗位很感兴趣，简历已附上，期待与您进一步沟通，谢谢！"
+                rows={3}
+                maxLength={300}
+                className="mt-1 w-full resize-y rounded-xl border border-card-border bg-surface px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+              />
+              <p className="mt-1 text-xs text-muted">开关关时直接发这句；开关开时 AI 没生成出来、没简历、生成失败也回退到这句。最多 300 字，改完点保存就生效，岗位列表里的“打招呼的话”会跟着变。</p>
+            </div>
             <p className="text-xs text-muted">什么时候都能投，不用挑时间；每天的数量和分数门槛会帮你控制节奏。</p>
           </div>
         </SectionCard>

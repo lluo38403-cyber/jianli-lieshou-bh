@@ -58,6 +58,34 @@ def test_default_selection_scores_all_unscored_pending_but_never_historical_or_d
 	assert preview["job_ids"] and len(preview["job_ids"]) == 2
 
 
+def test_selected_fifteen_never_expands_to_all_pending_twenty_five(tmp_path):
+	"""v38 回归：勾选 15 个点打分，后端只能收到这 15 个，不能扩成 25 个。
+
+	根因在前端：快捷打分按钮写死 scope='pending'、job_ids=[]，后端按
+	“全部未打分”选出 25 个；后端 select 本身从不扩充选中集合（scope
+	'selected' 只取 id IN (...) 的行）。这里钉住两端：选中 15 个恰好
+	返回这 15 个；'pending' 口径仍返回全部 25 个（旧快捷按钮的行为）。
+	"""
+	db = get_db(tmp_path / "fifteen.db")
+	try:
+		all_ids = [f"job-{index:02d}" for index in range(25)]
+		for job_id in all_ids:
+			insert_job(db, _job(job_id))
+		selected_ids = all_ids[:15]
+
+		selected = select_scoring_jobs(db, scope="selected", job_ids=selected_ids)
+		preview = preview_scoring(db, scope="selected", job_ids=selected_ids)
+		pending = select_scoring_jobs(db, scope="pending")
+	finally:
+		db.close()
+
+	assert {job["id"] for job in selected} == set(selected_ids)
+	assert len(selected) == 15
+	assert preview["eligible_jobs"] == 15
+	assert preview["job_ids"] and {job_id for job_id in preview["job_ids"]} == set(selected_ids)
+	assert len(pending) == 25
+
+
 def test_selected_jobs_do_not_rescore_existing_results_without_explicit_force(tmp_path):
 	db = get_db(tmp_path / "force.db")
 	try:

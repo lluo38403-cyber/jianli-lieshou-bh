@@ -666,6 +666,52 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
     expect(await screen.findByText('AI 额度不足')).toBeTruthy()
     expect(screen.getByText('开始打分')).toBeTruthy()
   })
+
+  it('quick scoring submits exactly the selected jobs, never all pending jobs', async () => {
+    // v38 回归：选 15 个点“给这些岗位打分”却跑出 25 个——快捷按钮写死
+    // scope 'pending'。这里用 2 个岗位复现同一口径：提交的 job_ids 必须
+    // 严格等于勾选集合，提示里的总数也必须等于勾选数。
+    const jobs = [
+      { id: 'job-a', company: '甲公司', title: '岗位A', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
+      { id: 'job-b', company: '乙公司', title: '岗位B', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
+    ]
+    const fetchFn = stubDashboardFetch({
+      '/api/scoring/start': () => jsonResponse({ run: { remaining_job_ids: ['job-a', 'job-b'] } }),
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/jobs/search')) return jsonResponse({ items: jobs, total: 2, all_total: 2 })
+      return fetchFn(input, init)
+    }))
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选这个 甲公司 岗位A' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选这个 乙公司 岗位B' }))
+    expect(await screen.findByText('已选 2 个')).toBeTruthy()
+    fireEvent.click(screen.getByText('给选中的岗位打分'))
+    expect((await screen.findAllByText('打分开始了，一共 2 个岗位。')).length).toBeGreaterThan(0)
+    const startCalls = fetchFn.mock.calls.filter(call => String(call[0]) === '/api/scoring/start')
+    expect(startCalls).toHaveLength(1)
+    expect(JSON.parse(String(startCalls[0][1]?.body)).options).toEqual({
+      scope: 'selected', limit: null, job_ids: ['job-a', 'job-b'], force_rescore: false,
+    })
+  })
+
+  it('quick scoring stays disabled until jobs are selected', async () => {
+    const jobs = [
+      { id: 'job-a', company: '甲公司', title: '岗位A', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
+    ]
+    const fetchFn = stubDashboardFetch()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/jobs/search')) return jsonResponse({ items: jobs, total: 1, all_total: 1 })
+      return fetchFn(input, init)
+    }))
+    render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
+    const button = await screen.findByText('给选中的岗位打分')
+    expect((button.closest('button') as HTMLButtonElement | null)?.disabled).toBe(true)
+    expect(button.closest('button')?.getAttribute('title')).toBe('先勾选要打分的岗位')
+  })
 })
 
 describe('DashboardPage persisted preflight and platform login status', () => {

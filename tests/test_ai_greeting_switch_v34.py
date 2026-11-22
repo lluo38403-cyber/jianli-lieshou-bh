@@ -209,3 +209,111 @@ def test_style_length_hint_uses_60_to_100_threshold():
     assert any("60-100字" in issue for issue in greeter._greeting_style_issues(long))
     # 300 字符硬上限的提示由 generate_greetings 另行附加（风格检查本身只给字数建议）。
     assert any("60-100字" in issue for issue in greeter._greeting_style_issues("内" * 301))
+
+
+# ---------------- v38：默认关可验证 + 固定文案用户可配 + 当前生效文案 ----------------
+#
+# 根因（2026-11-22 实测复核）：代码三处默认全是关——config.py DEFAULTS、
+# config.example.yaml、ConfigPage/AdminPage 的 `?? false`；也没有任何
+# 写 true 的路径（缓存、localStorage、启动写回都没有）。开关显示开，
+# 只能是配置文件里已经存了 true（旧版上游默认曾是 True，见 a9e72a5；
+# 或某次在 /admin 手动开过），之后每次加载都以文件为准。v38 不静默
+# 重置已存值（分不清“特意开的”和“旧默认带入的”），而是把三件事钉死：
+# 全新默认一定关、手动开关保存重读不变、开关关时展示与发送严格走
+# 当前固定文案。
+
+from bosshunter.ai.greeter import DEFAULT_FIXED_GREETING, effective_greeting
+from bosshunter.web import server as web_server
+
+
+def test_v38_fresh_default_off_and_manual_toggle_persists_through_save_reload(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    # 全新默认：文件不存在 -> 关，固定文案是内置默认句。
+    fresh = load_config(config_path)
+    assert fresh["profile"]["ai_greeting_enabled"] is False
+    assert fresh["profile"]["fixed_greeting"] == DEFAULT_FIXED_GREETING
+
+    with patch.object(web_server, "CONFIG_PATH", config_path):
+        # 手动开 -> 保存 -> 重读仍为开，固定文案一起落盘。
+        opened = web_server._sanitize_config_for_write(
+            {"profile": {"ai_greeting_enabled": True, "fixed_greeting": "新固定文案"}}
+        )
+        web_server._write_config(opened)
+        reloaded = load_config(config_path)
+        assert reloaded["profile"]["ai_greeting_enabled"] is True
+        assert reloaded["profile"]["fixed_greeting"] == "新固定文案"
+        # GET 回填同样返回开关与固定文案（偏好仍脱敏）。
+        redacted = web_server._redact_config_for_response(reloaded)
+        assert redacted["profile"]["ai_greeting_enabled"] is True
+        assert redacted["profile"]["fixed_greeting"] == "新固定文案"
+        assert "greeting_preference" not in redacted["profile"]
+
+        # 手动关 -> 保存 -> 重读仍为关；没提交固定文案时沿用已存值，不丢。
+        closed = web_server._sanitize_config_for_write({"profile": {"ai_greeting_enabled": False}})
+        web_server._write_config(closed)
+        reloaded = load_config(config_path)
+        assert reloaded["profile"]["ai_greeting_enabled"] is False
+        assert reloaded["profile"]["fixed_greeting"] == "新固定文案"
+
+
+def test_v38_user_can_edit_fixed_greeting_and_bad_type_falls_back_to_saved(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "profile:\n  ai_greeting_enabled: false\n  fixed_greeting: 已存固定文案\n",
+        encoding="utf-8",
+    )
+    with patch.object(web_server, "CONFIG_PATH", config_path):
+        # 用户提交的字符串固定文案生效。
+        cleaned = web_server._sanitize_config_for_write(
+            {"profile": {"ai_greeting_enabled": False, "fixed_greeting": "用户新写的固定文案"}}
+        )
+        assert cleaned["profile"]["fixed_greeting"] == "用户新写的固定文案"
+        # 类型不对（数字）时沿用已存值，不静默写坏。
+        cleaned = web_server._sanitize_config_for_write(
+            {"profile": {"ai_greeting_enabled": False, "fixed_greeting": 123}}
+        )
+        assert cleaned["profile"]["fixed_greeting"] == "已存固定文案"
+
+
+@pytest.mark.parametrize(
+    "enabled,stored,fixed,expected",
+    [
+        # 开关关：哪怕库里存着定制文案，也展示/发送当前固定文案。
+        (False, "旧定制文案", "当前固定文案", "当前固定文案"),
+        # 开关关、无存量：固定文案。
+        (False, "", "当前固定文案", "当前固定文案"),
+        # 开关开、有定制文案：用定制文案。
+        (True, "旧定制文案", "当前固定文案", "旧定制文案"),
+        # 开关开、还没生成：回退固定文案，不阻塞。
+        (True, "", "当前固定文案", "当前固定文案"),
+        # 固定文案被清空：退回内置默认句，永不返回空串。
+        (False, "", "", DEFAULT_FIXED_GREETING),
+    ],
+)
+def test_v38_effective_greeting_follows_switch_and_current_fixed_text(enabled, stored, fixed, expected):
+    config = {"profile": {"ai_greeting_enabled": enabled, "fixed_greeting": fixed}}
+    assert effective_greeting(config, {"greeting": stored}) == expected
+
+
+def test_v38_confirmed_greeting_survives_switch_off():
+    # 用户逐条确认过的文案（评审核对选 optimized + reviewed_at）是明确选择，
+    # 开关关着也不改写它；展示与发送都以它为准。
+    config = {"profile": {"ai_greeting_enabled": False, "fixed_greeting": "当前固定文案"}}
+    job = {
+        "greeting": "优化稿：我做过三年内容运营。",
+        "greeting_selection": "optimized",
+        "greeting_reviewed_at": "2026-11-22 10:00:00",
+    }
+    assert effective_greeting(config, job) == "优化稿：我做过三年内容运营。"
+
+
+def test_v38_generated_but_unconfirmed_greeting_follows_switch_off():
+    # 只生成、没确认过的文案（selection='generated'、reviewed_at 为空）不是
+    # 明确选择：开关一关就改走当前固定文案，不读生成时的陈旧快照。
+    config = {"profile": {"ai_greeting_enabled": False, "fixed_greeting": "当前固定文案"}}
+    job = {
+        "greeting": "旧定制文案",
+        "greeting_selection": "generated",
+        "greeting_reviewed_at": None,
+    }
+    assert effective_greeting(config, job) == "当前固定文案"

@@ -40,6 +40,7 @@ from bosshunter.db import (
     count_sent_today, count_sent_today_by_platform,
     record_platform_login_state,
 )
+from bosshunter.ai.greeter import effective_greeting
 from bosshunter.collection.capabilities import platform_supports
 from bosshunter.executor.platform_delivery import deliver_job
 from bosshunter.throttle import RequestThrottle, ProgressiveBackoff
@@ -1357,7 +1358,11 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                         progress.update(task, advance=1)
                         continue
                     job = dict(row)
-                greeting = job.get("greeting", "")
+                # 发送时取当前生效文案（v38）：不再直接读库里生成时存下的
+                # 快照——开关关着、或固定文案改过，都以当前配置为准；开关
+                # 开着且有定制文案时用定制文案，没生成则回退固定文案发，
+                # 不阻塞队列。判定与岗位列表展示共用 effective_greeting。
+                greeting = effective_greeting(config, job)
                 platform = str(job.get("source_platform") or "boss").strip() or "boss"
                 if breaker.is_suspended(platform):
                     console.print(f"[yellow]    ! {platform_display_name(platform)}今日已挂起（连续失败触发熔断），跳过[/yellow]")

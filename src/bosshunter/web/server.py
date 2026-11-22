@@ -372,10 +372,17 @@ def _serialize_history_items(items):
 
 def _serialize_job(item, *, config=None):
 	"""Expose outsourcing, employment, and greeting state in one API representation."""
+	from bosshunter.ai.greeter import effective_greeting
+
 	record = serialize_job(dict(item))
 	record["employment_type"] = classify_employment(record)
 	record["employment_review"] = internship_rejection(record, config if config is not None else load_config(CONFIG_PATH))
 	record["greeting_activity"] = greeting_activity.get(str(record.get("id") or ""))
+	# 当前生效文案（v38）：展示与发送共用同一份判定，固定文案改完、
+	# 开关翻转后立刻体现在列表里，不读生成时存下的陈旧快照。
+	record["effective_greeting"] = effective_greeting(
+		config if config is not None else load_config(CONFIG_PATH), record
+	)
 	raw_issues = record.get("greeting_style_issues")
 	if isinstance(raw_issues, str):
 		try:
@@ -389,19 +396,20 @@ def _serialize_job(item, *, config=None):
 
 
 
-# 用户端看不到、也改不了的字段：整个 ai 区 + 招呼语相关的 profile 字段
-# （固定文案/偏好属于 AI 功能，由管理员面板管理）。招呼语开关本身
-# 例外：投递设置页（ConfigPage）与管理员面板共用这一个开关，双向
-# 同步、单一事实来源，所以用户端接口要返回它、保存时也要认用户提交值。
+# 用户端看不到、也改不了的字段：整个 ai 区 + 管理员管的招呼语偏好。
+# 招呼语开关与固定文案例外：投递设置页（ConfigPage）与管理员面板共用，
+# 双向同步、单一事实来源，所以用户端接口要返回它们、保存时也要认用户提交值。
 _ADMIN_MANAGED_PROFILE_FIELDS = ("ai_greeting_enabled", "fixed_greeting", "greeting_preference")
-_USER_EDITABLE_PROFILE_FIELDS = ("ai_greeting_enabled",)
+_USER_EDITABLE_PROFILE_FIELDS = ("ai_greeting_enabled", "fixed_greeting")
+# 用户可编辑字段的期望类型：提交值类型不对时沿用服务端已保存的值。
+_USER_EDITABLE_PROFILE_FIELD_TYPES = {"ai_greeting_enabled": bool, "fixed_greeting": str}
 
 
 def _redact_config_for_response(config):
 	"""Hide AI configuration from the user-facing config API.
 
 	用户端接口不再返回任何 AI 配置细节：整个 ``ai`` 区与管理员管的
-	招呼语字段都不返回。管理员面板走另外的接口。
+	招呼语偏好都不返回。管理员面板走另外的接口。
 	"""
 	redacted = deepcopy(config)
 	redacted.pop("ai", None)
@@ -430,9 +438,9 @@ def _sanitize_config_for_write(data):
 	"""Remove browser-only fields; user submissions cannot change AI settings.
 
 	用户端提交的 ``ai`` 整个丢弃（提供方/模型/凭证一律不接受），已保存的
-	AI 配置原样保留；固定文案与招呼语偏好同样只认服务端已保存的值。
-	招呼语开关例外：它是投递设置页与管理员面板共用的开关，用户提交的
-	布尔值生效。AI 设置改走管理员面板（``/api/admin/config``）。
+	AI 配置原样保留；招呼语偏好同样只认服务端已保存的值。
+	招呼语开关与固定文案例外：它们是投递设置页与管理员面板共用的，
+	用户提交的合规值生效。AI 设置改走管理员面板（``/api/admin/config``）。
 	"""
 	cleaned = remove_retired_collection_settings(deepcopy(data))
 	existing = load_config(CONFIG_PATH)
@@ -454,9 +462,10 @@ def _sanitize_config_for_write(data):
 		profile_cfg.setdefault(key, value)
 	for field in _ADMIN_MANAGED_PROFILE_FIELDS:
 		if field in _USER_EDITABLE_PROFILE_FIELDS:
-			# 投递设置页的开关：用户提交的布尔值生效；没提交或
-			# 不是布尔值时保留服务端已保存的值，不静默改回。
-			if not isinstance(profile_cfg.get(field), bool):
+			# 投递设置页的开关与固定文案：用户提交的合规值生效；没提交
+			# 或类型不对时保留服务端已保存的值，不静默改回。
+			expected_type = _USER_EDITABLE_PROFILE_FIELD_TYPES.get(field, str)
+			if not isinstance(profile_cfg.get(field), expected_type):
 				if existing_profile.get(field) is not None:
 					profile_cfg[field] = existing_profile[field]
 				else:

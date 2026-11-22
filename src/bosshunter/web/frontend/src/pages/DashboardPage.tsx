@@ -2607,10 +2607,15 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   }
 
   const startQuickScoring = async () => {
-    if (!window.confirm('要给找工作里所有没打过分、打分失败的岗位打分吗？')) return
+    // v38 根因修：以前这里写死 scope 'pending'、job_ids 空数组——点的
+    // 是“给这些岗位打分”，实际却把当前全部未打分岗位都打了（选 15 个
+    // 却跑出 25 个）。现在严格按勾选走：只打选中的，没选的不打；没选
+    // 中时按钮直接禁用，不静默扩充成“全部未打分”。
+    if (!selectedIds.length) return
+    if (!window.confirm(`要给选中的 ${selectedIds.length} 个岗位打分吗？只打勾选的这几个，没选的不打。`)) return
     setQuickScoring(true)
     try {
-      const result = await startScoring({ scope: 'pending', limit: null, job_ids: [], force_rescore: false })
+      const result = await startScoring({ scope: 'selected', limit: null, job_ids: [...selectedIds], force_rescore: false })
       if (!result.ok) setNotice(result.error || '打分没启动')
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : '打分没启动')
@@ -2654,16 +2659,10 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   }
 
   return (
-    <div className="animate-fade-up rounded-3xl border border-card-border bg-card p-5">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="text-2xl font-black">找工作</h2>
-          <p className="mt-1 text-sm text-muted">还没投的岗位都在这儿，能看到打分、状态，点进去看详情。投出去的岗位不在这儿，搬去<a href="/monitor" className="font-bold text-primary hover:underline">投递跟进</a>了。</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={() => { setShowRecycleBin(true); void loadRecycleBin() }}><Trash2 className="mr-1 h-4 w-4" />回收站（{recycleJobs.length}）</Button>
-          <BriefcaseBusiness className="h-6 w-6 text-primary" />
-        </div>
+    <div className="animate-fade-up rounded-3xl border border-card-border bg-card p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
+        <Button variant="secondary" size="sm" onClick={() => { setShowRecycleBin(true); void loadRecycleBin() }}><Trash2 className="mr-1 h-4 w-4" />回收站（{recycleJobs.length}）</Button>
+        <BriefcaseBusiness className="h-6 w-6 text-primary" />
       </div>
       <JobFilterBar
         filters={filters}
@@ -2674,12 +2673,13 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         invalidSalary={hasInvalidSalaryRange(filters)}
         showStatus
         showSource
+        collapsible
         cityOptions={cityOptions}
         statusOptions={Object.entries(STATUS_LABELS)
           .filter(([value]) => !isAppliedJobStatus(value))
           .map(([value, label]) => ({ value, label }))}
       />
-      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
         <Button variant="secondary" size="sm" disabled={!items.length} onClick={toggleCurrentPage}>
           {allPageSelected ? '这页都不选' : '选上这页'}
         </Button>
@@ -2689,14 +2689,14 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         <Button size="sm" disabled={!selectedIds.length} onClick={() => void deliverSelectedJobs()}>
           <Send className="mr-1 h-4 w-4" />把选中的都投了
         </Button>
-        <Button size="sm" onClick={() => void startQuickScoring()} disabled={quickScoring || !total}>
-          {quickScoring ? '正在开始打分…' : '给这些岗位打分'}
+        <Button size="sm" onClick={() => void startQuickScoring()} disabled={quickScoring || !total || !selectedIds.length} title={selectedIds.length ? undefined : '先勾选要打分的岗位'}>
+          {quickScoring ? '正在开始打分…' : '给选中的岗位打分'}
         </Button>
         <Button variant="secondary" size="sm" onClick={() => setShowScoreDialog(true)}>打分设置</Button>
         <ExportMenu onExport={exportJobs} hasSelection={selectedIds.length > 0} hasFiltered={total > 0} />
       </div>
       {notice && <div className="mb-4 rounded-xl bg-secondary px-4 py-3 text-sm text-primary">{notice}</div>}
-      <div className="mb-4">
+      <div className="mb-3">
         <TaskScoringProgress task={deliveryWorkbench.task || deliveryWorkbench.last_task} />
         <p className="mt-2 text-xs text-muted">
           岗位与评分进度每 5 秒自动刷新；每完成一个岗位后更新评分计数。

@@ -31,6 +31,8 @@ interface Job {
   score: number
   score_reason: string
   greeting: string
+  /** 当前生效文案（v38）：后端按开关+固定文案实时算好，展示与发送共用同一份判定。 */
+  effective_greeting?: string
   greeting_original?: string | null
   greeting_optimized?: string | null
   greeting_style_issues?: string[]

@@ -633,6 +633,33 @@ def _generate_with_token_retry(
 DEFAULT_FIXED_GREETING = "您好，我对贵公司的这个岗位很感兴趣，简历已附上，期待与您进一步沟通，谢谢！"
 
 
+def effective_greeting(config: dict, job: dict | None = None) -> str:
+    """当前生效的招呼语文案：展示与发送共用同一份判定（v38）。
+
+    优先级：
+    1. 用户对这岗位逐条确认过的文案（评审核对选稿 original/optimized、
+       手动编辑 edited，确认时写 greeting_reviewed_at）是明确选择，
+       开关状态不改写它——评审核对的 409 锁与 reviewed_at 就是为这条约定的。
+    2. 开关开着、且这岗位已有智能定制文案 -> 用那句定制文案。
+    3. 其余情况（开关关着 / 还没生成 / 无简历降级 / 生成失败）-> 当前的
+       固定文案。固定文案改完立刻生效，不等下次生成，也不读数据库里
+       生成时存下的陈旧快照。固定文案为空时退回内置默认句，永不返回空串。
+    """
+    profile = config.get("profile", {}) or {}
+    job = job or {}
+    stored = str(job.get("greeting") or "").strip()
+    if stored and (
+        job.get("greeting_reviewed_at")
+        or job.get("greeting_selection") in ("original", "optimized", "edited")
+    ):
+        return stored
+    fixed = str(profile.get("fixed_greeting", "") or "").strip() or DEFAULT_FIXED_GREETING
+    if profile.get("ai_greeting_enabled", False):
+        if stored:
+            return stored
+    return fixed
+
+
 def greeting_config_error(config: dict) -> str:
     profile = config.get("profile", {})
     enabled = profile.get("ai_greeting_enabled", False)

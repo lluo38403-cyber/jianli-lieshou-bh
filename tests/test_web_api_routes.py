@@ -335,8 +335,9 @@ class WebApiRouteTests(unittest.TestCase):
         token = headers.get("Set-Cookie", "").split(";")[0].split("=", 1)[1]
         return f"bh_admin_session={token}"
 
-    def test_user_config_post_can_change_greeting_switch_but_not_other_greeting_fields(self):
-        # 用户端提交招呼语开关：开关生效并落盘；固定文案与偏好仍不生效、不落盘，改走管理员面板。
+    def test_user_config_post_can_change_greeting_switch_and_fixed_greeting_but_not_preference(self):
+        # 用户端提交招呼语开关与固定文案：两者都生效并落盘（v38 起固定文案
+        # 由用户端可配）；偏好仍不生效、不落盘，改走管理员面板。
         with tempfile.TemporaryDirectory() as tmp:
             server.set_base_dir(Path(tmp))
             server._write_config({"profile": {"greeting_preference": "不要问问题"}})
@@ -347,13 +348,13 @@ class WebApiRouteTests(unittest.TestCase):
             status, _, body = self._request("/api/config")
             profile = json.loads(body)["profile"]
             self.assertIs(profile["ai_greeting_enabled"], True)
-            self.assertNotIn("fixed_greeting", profile)
+            self.assertEqual(profile["fixed_greeting"], "您好，我想了解这个岗位。")
             self.assertNotIn("greeting_preference", profile)
             saved = server.load_config(server.CONFIG_PATH)["profile"]
             self.assertIs(saved["ai_greeting_enabled"], True)
             self.assertEqual(saved["greeting_preference"], "不要问问题")
-            # 用户提交的固定文案没写进去，留的是默认文案。
-            self.assertNotEqual(saved["fixed_greeting"], "您好，我想了解这个岗位。")
+            # 用户提交的固定文案写进去了。
+            self.assertEqual(saved["fixed_greeting"], "您好，我想了解这个岗位。")
 
     def _upload_resume(self, filename: str, content: bytes, content_type: str):
         boundary = "----BossHunterResumeUpload"
@@ -4837,7 +4838,9 @@ class WebApiRouteTests(unittest.TestCase):
                 }),
                 patch("bosshunter.executor.sender._send_greeting_once", side_effect=fake_send),
             ):
-                send_greetings({"_workbench_log": edit_during_send, "_workbench_greeting_activity": server.greeting_activity.claim, "throttle": {"daily_limit": 10}})
+                # v38：发送取“当前生效文案”；这条的场景是已确认文本在发送中
+                # 不可被改写，开关须声明为开，库里的确认文本才是生效文案。
+                send_greetings({"_workbench_log": edit_during_send, "_workbench_greeting_activity": server.greeting_activity.claim, "profile": {"ai_greeting_enabled": True}, "throttle": {"daily_limit": 10}})
             db = get_db(db_path)
             try:
                 row = db.execute("SELECT greeting, status FROM jobs WHERE id = 'send-snapshot'").fetchone()
@@ -4893,8 +4896,11 @@ class WebApiRouteTests(unittest.TestCase):
                 patch("bosshunter.executor.sender.RequestThrottle.wait", side_effect=during_wait),
                 patch("bosshunter.executor.sender._send_greeting_once", side_effect=fake_send),
             ):
+                # v38：发送取“当前生效文案”；这条的场景是节流等待期间确认的
+                # 最新文本要被读到，开关须声明为开，库里的确认文本才是生效文案。
                 count = send_greetings({
                     "_workbench_greeting_activity": server.greeting_activity.claim,
+                    "profile": {"ai_greeting_enabled": True},
                     "throttle": {"daily_limit": 10},
                 }, db_path=db_path)
             self.assertEqual(count, 2)

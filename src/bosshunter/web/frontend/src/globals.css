@@ -242,6 +242,27 @@ body {
   animation: jl-flow 1.2s linear infinite;
 }
 
+/* ---------------- v38：找工作页动效 ---------------- */
+/* 表格行入场只做淡入：transform 对 <tr> 不生效，写了也白写。 */
+@keyframes jl-row-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.job-row-enter { animation: jl-row-fade 0.35s ease both; }
+
+/* 筛选折叠：grid-rows 高度 + 透明度平滑过渡，收起只藏视觉高度、不丢已选值。 */
+.filter-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.35s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.3s ease;
+}
+.filter-collapse.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.filter-collapse > * { overflow: hidden; min-height: 0; }
+
 /* ---------------- 深海军蓝侧边栏 ---------------- */
 .app-sidebar {
   background: linear-gradient(178deg, #0c2b45 0%, #0e3d5c 52%, #0b5f6e 118%);
@@ -261,9 +282,11 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .animate-fade-up, .animate-fade-in, .animate-pop, .animate-page-in,
-  .page-sections > *, .skeleton, .pulse-ring, .pulse-dot, .animate-float, .flow-line {
+  .page-sections > *, .skeleton, .pulse-ring, .pulse-dot, .animate-float, .flow-line,
+  .job-row-enter, .filter-collapse {
     animation: none !important;
   }
+  .filter-collapse { transition: none; }
   .hover-lift { transition: none; }
   .hover-lift:hover { transform: none; }
 }

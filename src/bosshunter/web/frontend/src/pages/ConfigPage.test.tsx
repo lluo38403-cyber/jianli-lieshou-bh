@@ -134,8 +134,34 @@ it('shows the smart greeting switch off by default and saves it with the config'
   await screen.findByText('设置已经保存了')
   expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
   expect(saved.profile.ai_greeting_enabled).toBe(true)
-  // 开关只改开关本身：不带固定文案与偏好字段（仍由管理员面板管）。
+  // v38：固定文案改由用户端可配；这轮没动输入框所以没带上它，偏好仍只由管理员面板管。
   expect(saved.profile.fixed_greeting).toBeUndefined()
+  expect(saved.profile.greeting_preference).toBeUndefined()
+})
+
+it('lets the user edit the fixed greeting and saves it with the config', async () => {
+  const DEFAULT_FIXED = '您好，我对贵公司的这个岗位很感兴趣，简历已附上，期待与您进一步沟通，谢谢！'
+  let saved: Record<string, any> = { profile: { ai_greeting_enabled: false, fixed_greeting: DEFAULT_FIXED }, throttle: {} }
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    let body: unknown = {}
+    if (String(input) === '/api/config') {
+      if (init?.method === 'POST') { saved = JSON.parse(String(init.body)); body = { success: true } }
+      else body = saved
+    }
+    if (String(input).startsWith('/api/cities')) body = { cities: [] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
+  const greetingSwitch = await screen.findByRole('switch', { name: '智能定制打招呼（结合岗位与简历优化）' })
+  expect(greetingSwitch.getAttribute('aria-checked')).toBe('false')
+  const fixedInput = screen.getByLabelText('自定义固定打招呼文案') as HTMLTextAreaElement
+  expect(fixedInput.value).toBe(DEFAULT_FIXED)
+  fireEvent.change(fixedInput, { target: { value: '您好，看到这个岗位很合适，想和您聊聊，谢谢！' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  await screen.findByText('设置已经保存了')
+  expect(saved.profile.ai_greeting_enabled).toBe(false)
+  expect(saved.profile.fixed_greeting).toBe('您好，看到这个岗位很合适，想和您聊聊，谢谢！')
   expect(saved.profile.greeting_preference).toBeUndefined()
 })
 

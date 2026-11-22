@@ -563,6 +563,93 @@ class JobSelectionTests(unittest.TestCase):
             self.assertEqual(send_once.call_count, 2)
             close_tab.assert_called_once_with("target-1")
 
+    def test_send_greetings_uses_current_fixed_greeting_when_switch_off(self):
+        # v38：库里存着旧定制文案，开关关着且固定文案已改过——发送必须
+        # 用当前固定文案，不读陈旧快照；开关开着则用库里的定制文案。
+        job = _job("stale-greeting-job")
+        job["greeting"] = "旧定制文案：我做过三年内容运营。"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "bosshunter.db"
+            db = get_db(db_path)
+            try:
+                insert_job(db, job)
+                update_job_status(db, job["id"], "ready")
+                update_job_greeting(db, job["id"], job["greeting"])
+            finally:
+                db.close()
+
+            dispatched: list[str] = []
+
+            def capture_dispatch(sent_job, greeting, throttle_config):
+                dispatched.append(greeting)
+                return {"success": True}, None
+
+            off_config = {
+                "profile": {"ai_greeting_enabled": False, "fixed_greeting": "新固定文案"},
+                "throttle": {"daily_limit": 10},
+            }
+            with patch("bosshunter.db.DB_PATH", db_path), \
+                 patch("bosshunter.executor.sender._dispatch_send", side_effect=capture_dispatch):
+                sent = send_greetings(off_config, force=True)
+            self.assertEqual(sent, 1)
+            self.assertEqual(dispatched, ["新固定文案"])
+
+            on_config = {
+                "profile": {"ai_greeting_enabled": True, "fixed_greeting": "新固定文案"},
+                "throttle": {"daily_limit": 10},
+            }
+            with patch("bosshunter.db.DB_PATH", db_path), \
+                 patch("bosshunter.executor.sender._dispatch_send", side_effect=capture_dispatch):
+                # 该岗位已在上一轮发出，状态已变 sent；重新置回 ready 再发一次。
+                db = get_db(db_path)
+                try:
+                    update_job_status(db, job["id"], "ready")
+                finally:
+                    db.close()
+                sent = send_greetings(on_config, force=True)
+            self.assertEqual(sent, 1)
+            self.assertEqual(dispatched[-1], "旧定制文案：我做过三年内容运营。")
+
+    def test_send_greetings_keeps_user_confirmed_greeting_when_switch_off(self):
+        # v38 精修规则：用户逐条确认过的文案（评审核对选稿/手动编辑，
+        # greeting_reviewed_at 非空）是明确选择，开关关着也不改写它；
+        # 只有没确认过的生成文案才跟开关走固定文案。
+        job = _job("confirmed-choice-job")
+        job["greeting"] = "确认过的优化稿"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "bosshunter.db"
+            db = get_db(db_path)
+            try:
+                insert_job(db, job)
+                update_job_status(db, job["id"], "ready")
+                update_job_greeting(db, job["id"], job["greeting"])
+                db.execute(
+                    "UPDATE jobs SET greeting_selection = 'optimized', "
+                    "greeting_reviewed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (job["id"],),
+                )
+                db.commit()
+            finally:
+                db.close()
+
+            dispatched: list[str] = []
+
+            def capture_dispatch(sent_job, greeting, throttle_config):
+                dispatched.append(greeting)
+                return {"success": True}, None
+
+            off_config = {
+                "profile": {"ai_greeting_enabled": False, "fixed_greeting": "当前固定文案"},
+                "throttle": {"daily_limit": 10},
+            }
+            with patch("bosshunter.db.DB_PATH", db_path), \
+                 patch("bosshunter.executor.sender._dispatch_send", side_effect=capture_dispatch):
+                sent = send_greetings(off_config, force=True)
+            self.assertEqual(sent, 1)
+            self.assertEqual(dispatched, ["确认过的优化稿"])
+
     def test_send_greetings_closes_failed_task_page_after_recording_error(self):
         job = _job("failed-first-contact")
         job["greeting"] = "您好，我对这个岗位很感兴趣。"
