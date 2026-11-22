@@ -421,18 +421,24 @@ jobs:
             Copy-Item -Recurse prev-artifact "$env:TEMP\update-run-<< parameters.scenario >>"
             pwsh -File scripts/ci/update-flow-windows.ps1 -ExeDir "$env:TEMP\update-run-<< parameters.scenario >>" -FromVersion "<< parameters.from_version >>" -ToVersion "$version" -Scenario << parameters.scenario >>
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - run:
-          name: "负向验证：目标版本故意写错，更新流程必须失败"
-          when: << parameters.negative_check >>
-          no_output_timeout: 30m
-          command: |
-            # GH 那边是两步（continue-on-error 跑一次 + 断言步）；这里
-            # 合并成一步：9.9.9 那次必须失败，exit 0 就直接 throw。
-            # 只在 Main 场景跑（negative_check=true），Lock/Retry 不跑。
-            Copy-Item -Recurse prev-artifact "$env:TEMP\update-neg"
-            pwsh -File scripts/ci/update-flow-windows.ps1 -ExeDir "$env:TEMP\update-neg" -FromVersion "<< parameters.from_version >>" -ToVersion "9.9.9" -Scenario << parameters.scenario >>
-            if ($LASTEXITCODE -eq 0) { throw '负向验证没起作用：目标版本写错 9.9.9，更新流程居然通过了' }
-            Write-Host '负向验证通过：错目标版本被更新流程测试抓住了'
+      - when:
+          condition: << parameters.negative_check >>
+          steps:
+            - run:
+                name: "负向验证：目标版本故意写错，更新流程必须失败"
+                no_output_timeout: 30m
+                command: |
+                  # GH 那边是两步（continue-on-error 跑一次 + 断言步）；这里
+                  # 合并成一步：9.9.9 那次必须失败，exit 0 就直接 throw。
+                  # 只在 Main 场景跑（negative_check=true），Lock/Retry 不跑。
+                  # 注意：run 步骤的 when 只认 always/on_success/on_fail 三个
+                  # 枚举，不能直接插布尔参数；条件执行必须用 when 条件步骤包
+                  # 一层（2026-11-23 00:13 流水线 15 实测：when 插 true/false
+                  # 直接报 12 项校验违规，三个作业全灭）。
+                  Copy-Item -Recurse prev-artifact "$env:TEMP\update-neg"
+                  pwsh -File scripts/ci/update-flow-windows.ps1 -ExeDir "$env:TEMP\update-neg" -FromVersion "<< parameters.from_version >>" -ToVersion "9.9.9" -Scenario << parameters.scenario >>
+                  if ($LASTEXITCODE -eq 0) { throw '负向验证没起作用：目标版本写错 9.9.9，更新流程居然通过了' }
+                  Write-Host '负向验证通过：错目标版本被更新流程测试抓住了'
 
 workflows:
   version: 2
