@@ -1,0 +1,213 @@
+# 简历猎手 · CircleCI 打包配置（v39，2026-11-22）
+#
+# 把 GitHub Actions 的“打 Windows exe”流程（.github/workflows/build-exe.yml）
+# 搬到 CircleCI 免费版。原因：GitHub Actions 本月免费额度用完了
+# （Compute $12.00/$12.00，Budgets 页 Usage blocked，2026-12-01 重置），
+# CI 与打 exe 三批运行全在 2 秒内零步骤失败；lucky 2026-11-22 定走
+# CircleCI 免费版（每月 30,000 credits，windows.medium 40 credits/分钟）。
+#
+# 两个 job 与 GH 流程一一对应：
+#   build —— 前端构建 → pip 安装依赖 → PyInstaller 打 exe → Inno Setup
+#            编译安装程序；两个产物用 persist_to_workspace 交给 smoke，
+#            再用 store_artifacts 留档。
+#   smoke —— 取回产物 → smoke-windows.ps1 验 exe 面板 → 两项负向验证
+#            （错版本号 / 空产物目录时冒烟必须失败）→ smoke-installer.ps1
+#            静默安装 → 核对 → 静默卸载。
+#
+# 与 GitHub Actions 的差异（都已按 CircleCI 官方文档改过）：
+# - 没有 actions/setup-python、setup-node、upload-artifact/download-artifact，
+#   一律用原生步骤：checkout / run / store_artifacts /
+#   persist_to_workspace / attach_workspace。
+# - 执行器：machine + windows-server-2022-gui:current + windows.medium，
+#   shell 为 powershell.exe -ExecutionPolicy Bypass（官方文档 Quickstart 写法）。
+# - PowerShell 跑外部命令（npm / python / pip / pyinstaller / iscc / exe）
+#   失败时默认不会让步骤失败，所以每个外部命令后面都显式判
+#   $LASTEXITCODE 再 exit；不能只靠 $ErrorActionPreference。
+# - 跨步骤传值：Windows 上没有 BASH_ENV 那套，版本号每次从 pyproject.toml
+#   现读（与 GH 的“读当前版本号”步骤同一段 Select-String 代码）。
+# - 触发：只在 main 分支 push 时跑（省额度）；不加定时触发。
+#   注意：本文件本身合进 main 就会触发一次。
+#
+# 镜像自带软件（windows-server-2022-gui:current，2025.10.1 版）：
+#   Python 3.13.7、Node v24.9.0、Chocolatey 2.5.1、Git、7zip、pwsh。
+#   镜像每月更新，版本号会漂；GH 锁的是 Python 3.12 与 Node 20，
+#   所以 build 里用 choco --allow-downgrade 装回 3.12.0 / 20.11.0
+#   并验版本，验不过直接失败（不要静默用错版本打出来）。
+#   若以后 choco 降级被镜像的新版缠住，先看这一步的报错，再定是
+#   改 choco 逻辑还是跟进镜像默认版本。
+#
+# 额度估算：windows.medium 40 credits/分钟；build 约 5–10 分钟、
+#   smoke 约 5–10 分钟，一次全流程约 400–800 credits；
+#   每月 30,000 credits 约够 40–70 次。
+version: 2.1
+
+executors:
+  windows:
+    resource_class: windows.medium
+    machine:
+      image: windows-server-2022-gui:current
+      shell: powershell.exe -ExecutionPolicy Bypass
+
+jobs:
+  build:
+    executor: windows
+    steps:
+      - checkout
+      - run:
+          name: 核对镜像自带工具
+          command: |
+            if (-not (Get-Command choco -ErrorAction SilentlyContinue)) { throw '镜像里没有 choco' }
+            if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) { throw '镜像里没有 pwsh（PowerShell Core），冒烟脚本跑不了' }
+            if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw '镜像里没有 git' }
+            Write-Host "choco：$(choco --version)"
+            Write-Host "pwsh：$(pwsh --version)"
+            Write-Host "镜像自带 python：$(python --version 2>&1)"
+            Write-Host "镜像自带 node：$(node --version 2>&1)"
+      - run:
+          name: 装 Python 3.12 与 Node 20
+          command: |
+            choco install python --version=3.12.0 --allow-downgrade --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            choco install nodejs --version=20.11.0 --allow-downgrade --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            # choco 改的是机器 PATH，本步内手动刷新一次；后续步骤是新 shell，本来就会读到新 PATH。
+            $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
+            $pyVer = python --version 2>&1
+            $nodeVer = node --version 2>&1
+            Write-Host "python：$pyVer"
+            Write-Host "node：$nodeVer"
+            if ($pyVer -notmatch '3\.12\.') { throw "Python 不是 3.12.x（现在是 $pyVer），构建用的版本不对" }
+            if ($nodeVer -notmatch 'v20\.') { throw "Node 不是 v20.x（现在是 $nodeVer），构建用的版本不对" }
+      - run:
+          name: 构建前端
+          working_directory: src/bosshunter/web/frontend
+          command: |
+            npm ci
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            npm run build
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - run:
+          name: 安装依赖
+          command: |
+            python -m pip install --upgrade pip
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            pip install .
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            pip install pyinstaller
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - run:
+          name: 打包
+          no_output_timeout: 20m
+          command: |
+            pyinstaller jianli-lieshou-bh.spec
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - run:
+          name: 烟测 exe 版本
+          command: |
+            # exe 是无窗口程序（console=False），--version 的输出不会回到控制台，
+            # 这里只断言“能跑、退出码 0”；版本号本身由 smoke job 的面板核对。
+            dist\简历猎手\简历猎手.exe --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist/简历猎手
+      - store_artifacts:
+          path: dist/简历猎手
+          destination: 简历猎手-windows
+      - run:
+          name: 安装 Inno Setup
+          command: |
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - run:
+          name: 编译安装程序
+          command: |
+            $line = Get-Content pyproject.toml | Select-String -Pattern '^version = "(.*)"$' | Select-Object -First 1
+            if (-not $line) { throw 'pyproject.toml 里没找到 version' }
+            $version = $line.Matches.Groups[1].Value
+            $iscc = (Get-Command iscc -ErrorAction SilentlyContinue)?.Source
+            if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+            if (-not (Test-Path $iscc)) { throw '找不到 Inno Setup 编译器 ISCC.exe（choco 安装可能失败）' }
+            & $iscc /DMyAppVersion=$version installer\jianli-lieshou.iss
+            if ($LASTEXITCODE -ne 0) { throw "iscc 编译失败，退出码 $LASTEXITCODE" }
+            $built = Get-ChildItem dist-installer\*.exe
+            if (-not $built) { throw 'dist-installer 里没有安装程序产物' }
+            Write-Host "安装程序：$($built.Name)"
+      # 注意：安装程序是这一步之后才编译出来的，所以上面那次 persist
+      # 只交了 dist/简历猎手；这里再 persist 一次安装程序产物。
+      # CircleCI 的 workspace 是多次 persist 的并集。
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist-installer
+      - store_artifacts:
+          path: dist-installer
+          destination: 简历猎手-安装程序-windows
+
+  # Windows 冒烟测试：用上面 build 好的产物本身跑一遍，不走蓝奏云下载。
+  # 只做浅测：不登录任何真实招聘平台、不投递真实简历、不填 AI Key、
+  # 不用真机器码薅试用（冒烟脚本启动时设 JIANLI_NO_AUTH_SYNC=1，跳过
+  # 中转授权同步）、不触发自动更新换文件。任何一步失败都让整个流程失败。
+  smoke:
+    executor: windows
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: 冒烟测试
+          command: |
+            $line = Get-Content pyproject.toml | Select-String -Pattern '^version = "(.*)"$' | Select-Object -First 1
+            if (-not $line) { throw 'pyproject.toml 里没找到 version' }
+            $version = $line.Matches.Groups[1].Value
+            Write-Host "当前版本：v$version"
+            Copy-Item -Recurse dist\简历猎手 $env:TEMP\smoke-run
+            pwsh -File scripts/ci/smoke-windows.ps1 -ExeDir "$env:TEMP\smoke-run" -ExpectedVersion "$version"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - run:
+          name: "负向验证：版本号故意写错，冒烟必须失败"
+          when: always
+          command: |
+            $line = Get-Content pyproject.toml | Select-String -Pattern '^version = "(.*)"$' | Select-Object -First 1
+            if (-not $line) { throw 'pyproject.toml 里没找到 version' }
+            $version = $line.Matches.Groups[1].Value
+            pwsh -File scripts/ci/smoke-windows.ps1 -ExeDir "$env:TEMP\smoke-run" -ExpectedVersion "9.9.9"
+            if ($LASTEXITCODE -eq 0) { Write-Host '负向验证没起作用：版本号写错 9.9.9，冒烟居然通过了'; exit 1 }
+            Write-Host '负向验证通过：错版本号被冒烟测试抓住了'
+      - run:
+          name: "负向验证：产物目录是空的，冒烟必须失败"
+          when: always
+          command: |
+            $line = Get-Content pyproject.toml | Select-String -Pattern '^version = "(.*)"$' | Select-Object -First 1
+            if (-not $line) { throw 'pyproject.toml 里没找到 version' }
+            $version = $line.Matches.Groups[1].Value
+            New-Item -ItemType Directory -Force -Path "$env:TEMP\smoke-empty" | Out-Null
+            pwsh -File scripts/ci/smoke-windows.ps1 -ExeDir "$env:TEMP\smoke-empty" -ExpectedVersion "$version"
+            if ($LASTEXITCODE -eq 0) { Write-Host '负向验证没起作用：空产物目录，冒烟居然通过了'; exit 1 }
+            Write-Host '负向验证通过：空产物被冒烟测试抓住了'
+      - run:
+          name: "安装程序冒烟：静默安装 → 核对 → 静默卸载"
+          command: |
+            $line = Get-Content pyproject.toml | Select-String -Pattern '^version = "(.*)"$' | Select-Object -First 1
+            if (-not $line) { throw 'pyproject.toml 里没找到 version' }
+            $version = $line.Matches.Groups[1].Value
+            $installer = Get-ChildItem dist-installer\*.exe | Select-Object -First 1
+            if (-not $installer) { throw '安装程序产物没拿到（workspace 里没有 dist-installer）' }
+            pwsh -File scripts/ci/smoke-installer.ps1 -InstallerExe $installer.FullName -ExpectedVersion "$version"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+workflows:
+  version: 2
+  build-and-smoke:
+    jobs:
+      - build:
+          filters:
+            branches:
+              only: main
+      - smoke:
+          requires:
+            - build
+          filters:
+            branches:
+              only: main
