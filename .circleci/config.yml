@@ -40,6 +40,15 @@
 #   若以后磁盘上根本找不到 v20（降级没落盘），再看这一步打出的候选
 #   列表定是先卸镜像 Node 还是跟进镜像默认版本。
 #
+#   流水线 #3 实测：choco 装的 Inno Setup 6.7.1 里没有
+#   Languages\ChineseSimplified.isl，iscc 编译 .iss 第 59 行 [Languages]
+#   段时报错退出码 2；修法是“安装 Inno Setup”后加一步补文件：先查，
+#   没有就从官方仓库 jrsoftware/issrc 取官方语言文件并校验，下载失败
+#   才改用官方安装包（GitHub Releases 的 innosetup-6.7.4.exe）重装。
+#   注意 GitHub 那边 build-exe.yml 用的也是 choco 装 Inno（同款包），
+#   Actions 额度恢复后同样会缺这个文件——但不改 GH workflow 文件，
+#   只记在这里，等 Actions 恢复时再处理。
+#
 # 额度估算：windows.medium 40 credits/分钟；build 约 5–10 分钟、
 #   smoke 约 5–10 分钟，一次全流程约 400–800 credits；
 #   每月 30,000 credits 约够 40–70 次。
@@ -153,6 +162,58 @@ jobs:
           command: |
             choco install innosetup --yes --no-progress
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - run:
+          name: 补 Inno 中文语言文件
+          command: |
+            # 流水线 #3 在这里失败：choco 装的 Inno Setup 6.7.1 里没有
+            # Languages\ChineseSimplified.isl，iscc 编译 .iss 第 59 行
+            # [Languages] 段时报错退出码 2。安装界面必须保持中文（买家看），
+            # 不能改英文、不能手写 .isl 凑数。
+            # 修法：先查 Languages 文件夹，没有就从 Inno Setup 官方源码
+            # 仓库 jrsoftware/issrc 取官方语言文件
+            # （Files/Languages/ChineseSimplified.isl），取到后校验非空
+            # 且含中文语言串；下载失败才改用官方安装包重装（兜底）。
+            $innoDir = "${env:ProgramFiles(x86)}\Inno Setup 6"
+            $langDir = Join-Path $innoDir 'Languages'
+            $isl = Join-Path $langDir 'ChineseSimplified.isl'
+            $islUrl = 'https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl'
+            if (Test-Path $isl) {
+              Write-Host 'ChineseSimplified.isl 已在，跳过补文件'
+            } else {
+              Write-Host "Languages 里没有 ChineseSimplified.isl，从官方仓库取：$islUrl"
+              if (-not (Test-Path $langDir)) { New-Item -ItemType Directory -Force -Path $langDir | Out-Null }
+              $downloaded = $false
+              try {
+                Invoke-WebRequest -Uri $islUrl -OutFile $isl -UseBasicParsing
+                $downloaded = $true
+              } catch {
+                Write-Host "官方仓库下载失败：$($_.Exception.Message)"
+              }
+              if (-not $downloaded) {
+                # 兜底：官方安装包重装（当前官方下载在 GitHub Releases；
+                # jrsoftware.org/download.php/is.exe 已 404，别用旧链接）。
+                $officialUrl = 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe'
+                Write-Host "下载失败，改用官方安装包重装 Inno Setup：$officialUrl"
+                $installer = Join-Path $env:TEMP 'innosetup-official.exe'
+                try {
+                  Invoke-WebRequest -Uri $officialUrl -OutFile $installer -UseBasicParsing
+                } catch {
+                  throw "官方安装包下载失败：$($_.Exception.Message)"
+                }
+                & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+                if ($LASTEXITCODE -ne 0) { throw "官方安装包安装失败，退出码 $LASTEXITCODE" }
+                Remove-Item -Force $installer -ErrorAction SilentlyContinue
+              }
+            }
+            # 校验：文件必须存在、非空、是官方中文语言文件（含简体中文
+            # 语言名与 Inno 6.5.0+ 头注释）；不过就直接失败，不往下走。
+            if (-not (Test-Path $isl)) { throw '补完仍没有 ChineseSimplified.isl，放弃编译' }
+            $islInfo = Get-Item $isl
+            if ($islInfo.Length -lt 5000) { throw "ChineseSimplified.isl 只有 $($islInfo.Length) 字节，像是下载不完整，放弃编译" }
+            $islText = Get-Content $isl -Raw -Encoding UTF8
+            if ($islText -notmatch 'LanguageName\s*=\s*简体中文') { throw 'ChineseSimplified.isl 里没有“简体中文”语言名，文件不对，放弃编译' }
+            if ($islText -notmatch 'Inno Setup version 6\.5\.0\+') { throw 'ChineseSimplified.isl 里没有 Inno 6.5.0+ 头注释，文件不对，放弃编译' }
+            Write-Host "中文语言文件就绪：$isl（$($islInfo.Length) 字节）"
       - run:
           name: 编译安装程序
           command: |
