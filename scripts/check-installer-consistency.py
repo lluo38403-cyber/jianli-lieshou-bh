@@ -76,7 +76,9 @@ def main() -> int:
     )
 
     # [UninstallDelete] 段：运行产物与用户数据必须都在。
-    section = iss.split("[UninstallDelete]", 1)[1].split("[Code]", 1)[0]
+    # 只认行首的段头：注释里提到段名（如 [Code]）不算，否则 split 会提前截断。
+    section = re.split(r"(?m)^\[UninstallDelete\]\s*$", iss, maxsplit=1)[1]
+    section = re.split(r"(?m)^\[Code\]\s*$", section, maxsplit=1)[0]
     # 只看非注释行：段尾的注释会提到 %AppData%（说明不碰），不算。
     section_code = "\n".join(
         ln for ln in section.splitlines()
@@ -108,8 +110,12 @@ def main() -> int:
             print(f"  用户数据缺 Check: DeleteUserData：{win}")
     check(user_data_ok, "用户数据只在打勾时删（Check: DeleteUserData）")
     check(
-        "{userprofile}\\.jianli-lieshou" in section,
-        "浏览器配置目录 {userprofile}\\.jianli-lieshou 在清理清单里",
+        "{code:GetUserProfile}\\.jianli-lieshou" in section,
+        "浏览器配置目录 {code:GetUserProfile}\\.jianli-lieshou 在清理清单里",
+    )
+    check(
+        "{userprofile}" not in section_code,
+        "没有用 Inno 不存在的 {userprofile} 常量",
     )
     check(
         "{%TEMP}" in section
@@ -126,7 +132,8 @@ def main() -> int:
     )
 
     # 停进程脚本：与 installer.uninstall_stop_processes_script 同款判定。
-    code = iss.split("[Code]", 1)[1]
+    # 同样只认行首的 [Code] 段头。
+    code = re.split(r"(?m)^\[Code\]\s*$", iss, maxsplit=1)[1]
     check("ExecutablePath" in code and "StartsWith($prefix" in code,
           "停进程用 ExecutablePath 前缀规则")
     check("GetCurrentProcessId()" in code,
@@ -138,6 +145,8 @@ def main() -> int:
     check("/api/exit" in code, "卸载前先试应用内 /api/exit 完整退出清理")
     check("DeleteUserData" in code and "Checked := False" in code,
           "卸载选项默认保留用户数据（复选框默认不勾选）")
+    check("GetUserProfile" in code and "GetEnv('USERPROFILE')" in code,
+          "GetUserProfile 脚本常量取 %USERPROFILE%（Inno 没有 {userprofile} 常量）")
     check("MsgBox" in code and "卸载日志" in code,
           "删不掉的残留记日志并在完成页告知用户")
 

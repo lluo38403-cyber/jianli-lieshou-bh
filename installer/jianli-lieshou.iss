@@ -92,8 +92,10 @@ Type: files; Name: "{app}\config.yaml"; Check: DeleteUserData
 Type: files; Name: "{app}\data\bosshunter.db"; Check: DeleteUserData
 Type: filesandordirs; Name: "{app}\data\resumes"; Check: DeleteUserData
 ; 安装目录外：工作浏览器配置目录整个删（登录态在里面，卸载即清）。
-; 对应 installer.py browser_profile_dir。
-Type: filesandordirs; Name: "{userprofile}\.jianli-lieshou"
+; 对应 installer.py browser_profile_dir。注意：Inno 没有 {userprofile}
+; 常量（写了会在编译时报 Unknown constant），这里用 [Code] 段的
+; GetUserProfile 脚本常量取 %USERPROFILE%。
+Type: filesandordirs; Name: "{code:GetUserProfile}\.jianli-lieshou"
 ; %TEMP% 里属于本程序的残留（只认这三个前缀，别家文件不动）。
 ; 对应 installer.py TEMP_PREFIXES。注意：Inno 的 {tmp} 是安装程序自己
 ; 的临时子目录，不是系统 %TEMP%，这里必须用环境变量常量 {%TEMP}。
@@ -113,6 +115,15 @@ var
 function DeleteUserData(): Boolean;
 begin
   Result := (DeleteDataCheckBox <> nil) and DeleteDataCheckBox.Checked;
+end;
+
+function GetUserProfile(Param: String): String;
+begin
+  { Inno 没有 {userprofile} 常量（v39 曾误用，iscc 报 Unknown constant，
+    流水线 #4 因此失败）：用户目录只能从环境变量取，与
+    StopProcessesBeforeUninstall 里的 GetEnv('USERPROFILE') 同款写法。
+    供 [UninstallDelete] 的 {code:GetUserProfile} 用。 }
+  Result := GetEnv('USERPROFILE');
 end;
 
 function GetCurrentProcessId(): DWORD;
