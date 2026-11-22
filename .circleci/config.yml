@@ -159,7 +159,12 @@ jobs:
             $line = Get-Content pyproject.toml | Select-String -Pattern '^version = "(.*)"$' | Select-Object -First 1
             if (-not $line) { throw 'pyproject.toml 里没找到 version' }
             $version = $line.Matches.Groups[1].Value
-            $iscc = (Get-Command iscc -ErrorAction SilentlyContinue)?.Source
+            # 注意：这里是 powershell.exe 5.1，没有 PS 7 的 ?. 空条件运算符
+            # （GH 的 build-exe.yml 跑的是 pwsh 7，那边能写 ?.；流水线 #2
+            # 就是把那行原样抄过来、5 秒解析失败。先存变量再取 .Source。）
+            $isccCmd = Get-Command iscc -ErrorAction SilentlyContinue
+            $iscc = $null
+            if ($isccCmd) { $iscc = $isccCmd.Source }
             if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
             if (-not (Test-Path $iscc)) { throw '找不到 Inno Setup 编译器 ISCC.exe（choco 安装可能失败）' }
             & $iscc /DMyAppVersion=$version installer\jianli-lieshou.iss
