@@ -19,6 +19,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# 路径归一化：去掉末尾反斜杠再比较。Inno 写进注册表的 InstallLocation
+# 末尾可能带一个反斜杠（流水线 #7 教训），而 Join-Path 拼出的期望路径
+# 不带，直接 -eq/-ne 会误判；PowerShell 的 -eq/-ne 默认不区分大小写，
+# Windows 路径比较本来也不区分大小写，所以这里只处理尾部反斜杠。
+function Normalize-Path([string]$Path) { return $Path.TrimEnd('\') }
+
 $tempDir = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
 $workDir = if ($WorkDir) { $WorkDir } else { Join-Path $tempDir 'smoke-installer' }
 $installDir = Join-Path $workDir 'zhaopinglieshou'
@@ -57,7 +63,8 @@ try {
     if (-not $reg.$field) { throw "stage=registry 卸载项缺 $field" }
   }
   if ($reg.DisplayVersion -ne $ExpectedVersion) { throw "stage=registry DisplayVersion 是 $($reg.DisplayVersion)，不是 $ExpectedVersion" }
-  if ($reg.InstallLocation -ne $installDir) { throw "stage=registry InstallLocation 是 $($reg.InstallLocation)，不是 $installDir" }
+  # 注册表里的 InstallLocation 末尾可能带反斜杠，先归一化再比（见文件头 Normalize-Path）。
+  if ((Normalize-Path $reg.InstallLocation) -ne (Normalize-Path $installDir)) { throw "stage=registry InstallLocation 是 $($reg.InstallLocation)，不是 $installDir" }
   Write-Host 'stage=registry OK：卸载项六个值齐全，版本与路径都对'
 
   # ---- 阶段 shortcuts：开始菜单与桌面快捷方式 ----
