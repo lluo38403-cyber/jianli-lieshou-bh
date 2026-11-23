@@ -1,11 +1,37 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ScoreJobsDialog } from './ScoreJobsDialog'
 
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
   vi.unstubAllGlobals()
+})
+
+describe('ScoreJobsDialog selected scope rescore', () => {
+  it('sends force_rescore=true when previewing the selected scope', async () => {
+    // v45 回归（何铜浩反馈“不给重新打分”）：选“找工作里选中的”时预览
+    // 必须带 force_rescore=true，否则已打过分的岗位会被后端滤掉、预览
+    // 显示“符合条件的 0，会跳过 1”。
+    const previewCalls: unknown[] = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/scoring/preview') {
+        previewCalls.push(JSON.parse(String(init?.body)))
+        return new Response(JSON.stringify({ eligible_jobs: 1, skipped_jobs: 0, first_attempt_requests: 1, max_attempts_per_job: 2, max_possible_requests: 2, note: '' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const props = { selectedJobIds: ['job-a'], onClose: vi.fn(), onStart: vi.fn() }
+    render(<ScoreJobsDialog open {...props} />)
+    fireEvent.change(screen.getByLabelText(/给哪些岗位打分/), { target: { value: 'selected' } })
+    expect(await screen.findByText('找工作里选了 1 条')).toBeTruthy()
+    const selectedPreviews = previewCalls.filter(call => (call as { options: { scope: string } }).options.scope === 'selected')
+    expect(selectedPreviews.length).toBeGreaterThan(0)
+    expect((selectedPreviews[0] as { options: Record<string, unknown> }).options).toEqual({
+      scope: 'selected', limit: null, job_ids: ['job-a'], force_rescore: true,
+    })
+  })
 })
 
 describe('ScoreJobsDialog progress polling', () => {

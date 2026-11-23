@@ -730,12 +730,53 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
     expect((selectAll.closest('button') as HTMLButtonElement | null)?.disabled).toBe(false)
     fireEvent.click(selectAll)
     expect(await screen.findByText('已选 3 个')).toBeTruthy()
-    // 全选后这页全选变灰、切换按钮变成“这页都不选”。
+    // 全选后这页全选变灰、这页都不选可用（两颗独立按钮，不再是切换按钮变文案）。
     expect((screen.getByText('这页全选').closest('button') as HTMLButtonElement | null)?.disabled).toBe(true)
+    expect((screen.getByText('这页都不选').closest('button') as HTMLButtonElement | null)?.disabled).toBe(false)
     expect(screen.getByText('这页都不选')).toBeTruthy()
     // 取消选择后计数归零（徽标常显，0 也显示）。
     fireEvent.click(screen.getByText('取消选择'))
     expect(screen.getByText('已选 0 个')).toBeTruthy()
+  })
+
+  it('这页全选 / 这页都不选：三种状态下互补，绝不同时出现两个“选当前页”', async () => {
+    // v45 回归：v44 留下“选上这页”和“这页全选”两个干同一件事的按钮。
+    // 修完只剩一对互补按钮：都没选 / 选了一部分 / 全选了，三种状态下
+    // 文案与 disabled 都对得上，且任何时候都没有“选上这页”。
+    const jobs = [
+      { id: 'job-a', company: '甲公司', title: '岗位A', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
+      { id: 'job-b', company: '乙公司', title: '岗位B', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
+      { id: 'job-c', company: '丙公司', title: '岗位C', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
+    ]
+    const fetchFn = stubDashboardFetch()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/jobs/search')) return jsonResponse({ items: jobs, total: 3, all_total: 3 })
+      return fetchFn(input, init)
+    }))
+    render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
+    const isDisabled = (text: string) => (screen.getByText(text).closest('button') as HTMLButtonElement | null)?.disabled
+    // 1）都没选：这页全选可用、这页都不选灰掉。
+    await screen.findByText('这页全选')
+    expect(isDisabled('这页全选')).toBe(false)
+    expect(isDisabled('这页都不选')).toBe(true)
+    expect(screen.queryByText('选上这页')).toBeNull()
+    // 2）只选一个：两个都可用。
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选这个 甲公司 岗位A' }))
+    expect(await screen.findByText('已选 1 个')).toBeTruthy()
+    expect(isDisabled('这页全选')).toBe(false)
+    expect(isDisabled('这页都不选')).toBe(false)
+    expect(screen.queryByText('选上这页')).toBeNull()
+    // 3）全选了：这页全选灰掉、这页都不选可用；点“这页都不选”回到 0。
+    fireEvent.click(screen.getByText('这页全选'))
+    expect(await screen.findByText('已选 3 个')).toBeTruthy()
+    expect(isDisabled('这页全选')).toBe(true)
+    expect(isDisabled('这页都不选')).toBe(false)
+    expect(screen.queryByText('选上这页')).toBeNull()
+    fireEvent.click(screen.getByText('这页都不选'))
+    expect(await screen.findByText('已选 0 个')).toBeTruthy()
+    expect(isDisabled('这页全选')).toBe(false)
+    expect(isDisabled('这页都不选')).toBe(true)
   })
 })
 

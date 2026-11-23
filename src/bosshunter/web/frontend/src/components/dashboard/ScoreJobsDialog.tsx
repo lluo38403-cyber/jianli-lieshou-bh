@@ -68,7 +68,9 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
     setLoading(true)
     setMessage('')
     try {
-      const forceRescore = scope === 'all_scored'
+      // “找工作里选中的”也要重打：选中的岗位不论打没打过分都算数，只有
+      // 已经在投的（已批准/已投出）进不了基础查询，见 scoring_selection。
+      const forceRescore = scope === 'all_scored' || scope === 'selected'
       const jobIds = scope === 'selected' ? selectedJobIds : []
       const res = await fetch('/api/scoring/preview', {
         method: 'POST',
@@ -148,7 +150,7 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
     setLoading(true)
     setMessage('')
     try {
-      const result = await onStart({ scope, limit, job_ids: scope === 'selected' ? selectedJobIds : [], force_rescore: scope === 'all_scored' })
+      const result = await onStart({ scope, limit, job_ids: scope === 'selected' ? selectedJobIds : [], force_rescore: scope === 'all_scored' || scope === 'selected' })
       if (result.ok) {
         onClose()
         return
@@ -193,7 +195,7 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
           <div>
             <div className="text-xs font-black tracking-[0.18em] text-primary">给岗位打分</div>
             <h3 className="mt-1 text-2xl font-black">单独打分</h3>
-            <p className="mt-1 text-sm leading-6 text-muted">就用现在找工作里的岗位，不重新找；已经在投的不会重新打分。</p>
+            <p className="mt-1 text-sm leading-6 text-muted">就用现在找工作里的岗位，不重新找；{scope === 'selected' ? '选中的岗位会重新打分，只有已经在投的（已批准、已投出）不打。' : '已经在投的不会重新打分。'}</p>
           </div>
           <Button variant="secondary" size="sm" onClick={onClose}>关闭</Button>
         </div>

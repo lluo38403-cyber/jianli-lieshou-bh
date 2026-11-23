@@ -108,6 +108,38 @@ def test_selected_jobs_do_not_rescore_existing_results_without_explicit_force(tm
 	assert {job["id"] for job in forced} == {"pending", "scored"}
 
 
+def test_selected_rescore_includes_scored_filtered_job_but_skips_approved(tmp_path):
+	"""v45 回归（何铜浩反馈“不给重新打分”）：选中的已打分岗位在
+	selected + force_rescore 下必须算符合条件；已批准（在投）的岗位
+	进不了基础查询，仍被跳过。"""
+	db = get_db(tmp_path / "selected-rescore.db")
+	try:
+		for job_id in ("pending", "filtered-scored", "approved"):
+			insert_job(db, _job(job_id))
+		update_job_score(db, "filtered-scored", 65, "规则评分：命中关键词")
+		update_job_status(db, "filtered-scored", "filtered")
+		update_job_status(db, "approved", "approved")
+
+		selected = select_scoring_jobs(
+			db,
+			scope="selected",
+			job_ids=["pending", "filtered-scored", "approved"],
+			force_rescore=True,
+		)
+		preview = preview_scoring(
+			db,
+			scope="selected",
+			job_ids=["pending", "filtered-scored", "approved"],
+			force_rescore=True,
+		)
+	finally:
+		db.close()
+
+	assert {job["id"] for job in selected} == {"pending", "filtered-scored"}
+	assert preview["eligible_jobs"] == 2
+	assert preview["skipped_jobs"] == 1
+
+
 def test_scoring_selection_rejects_non_array_job_ids():
 	with pytest.raises(ValueError, match="岗位 ID 必须是数组"):
 		validate_options(scope="selected", job_ids="job-one")

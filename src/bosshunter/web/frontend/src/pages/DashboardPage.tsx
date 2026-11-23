@@ -2354,17 +2354,18 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   }
 
   const allPageSelected = items.length > 0 && items.every(job => selectedIds.includes(job.id))
-  const toggleCurrentPage = () => {
-    const pageIds = new Set(items.map(job => job.id))
-    setSelectedIds(previous => allPageSelected
-      ? previous.filter(id => !pageIds.has(id))
-      : [...new Set([...previous, ...pageIds])])
-  }
+  const somePageSelected = items.length > 0 && items.some(job => selectedIds.includes(job.id))
 
-  // “这页全选”：只选当前页、当前筛选下显示的岗位；和“这页都不选”对应。
+  // “这页全选” / “这页都不选”：一对互补按钮，只动当前页、当前筛选下显示的岗位；
+  // 和“取消选择”（清掉全部勾选）不是一回事，各管各的。
   const selectCurrentPage = () => {
     const pageIds = items.map(job => job.id)
     setSelectedIds(previous => [...new Set([...previous, ...pageIds])])
+  }
+
+  const deselectCurrentPage = () => {
+    const pageIds = new Set(items.map(job => job.id))
+    setSelectedIds(previous => previous.filter(id => !pageIds.has(id)))
   }
 
   const changeSort = (nextSortBy: JobSortKey) => {
@@ -2721,11 +2722,11 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
           .map(([value, label]) => ({ value, label }))}
       />
       <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
-        <Button variant="secondary" size="sm" disabled={!items.length} onClick={toggleCurrentPage}>
-          {allPageSelected ? '这页都不选' : '选上这页'}
-        </Button>
         <Button variant="secondary" size="sm" disabled={!items.length || allPageSelected} onClick={selectCurrentPage}>
           这页全选
+        </Button>
+        <Button variant="secondary" size="sm" disabled={!items.length || !somePageSelected} onClick={deselectCurrentPage}>
+          这页都不选
         </Button>
         <span className="rounded-full bg-secondary px-3 py-2 font-bold text-primary">已选 {selectedIds.length} 个</span>
         {selectedIds.length > 0 && <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>取消选择</Button>}
