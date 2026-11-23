@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from queue import Empty, Queue
 from threading import Event, Thread
 from typing import Callable, TypeVar
@@ -26,6 +27,41 @@ def stop_requested(config: dict | None) -> bool:
     """Return whether the current workbench task has been asked to stop."""
     event = get_stop_event(config)
     return bool(event and event.is_set())
+
+
+def get_pause_event(config: dict | None) -> Event | None:
+    """Return the workbench pause event carried in a runtime config."""
+    if not isinstance(config, dict):
+        return None
+    event = config.get("_workbench_pause_event")
+    return event if isinstance(event, Event) else None
+
+
+def wait_while_paused(
+    pause_event: Event | None,
+    stop_event: Event | None,
+    log: Callable[[str], None] | None = None,
+) -> bool:
+    """Block while the task is paused; return True when stop was requested.
+
+    The pause flag is polled in short slices so a stop request is honored
+    within ~0.5s even while paused. A paused task keeps its browser lock
+    and its place in the queue; resume just clears the flag.
+    """
+    if pause_event is None or not pause_event.is_set():
+        return bool(stop_event and stop_event.is_set())
+    logged = False
+    while pause_event.is_set():
+        if stop_event is not None and stop_event.is_set():
+            return True
+        if not logged and callable(log):
+            log("已暂停，等你点继续再投")
+            logged = True
+        if stop_event is not None:
+            stop_event.wait(0.5)
+        else:
+            time.sleep(0.5)
+    return bool(stop_event and stop_event.is_set())
 
 
 def run_cancellable(

@@ -367,6 +367,32 @@ async function ensureSession(targetId) {
   throw lastError;
 }
 
+// v44: 后台标签页的窗口归属。面板是 --app 独立窗口、挂不了标签页，
+// 全新启动后第一次投递/采集，后台标签会迫使 Chrome 新开一个普通窗口
+// 顶到用户面前（“怎么打开我的浏览器了”）。windowIdsOfPages 记下建
+// 标签前的已有窗口；minimizeWindowIfNew 只把这次新建出来的窗口最小化，
+// 已有窗口里的后台标签不动，不抢用户正在看的窗口。任何一步失败都静默
+// 跳过，绝不影响建标签本身。
+async function windowIdsOfPages() {
+  const resp = await sendCDP('Target.getTargets');
+  const targets = (resp.result?.targetInfos || []).filter((t) => t.type === 'page');
+  const ids = new Set();
+  for (const target of targets) {
+    try {
+      const win = await sendCDP('Browser.getWindowForTarget', { targetId: target.targetId });
+      if (win.result?.windowId) ids.add(win.result.windowId);
+    } catch {}
+  }
+  return ids;
+}
+
+async function minimizeWindowIfNew(targetId, knownWindows) {
+  const win = await sendCDP('Browser.getWindowForTarget', { targetId });
+  const windowId = win.result?.windowId;
+  if (!windowId || knownWindows.has(windowId)) return;
+  await sendCDP('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+}
+
 async function waitForLoad(sessionId, timeoutMs = 15000) {
   await sendCDP('Page.enable', {}, sessionId);
   return new Promise((resolve) => {
@@ -423,6 +449,13 @@ const server = http.createServer(async (req, res) => {
     } else if (pathname === '/new') {
       const targetUrl = q.url || 'about:blank';
       const background = q.background === '1' || q.background === 'true';
+      // 后台标签页：先记下已有窗口（见 windowIdsOfPages 的注释）。
+      let knownWindows = null;
+      if (background) {
+        try {
+          knownWindows = await windowIdsOfPages();
+        } catch {}
+      }
       const resp = await sendCDP('Target.createTarget', { url: targetUrl, background });
       const targetId = resp.result.targetId;
       // Bind the CDP session eagerly (including about:blank tabs) so a later
@@ -430,6 +463,11 @@ const server = http.createServer(async (req, res) => {
       try {
         await ensureSession(targetId);
       } catch {}
+      if (background && knownWindows) {
+        try {
+          await minimizeWindowIfNew(targetId, knownWindows);
+        } catch {}
+      }
       sendJson(res, { targetId });
     } else if (pathname === '/close') {
       const resp = await sendCDP('Target.closeTarget', { targetId: q.target });

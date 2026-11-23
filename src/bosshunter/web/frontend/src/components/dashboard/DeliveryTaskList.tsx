@@ -9,6 +9,7 @@ const DELIVERY_MODES = new Set(['deliver', 'full', 'monitor'])
 
 const TASK_STATUS_LABELS: Record<string, string> = {
   running: '投递中',
+  paused: '已暂停',
   stopping: '正在停下',
   completed: '已完成',
   failed: '失败了',
@@ -47,7 +48,23 @@ function jobFlow(job: DeliveryJob): string {
   return '已确认 → 等着投'
 }
 
-export function DeliveryTaskList({ tasks, deliveryJobs }: { tasks: WorkbenchTask[]; deliveryJobs: DeliveryJob[] }) {
+export function DeliveryTaskList({
+  tasks,
+  deliveryJobs,
+  onPause,
+  onResume,
+  onStop,
+  onForceStop,
+  forceStopVisible,
+}: {
+  tasks: WorkbenchTask[]
+  deliveryJobs: DeliveryJob[]
+  onPause?: (taskId: string) => void
+  onResume?: (taskId: string) => void
+  onStop?: (taskId: string) => void
+  onForceStop?: () => void
+  forceStopVisible?: boolean
+}) {
   const deliveryTasks = tasks
     .filter(task => DELIVERY_MODES.has(task.mode))
     .slice(0, 5)
@@ -90,6 +107,59 @@ export function DeliveryTaskList({ tasks, deliveryJobs }: { tasks: WorkbenchTask
                   <span className="text-sm font-black">{task.label}</span>
                   <span className="rounded-full bg-secondary px-2 py-1 text-[11px] font-black text-primary">{taskStatusLabel(task.status)}</span>
                 </div>
+                {(task.status === 'running' || task.status === 'paused' || task.status === 'stopping') && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {task.status === 'running' && (
+                      <button
+                        type="button"
+                        className="rounded-full border border-card-border px-3 py-1 text-xs font-bold text-primary hover:border-primary/60"
+                        onClick={() => onPause?.(task.id)}
+                      >
+                        暂停
+                      </button>
+                    )}
+                    {task.status === 'paused' && (
+                      <button
+                        type="button"
+                        className="rounded-full bg-primary px-3 py-1 text-xs font-bold text-primary-foreground"
+                        onClick={() => onResume?.(task.id)}
+                      >
+                        继续
+                      </button>
+                    )}
+                    {task.status === 'stopping' ? (
+                      <>
+                        <button
+                          type="button"
+                          disabled
+                          className="rounded-full border border-card-border px-3 py-1 text-xs font-bold text-muted"
+                        >
+                          正在停下…
+                        </button>
+                        {forceStopVisible && (
+                          <button
+                            type="button"
+                            className="rounded-full border border-card-border px-3 py-1 text-xs font-bold text-primary hover:border-primary/60"
+                            onClick={() => onForceStop?.()}
+                          >
+                            强制停止
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="rounded-full border border-card-border px-3 py-1 text-xs font-bold text-primary hover:border-primary/60"
+                        onClick={() => {
+                          if (!window.confirm(`要停下现在的${task.label}任务吗？已经投出去的都留着，没投的下次再投。`)) return
+                          onStop?.(task.id)
+                        }}
+                      >
+                        停下
+                      </button>
+                    )}
+                  </div>
+                )}
                 {requested !== null && (
                   <p className="mt-1 text-xs text-muted">
                     共 {requested} 个 · 已投出 {success ?? 0} 个 · 没投出去 {failed ?? 0} 个 · 等下次 {deferred ?? 0} 个

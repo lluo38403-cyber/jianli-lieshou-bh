@@ -24,6 +24,32 @@ MAX_JOB_IDS = 1000
 # applied_only=1 时只返回它；前端 status.ts 的 APPLIED_JOB_STATUSES
 # 是同一份口径的镜像，只用来画筛选选项，真正拦截以后端为准。
 APPLIED_STATUSES = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
+# 状态筛选是“用户的意思”，不是数据库原值：下面两项按原值筛永远筛不到东西，
+# 所以查之前先展开成真正的状态——
+# “已打分”（scored）：打分只会把岗位写成 ready/filtered，'scored' 这个值
+# 现在没有任何代码会写（只剩老数据里可能有）；它要匹配所有走过打分的岗位，
+# 也就是 ready/filtered/approved/rejected/error（已跳过的不算：跳过可能发生在
+# 打分前，只看状态分不出来，留给“已跳过”单独筛）。
+# “等着投”（ready）：等着投出去的是 ready + approved（已确认，等下次投递），
+# 后端 get_jobs_ready_to_send 用的就是同一份口径。
+STATUS_FILTER_EXPANSION = {
+    "scored": ("scored", "ready", "filtered", "approved", "rejected", "error"),
+    "ready": ("ready", "approved"),
+}
+
+
+def expand_status_filters(values) -> list[str]:
+    """Expand user-facing status filter values into real job statuses.
+
+    Unknown values pass through unchanged (the caller validates them);
+    the result is deduplicated, order-preserving.
+    """
+    expanded: list[str] = []
+    for value in values or []:
+        for status in STATUS_FILTER_EXPANSION.get(str(value), (str(value),)):
+            if status not in expanded:
+                expanded.append(status)
+    return expanded
 DELETION_PROTECTED_STATUSES = set(APPLIED_STATUSES)
 GREETING_ALLOWED_STATUSES = {"ready", "approved", "error"}
 REJECT_ALLOWED_STATUSES = {"ready", "approved", "error"}

@@ -504,6 +504,30 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     return task
   }
 
+  const pauseTask = async (taskId: string) => {
+    const res = await fetch(`/api/workbench/task/${taskId}/pause`, { method: 'POST' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data.error || '没暂停')
+    }
+    const task = await res.json() as WorkbenchTask
+    setWorkbench(prev => ({ ...prev, task, last_task: task }))
+    void fetchAll()
+    return task
+  }
+
+  const resumeTask = async (taskId: string) => {
+    const res = await fetch(`/api/workbench/task/${taskId}/resume`, { method: 'POST' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data.error || '没继续')
+    }
+    const task = await res.json() as WorkbenchTask
+    setWorkbench(prev => ({ ...prev, task, last_task: task }))
+    void fetchAll()
+    return task
+  }
+
   const resolveVerification = useCallback(async (holdId: number) => {
     const res = await fetch(`/api/delivery/verification/${holdId}/resolve`, { method: 'POST' })
     if (!res.ok) {
@@ -569,6 +593,8 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     updateJobStatus,
     startTask,
     stopTask,
+    pauseTask,
+    resumeTask,
   }
 }
 

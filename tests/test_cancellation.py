@@ -4,7 +4,7 @@ import unittest
 from threading import Event, Thread
 from unittest.mock import Mock, patch
 
-from bosshunter.cancellation import OperationCancelled, run_cancellable
+from bosshunter.cancellation import OperationCancelled, run_cancellable, wait_while_paused
 from bosshunter.throttle import PageThrottle
 
 
@@ -97,6 +97,61 @@ class CancellationTests(unittest.TestCase):
         send_message.assert_not_called()
         add_history.assert_not_called()
         close_tab.assert_called_with("target-1")
+
+
+class WaitWhilePausedTests(unittest.TestCase):
+    def test_returns_false_immediately_when_not_paused(self):
+        self.assertFalse(wait_while_paused(Event(), Event()))
+
+    def test_returns_false_when_pause_event_is_none(self):
+        self.assertFalse(wait_while_paused(None, Event()))
+
+    def test_blocks_while_paused_and_continues_after_resume(self):
+        pause = Event()
+        stop = Event()
+        pause.set()
+        finished = []
+
+        def waiter():
+            finished.append(wait_while_paused(pause, stop))
+
+        thread = Thread(target=waiter, daemon=True)
+        thread.start()
+        time.sleep(0.2)
+        self.assertEqual(finished, [])
+        pause.clear()
+        thread.join(timeout=2)
+        self.assertEqual(finished, [False])
+
+    def test_stop_during_pause_returns_true_promptly(self):
+        pause = Event()
+        stop = Event()
+        pause.set()
+
+        def stopper():
+            time.sleep(0.1)
+            stop.set()
+
+        Thread(target=stopper, daemon=True).start()
+        started_at = time.monotonic()
+        self.assertTrue(wait_while_paused(pause, stop))
+        self.assertLess(time.monotonic() - started_at, 2)
+
+    def test_pause_log_is_written_once(self):
+        pause = Event()
+        stop = Event()
+        pause.set()
+        messages = []
+
+        def waiter():
+            wait_while_paused(pause, stop, log=messages.append)
+
+        thread = Thread(target=waiter, daemon=True)
+        thread.start()
+        time.sleep(1.2)
+        pause.clear()
+        thread.join(timeout=2)
+        self.assertEqual(messages, ["已暂停，等你点继续再投"])
 
 
 if __name__ == "__main__":

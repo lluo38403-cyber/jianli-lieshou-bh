@@ -137,11 +137,15 @@ class NoWindowGatingTests(unittest.TestCase):
         outbound.assert_called_once()
 
     def test_preset_greeting_confirms_without_window(self):
+        # _confirm_preset_greeting 真实返回的就是 preset_confirmed（不是
+        # first_contact_submitted）：预设确认后 BOSS 已经发了预设文案，
+        # 投递流程里它按“已发过”走，不再发第二条（v44）。
         with patch.object(sender, "_detect_greet_popup", return_value={"success": True}), \
                 patch.object(sender, "_is_preset_greeting_popup", return_value=True), \
-                patch.object(sender, "_confirm_preset_greeting", return_value={"success": True, "action": "first_contact_submitted"}) as confirm:
+                patch.object(sender, "_confirm_preset_greeting", return_value={"success": True, "action": "preset_confirmed"}) as confirm:
             result = sender._handle_greet_popup("test", "test")
         self.assertTrue(result["success"])
+        self.assertEqual(result["action"], "preset_confirmed")
         confirm.assert_called_once()
 
 

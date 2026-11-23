@@ -156,21 +156,30 @@ def rule_score(job: dict, config: dict) -> tuple[int, str]:
     if wanted_edu and job_edu and (wanted_edu in job_edu or job_edu in wanted_edu):
         education_points = 5
 
-    score = 40 + keyword_points + salary_points + city_points + education_points
+    raw_total = 40 + keyword_points + salary_points + city_points + education_points
+    score = raw_total
     if not matched:
         # 无关键词命中：薪资/城市/学历再符合也不能过线。
         score = min(score, 55)
     score = min(score, 100)
-    parts = []
+    # 原因要让用户对得上分数：每一项写清加了几分，封顶也要写出来。
+    # 例子：基础40分 + 关键词0分（没命中） + 薪资10分（符合） + 城市5分（符合）
+    #       + 学历0分（没对上） = 55分；无关键词命中，总分封顶55分，最终55分。
     if matched:
-        parts.append(f"命中关键词：{'、'.join(matched[:5])}")
-    if salary_points == 10:
-        parts.append("薪资符合")
-    if city_points:
-        parts.append("城市符合")
-    if education_points:
-        parts.append("学历符合")
-    reason = "；".join(parts) if parts else "未命中关键词"
+        keyword_note = f"关键词{keyword_points}分（命中：{'、'.join(matched[:5])}）"
+    else:
+        keyword_note = f"关键词{keyword_points}分（没命中）"
+    if parsed is None:
+        salary_note = f"薪资{salary_points}分（面议/没写）"
+    elif salary_points == 10:
+        salary_note = f"薪资{salary_points}分（符合）"
+    else:
+        salary_note = f"薪资{salary_points}分（不符合期望）"
+    city_note = f"城市{city_points}分（{'符合' if city_points else '不在目标城市'}）"
+    edu_note = f"学历{education_points}分（{'符合' if education_points else '没对上'}）"
+    reason = f"基础40分 + {keyword_note} + {salary_note} + {city_note} + {edu_note} = {raw_total}分"
+    if not matched:
+        reason += f"；无关键词命中，总分封顶55分，最终{score}分"
     return score, reason
 
 

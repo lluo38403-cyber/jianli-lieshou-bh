@@ -27,7 +27,7 @@ MODE_LABELS = {
 }
 
 TERMINAL_STATUSES = {"completed", "failed", "stopped"}
-ACTIVE_STATUSES = {"running", "stopping"}
+ACTIVE_STATUSES = {"running", "stopping", "paused"}
 DEADLINE_MODES = {"full", "monitor", "deliver"}
 
 
@@ -48,6 +48,7 @@ class WorkbenchTask:
     deadline_at: str | None = None
     stop_reason: str | None = None
     stop_requested: Event = field(default_factory=Event, repr=False)
+    pause_requested: Event = field(default_factory=Event, repr=False)
     metrics: dict[str, int] = field(default_factory=dict)
     progress: dict[str, Any] = field(default_factory=dict)
     context: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -65,6 +66,7 @@ class WorkbenchTask:
             "deadline_at": self.deadline_at,
             "stop_reason": self.stop_reason,
             "stop_requested": self.stop_requested.is_set(),
+            "pause_requested": self.pause_requested.is_set(),
             "metrics": dict(self.metrics),
             "progress": dict(self.progress),
         }
@@ -162,6 +164,41 @@ class WorkbenchTaskRunner:
                 "tasks": tasks,
             }
 
+    def pause(self, task_id: str) -> dict:
+        """Pause a running task: the worker waits between sends until resumed.
+
+        The task keeps its browser lock and its place in the queue; only
+        ``running`` tasks can be paused. A paused task still counts as the
+        active task, so no other task can start while it is paused.
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                raise KeyError(task_id)
+            if task.status in TERMINAL_STATUSES or task.status != "running":
+                return task.snapshot()
+            task.pause_requested.set()
+            task.status = "paused"
+            if not task.logs or task.logs[-1] != "已暂停，等你点继续再投":
+                task.logs.append("已暂停，等你点继续再投")
+            task.updated_at = datetime.now().isoformat(timespec="seconds")
+            return task.snapshot()
+
+    def resume(self, task_id: str) -> dict:
+        """Resume a paused task; only ``paused`` tasks can be resumed."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                raise KeyError(task_id)
+            if task.status != "paused":
+                return task.snapshot()
+            task.pause_requested.clear()
+            task.status = "running"
+            if not task.logs or task.logs[-1] != "已继续投递":
+                task.logs.append("已继续投递")
+            task.updated_at = datetime.now().isoformat(timespec="seconds")
+            return task.snapshot()
+
     def stop(self, task_id: str, reason: str = "用户已请求停止") -> dict:
         with self._lock:
             task = self._tasks.get(task_id)
@@ -176,6 +213,7 @@ class WorkbenchTaskRunner:
                 finally:
                     task.stop_requested.set()
             task.stop_requested.set()
+            task.pause_requested.clear()
             task.status = "stopping"
             task.stop_reason = reason
             if reason and (not task.logs or task.logs[-1] != reason):
@@ -217,6 +255,7 @@ class WorkbenchTaskRunner:
             # 直接丢弃，不得复活任务状态。
             self._generations[task.id] = self._generations.get(task.id, 1) + 1
             task.stop_requested.set()
+            task.pause_requested.clear()
             task.status = "stopped"
             task.stop_reason = reason
             task.error = None

@@ -587,6 +587,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     updateJobStatus,
     startTask,
     stopTask,
+    pauseTask,
+    resumeTask,
   } = useDashboard(view)
   const [selected, setSelected] = useState<string[]>([])
   const [notice, setNotice] = useState('')
@@ -1106,6 +1108,35 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     }
   }
 
+  /** 投递跟进卡片上的暂停 / 继续 / 停下：与首页任务面板同一套接口，
+   * 只是入口放在卡片上，用户不用翻回首页找按钮。 */
+  const pauseDeliveryTask = async (taskId: string) => {
+    try {
+      await pauseTask(taskId)
+      setNotice('已经暂停了，点继续接着投。')
+    } catch (err) {
+      setNotice(err instanceof Error ? `没暂停：${err.message}` : '没暂停，请稍后再试。')
+    }
+  }
+
+  const resumeDeliveryTask = async (taskId: string) => {
+    try {
+      await resumeTask(taskId)
+      setNotice('已经继续投了。')
+    } catch (err) {
+      setNotice(err instanceof Error ? `没继续：${err.message}` : '没继续，请稍后再试。')
+    }
+  }
+
+  const stopDeliveryTask = async (taskId: string) => {
+    try {
+      await stopTask(taskId)
+      setNotice('已经让它停下了。')
+    } catch (err) {
+      setNotice(err instanceof Error ? `没停下来：${err.message}` : '没停下来，请稍后再试。')
+    }
+  }
+
   const confirmDeliver = async (ids: string[]) => {
     if (!ids.length) return
     const count = ids.length
@@ -1295,6 +1326,11 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         onCheckReplies={checkRepliesFromMonitor}
         tasks={workbench.tasks ?? []}
         deliveryJobs={workbench.delivery_jobs ?? []}
+        onPauseTask={(taskId) => { void pauseDeliveryTask(taskId) }}
+        onResumeTask={(taskId) => { void resumeDeliveryTask(taskId) }}
+        onStopTask={(taskId) => { void stopDeliveryTask(taskId) }}
+        onForceStopTask={() => { void forceStopTask() }}
+        forceStopVisible={forceStopVisible}
       />
     )
   }
@@ -2325,6 +2361,12 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
       : [...new Set([...previous, ...pageIds])])
   }
 
+  // “这页全选”：只选当前页、当前筛选下显示的岗位；和“这页都不选”对应。
+  const selectCurrentPage = () => {
+    const pageIds = items.map(job => job.id)
+    setSelectedIds(previous => [...new Set([...previous, ...pageIds])])
+  }
+
   const changeSort = (nextSortBy: JobSortKey) => {
     setPage(0)
     if (nextSortBy === sortBy) {
@@ -2682,6 +2724,9 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         <Button variant="secondary" size="sm" disabled={!items.length} onClick={toggleCurrentPage}>
           {allPageSelected ? '这页都不选' : '选上这页'}
         </Button>
+        <Button variant="secondary" size="sm" disabled={!items.length || allPageSelected} onClick={selectCurrentPage}>
+          这页全选
+        </Button>
         <span className="rounded-full bg-secondary px-3 py-2 font-bold text-primary">已选 {selectedIds.length} 个</span>
         {selectedIds.length > 0 && <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>取消选择</Button>}
         <Button variant="destructive" size="sm" disabled={!selectedIds.length} onClick={() => void softDelete(selectedIds)}>扔进回收站</Button>
@@ -2901,6 +2946,11 @@ function MonitorExecutionView({
   onCheckReplies,
   tasks,
   deliveryJobs,
+  onPauseTask,
+  onResumeTask,
+  onStopTask,
+  onForceStopTask,
+  forceStopVisible,
 }: {
   history: HistoryItem[]
   refresh: () => Promise<void>
@@ -2911,6 +2961,12 @@ function MonitorExecutionView({
   /** 投递任务列表：最近的投递任务快照 + 最近走过投递流程的岗位。 */
   tasks: WorkbenchTask[]
   deliveryJobs: DeliveryJob[]
+  /** 投递任务卡片上的暂停 / 继续 / 停下 / 强制停止：入口在卡片上，动作由首页同一套接口做。 */
+  onPauseTask: (taskId: string) => void
+  onResumeTask: (taskId: string) => void
+  onStopTask: (taskId: string) => void
+  onForceStopTask: () => void
+  forceStopVisible: boolean
 }) {
   const pendingReplies = uniqueLatestByJob(history.filter(item =>
     item.action === 'reply_pending' && !isReplyPendingResolved(item, history)
@@ -3070,7 +3126,15 @@ function MonitorExecutionView({
           <span className="rounded-full bg-secondary px-3 py-2 text-xs font-black text-primary">等你处理 {pendingItems.length}</span>
         </div>
       </div>
-      <DeliveryTaskList tasks={tasks} deliveryJobs={deliveryJobs} />
+      <DeliveryTaskList
+        tasks={tasks}
+        deliveryJobs={deliveryJobs}
+        onPause={onPauseTask}
+        onResume={onResumeTask}
+        onStop={onStopTask}
+        onForceStop={onForceStopTask}
+        forceStopVisible={forceStopVisible}
+      />
       <div className="mb-4 flex flex-wrap gap-2">
         {[
           { key: 'pending' as const, label: '等你处理', count: pendingItems.length },

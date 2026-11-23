@@ -124,16 +124,22 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
     return `${Math.floor(hours / 24)}d 前`
   }
 
-  const sortableHeader = (label: string, key: JobSortKey, hint?: string) => (
-    <button
-      type="button"
-      onClick={() => onSortChange(key)}
-      className="inline-flex items-center gap-1 whitespace-nowrap font-bold hover:text-primary"
-      title={`按${hint || label}排`}
-    >
-      {label}<span className="text-[10px]">{sortBy === key ? (sortOrder === 'asc' ? '↑' : '↓') : '↕'}</span>
-    </button>
-  )
+  // 选中的排序要发光：和产品里其他选中态一个样子（青字 + 青框底），
+  // 点哪个亮哪个；没选中的只有 ↕，选中的亮 ↑/↓。
+  const sortableHeader = (label: string, key: JobSortKey, hint?: string) => {
+    const active = sortBy === key
+    return (
+      <button
+        type="button"
+        onClick={() => onSortChange(key)}
+        aria-pressed={active}
+        className={`inline-flex items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-0.5 font-bold transition-colors ${active ? 'border-primary bg-secondary text-primary' : 'border-transparent hover:text-primary'}`}
+        title={`按${hint || label}排`}
+      >
+        {label}<span className="text-[10px]">{active ? (sortOrder === 'asc' ? '↑' : '↓') : '↕'}</span>
+      </button>
+    )
+  }
 
   return (
     <Card>
@@ -164,7 +170,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
               <tr className="border-b border-card-border bg-secondary text-xs text-muted">
                 <th className="px-2 py-2.5 text-center font-bold">选</th>
                 <th className="px-2 py-2.5 text-left font-bold">公司</th>
-                <th className="px-2 py-2.5 text-left">{sortableHeader('岗位', 'salary', '工资')}</th>
+                <th className="px-2 py-2.5 text-left">{sortableHeader('薪资', 'salary')}</th>
                 <th className="px-2 py-2.5 text-left">{sortableHeader('学历 · 类型', 'education')}</th>
                 <th className="px-2 py-2.5 text-left">{sortableHeader('打分', 'score')}</th>
                 <th className="px-2 py-2.5 text-left">{sortableHeader('状态', 'status')}</th>

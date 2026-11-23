@@ -141,6 +141,16 @@ else
   cat /tmp/jl-verify-installer.log
 fi
 
+# 9. 浏览器代理：后台标签页新开窗口要被最小化（v44 B 项）
+# 假 Chrome + 真 cdp-proxy 联调；ws 取自前端 node_modules（第 2 节已保证存在）。
+section "9. 浏览器代理后台标签最小化"
+if node "$ROOT/scripts/test-cdp-proxy-minimize.mjs" > /tmp/jl-verify-proxy.log 2>&1; then
+  pass "后台标签新开窗口被最小化、复用/前台窗口不动（日志 /tmp/jl-verify-proxy.log）"
+else
+  fail "浏览器代理最小化检查失败（日志 /tmp/jl-verify-proxy.log）"
+  cat /tmp/jl-verify-proxy.log
+fi
+
 echo
 if [ $FAIL -eq 0 ]; then echo "VERIFY: ALL HARD CHECKS PASSED"; else echo "VERIFY: FAILED"; fi
 exit $FAIL

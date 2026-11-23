@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { DeliveryTaskList } from './DeliveryTaskList'
 import type { DeliveryJob, WorkbenchTask } from '@/hooks/useDashboard'
@@ -31,10 +31,20 @@ function buildJob(overrides: Partial<DeliveryJob>): DeliveryJob {
   }
 }
 
-function renderList(tasks: WorkbenchTask[], deliveryJobs: DeliveryJob[]) {
+function renderList(
+  tasks: WorkbenchTask[],
+  deliveryJobs: DeliveryJob[],
+  handlers: {
+    onPause?: (taskId: string) => void
+    onResume?: (taskId: string) => void
+    onStop?: (taskId: string) => void
+    onForceStop?: () => void
+    forceStopVisible?: boolean
+  } = {},
+) {
   return render(
     <MemoryRouter>
-      <DeliveryTaskList tasks={tasks} deliveryJobs={deliveryJobs} />
+      <DeliveryTaskList tasks={tasks} deliveryJobs={deliveryJobs} {...handlers} />
     </MemoryRouter>,
   )
 }
@@ -107,5 +117,69 @@ describe('DeliveryTaskList', () => {
     expect(screen.getByText(/最近没有投递任务/)).toBeTruthy()
     expect(screen.getByRole('link', { name: '找工作' }).getAttribute('href')).toBe('/jobs')
     expect(screen.getByText(/没有正在排队、也没投失败的岗位/)).toBeTruthy()
+  })
+
+  it('shows pause and stop buttons on a running task, and pause calls back with the task id', () => {
+    const onPause = vi.fn()
+    const onStop = vi.fn()
+    renderList([buildTask({ status: 'running' })], [], { onPause, onStop })
+    fireEvent.click(screen.getByRole('button', { name: '暂停' }))
+    expect(onPause).toHaveBeenCalledWith('task-1')
+    expect(screen.getByRole('button', { name: '停下' })).toBeTruthy()
+    expect(onStop).not.toHaveBeenCalled()
+  })
+
+  it('shows resume and stop buttons on a paused task, and resume calls back with the task id', () => {
+    const onResume = vi.fn()
+    renderList([buildTask({ status: 'paused' })], [], { onResume })
+    expect(screen.getByText('已暂停')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '继续' }))
+    expect(onResume).toHaveBeenCalledWith('task-1')
+    expect(screen.getByRole('button', { name: '停下' })).toBeTruthy()
+  })
+
+  it('asks for confirmation before stopping, and only stops when confirmed', () => {
+    const onStop = vi.fn()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    try {
+      renderList([buildTask({ status: 'running' })], [], { onStop })
+      fireEvent.click(screen.getByRole('button', { name: '停下' }))
+      expect(onStop).not.toHaveBeenCalled()
+      confirm.mockReturnValue(true)
+      fireEvent.click(screen.getByRole('button', { name: '停下' }))
+      expect(onStop).toHaveBeenCalledWith('task-1')
+    } finally {
+      confirm.mockRestore()
+    }
+  })
+
+  it('shows force stop on a stopping task only after ten seconds', () => {
+    const onForceStop = vi.fn()
+    const { rerender } = renderList(
+      [buildTask({ status: 'stopping' })],
+      [],
+      { onForceStop, forceStopVisible: false },
+    )
+    expect(screen.getByRole('button', { name: '正在停下…' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '强制停止' })).toBeNull()
+    rerender(
+      <MemoryRouter>
+        <DeliveryTaskList
+          tasks={[buildTask({ status: 'stopping' })]}
+          deliveryJobs={[]}
+          onForceStop={onForceStop}
+          forceStopVisible
+        />
+      </MemoryRouter>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '强制停止' }))
+    expect(onForceStop).toHaveBeenCalled()
+  })
+
+  it('shows no action buttons on a finished task', () => {
+    renderList([buildTask({ status: 'completed' })], [])
+    expect(screen.queryByRole('button', { name: '暂停' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '继续' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '停下' })).toBeNull()
   })
 })

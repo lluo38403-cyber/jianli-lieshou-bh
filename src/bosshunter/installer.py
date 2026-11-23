@@ -1,4 +1,4 @@
-"""简历猎手 · 安装 / 卸载口径（v43，1.1.29）。
+"""简历猎手 · 安装 / 卸载口径（v44，1.1.30）。
 
 这一模块是安装程序与卸载程序的**唯一口径来源**：Inno Setup 脚本
 （installer/jianli-lieshou.iss）里的规则必须与这里逐项一致，对应关系
@@ -60,7 +60,7 @@ from pathlib import Path
 
 APP_NAME = "简历猎手"
 APP_EXE_NAME = "简历猎手.exe"
-APP_VERSION = "1.1.29"
+APP_VERSION = "1.1.30"
 INSTALL_SUBDIR = "简历猎手"
 DESKTOP_SHORTCUT_NAME = "简历猎手.lnk"  # 与 updater._DESKTOP_SHORTCUT_NAME 同名
 # 安装时用户不勾选“创建桌面快捷方式”，安装程序写这个 marker；

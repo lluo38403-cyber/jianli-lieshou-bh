@@ -64,6 +64,7 @@ from bosshunter.db import (
 	GREETING_ALLOWED_STATUSES,
 	auto_approve_pending,
 	REJECT_ALLOWED_STATUSES,
+	expand_status_filters,
 	JobDeletionConflictError,
 	JobManualSentConflictError,
 	add_history,
@@ -150,6 +151,7 @@ from bosshunter.web.resume_original import (
 )
 from bosshunter.web.resume_upload import ResumeUploadError, prepare_resume_content
 from bosshunter.web.city_lookup import CityLookupError, lookup_city
+from bosshunter.cancellation import wait_while_paused
 from bosshunter.web.tasks import (
 	TaskAlreadyRunningError,
 	WorkbenchTask,
@@ -1002,8 +1004,11 @@ def _execute_deliver(task: WorkbenchTask, config: dict) -> None:
 		)
 
 	current_config = config
+	config["_workbench_pause_event"] = task.pause_requested
 	try:
 		while not task.stop_requested.is_set():
+			if wait_while_paused(task.pause_requested, task.stop_requested, lambda message: _log(task, message)):
+				return
 			if _auth_stop_if_expired(task, auth_client):
 				return
 			_execute_deliver_batch(task, current_config)
@@ -1102,6 +1107,7 @@ def _execute_deliver_batch(task: WorkbenchTask, config: dict) -> None:
 
 	config = _refresh_greeting_settings(config)
 	config["_workbench_stop_event"] = task.stop_requested
+	config["_workbench_pause_event"] = task.pause_requested
 	config["_workbench_log"] = lambda message: _log(task, message)
 	config["_workbench_greeting_activity"] = greeting_activity.claim
 	selected_job_ids = [str(job_id) for job_id in config.get("_workbench_job_ids", []) if str(job_id)]
@@ -1124,6 +1130,9 @@ def _execute_deliver_batch(task: WorkbenchTask, config: dict) -> None:
 				"其余岗位继续进入发送流程。",
 			)
 	_log(task, "发送招呼语")
+	# 暂停关卡：生成完了、发之前再等一次，免得一批刚生成完就暂停不住。
+	if wait_while_paused(task.pause_requested, task.stop_requested, lambda message: _log(task, message)):
+		return
 	# 投递时间窗口与随机休息日已取消：任何时间都可投递。
 	# ``force`` remains an explicit CLI-only override and is never implied by a
 	# browser button click. Both generation and delivery pin the runtime database
@@ -1960,6 +1969,31 @@ def _query_values(name: str) -> list[str]:
 	return [str(value).strip() for value in values if str(value).strip()]
 
 
+# HR 活跃度是 BOSS 详情页抓来的中文标签（“3日内活跃”“2周内活跃”……），
+# 直接按字符串排就是按汉字排，顺序全乱。先换算成“大约多少天前”再排：
+# 在线/刚刚/今日 = 0 天，N 日内/天内 = N 天，本周 = 7 天，N 周内 = N×7 天，
+# 本月 = 30 天，N 月内 = N×30 天，半年前 = 180 天；空值或认不出的格式
+# 排 NULL，ORDER BY 时用 IS NULL 键把它顶到最后（升序降序都最后）。
+# 数字可能是阿拉伯数字（3日内）也可能是汉字数字（两天内、三日内），
+# 两种都要认；“十五日”这种两字汉字数只认首字（十→10），极少见，接受这点偏差。
+_HR_ACTIVE_NUMERAL_SQL = """CASE substr(TRIM(hr_active), 1, 1)
+		WHEN '一' THEN 1 WHEN '二' THEN 2 WHEN '两' THEN 2 WHEN '三' THEN 3
+		WHEN '四' THEN 4 WHEN '五' THEN 5 WHEN '六' THEN 6 WHEN '七' THEN 7
+		WHEN '八' THEN 8 WHEN '九' THEN 9 WHEN '十' THEN 10
+		ELSE CAST(hr_active AS INTEGER) END"""
+_HR_ACTIVE_RANK_SQL = f"""CASE
+		WHEN TRIM(COALESCE(hr_active, '')) = '' THEN NULL
+		WHEN hr_active IN ('在线', '刚刚活跃', '今日活跃') THEN 0
+		WHEN hr_active = '两天内活跃' THEN 2
+		WHEN hr_active LIKE '%天内活跃' OR hr_active LIKE '%日内活跃' THEN {_HR_ACTIVE_NUMERAL_SQL}
+		WHEN hr_active = '本周活跃' THEN 7
+		WHEN hr_active LIKE '%周内活跃' THEN {_HR_ACTIVE_NUMERAL_SQL} * 7
+		WHEN hr_active = '本月活跃' THEN 30
+		WHEN hr_active LIKE '%月内活跃' THEN {_HR_ACTIVE_NUMERAL_SQL} * 30
+		WHEN hr_active = '半年前活跃' THEN 180
+		ELSE NULL END"""
+
+
 @app.route("/api/jobs/search")
 def api_job_search():
 	try:
@@ -2009,9 +2043,12 @@ def api_job_search():
 		conditions.append("score >= ?")
 		params.append(minimum_score)
 	if status_filters:
-		placeholders = ",".join("?" for _ in status_filters)
+		# “已打分/等着投”是用户的意思，不是数据库原值：先展开（db.py 的
+		# STATUS_FILTER_EXPANSION），否则这两个选项永远筛不到东西。
+		expanded_statuses = expand_status_filters(status_filters)
+		placeholders = ",".join("?" for _ in expanded_statuses)
 		conditions.append(f"status IN ({placeholders})")
-		params.extend(status_filters)
+		params.extend(expanded_statuses)
 	source_platforms = _query_values("source_platform")
 	if source_platforms:
 		if any(value not in {"boss", "zhilian", "51job", "liepin"} for value in source_platforms):
@@ -2050,13 +2087,17 @@ def api_job_search():
 		"education": "CASE TRIM(COALESCE(education, '')) WHEN '博士' THEN 5 WHEN '硕士' THEN 4 WHEN '本科' THEN 3 WHEN '大专' THEN 2 WHEN '不限' THEN 1 ELSE 0 END",
 		"score": "COALESCE(score, 0)",
 		"status": "COALESCE(status, '')",
-		"hr_active": "COALESCE(hr_active, '')",
+		"hr_active": _HR_ACTIVE_RANK_SQL,
 		"created_at": "COALESCE(created_at, '')",
 		# 投递跟进页按“最近一次状态变化”排：updated_at 每次改状态都会刷新，
 		# 已投出岗位就是按投递/回复/跟进的最近动作排；老数据没有就退回 created_at。
 		"updated_at": "COALESCE(updated_at, created_at)",
 	}
-	query += f" ORDER BY {sort_expressions[sort_by]} {sort_order.upper()}, created_at DESC, score DESC"
+	if sort_by == "hr_active":
+		# HR 活跃度：未知（NULL）排最后，升序降序都最后；已知的按新近程度排。
+		query += f" ORDER BY ({sort_expressions['hr_active']} IS NULL), {sort_expressions['hr_active']} {sort_order.upper()}, created_at DESC, score DESC"
+	else:
+		query += f" ORDER BY {sort_expressions[sort_by]} {sort_order.upper()}, created_at DESC, score DESC"
 
 	config = load_config(CONFIG_PATH)
 	blocked_companies = config.get("profile", {}).get("blocked_companies", [])
@@ -3031,6 +3072,26 @@ def api_collection_run_detail(run_id):
 def api_workbench_task_stop(task_id):
 	try:
 		return _json_response(task_runner.stop(task_id))
+	except KeyError:
+		return _json_response({"error": "任务不存在"}, 404)
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/workbench/task/<task_id>/pause", method="POST")
+def api_workbench_task_pause(task_id):
+	try:
+		return _json_response(task_runner.pause(task_id))
+	except KeyError:
+		return _json_response({"error": "任务不存在"}, 404)
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/workbench/task/<task_id>/resume", method="POST")
+def api_workbench_task_resume(task_id):
+	try:
+		return _json_response(task_runner.resume(task_id))
 	except KeyError:
 		return _json_response({"error": "任务不存在"}, 404)
 	except Exception as e:

@@ -10,6 +10,7 @@ import sqlite3
 from typing import Any, Iterable
 
 from bosshunter.cities import get_city_code
+from bosshunter.db import expand_status_filters
 from bosshunter.job_filters import city_match_clause, parse_monthly_salary_k
 
 
@@ -104,6 +105,9 @@ def _filtered_rows(conn: sqlite3.Connection, filters: dict[str, Any] | None = No
 
 	status_values = values("status")
 	if status_values:
+		# 与 /api/jobs/search 同一份口径：先展开“已打分/等着投”，
+		# 否则导出“已打分”筛出来的岗位和列表里看到的对不上。
+		status_values = expand_status_filters(status_values)
 		placeholders = ",".join("?" for _ in status_values)
 		conditions.append(f"status IN ({placeholders})")
 		params.extend(status_values)

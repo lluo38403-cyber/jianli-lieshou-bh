@@ -1158,6 +1158,150 @@ class WebApiRouteTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             self.assertEqual([job["id"] for job in payload["items"]], ["newer-sent", "older-sent"])
 
+    def test_job_search_scored_filter_matches_scored_jobs(self):
+        # “已打分”筛的是“打过分的岗位”，不是 status='scored' 这个值——
+        # 打分只会把岗位写成 ready/filtered，'scored' 现在没有任何代码会写，
+        # 以前按原值筛永远是 0 个（图4）。
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for job_id, score, status_value in (
+                    ("ready-one", 85, "ready"),
+                    ("filtered-one", 40, "filtered"),
+                    ("approved-one", 90, "approved"),
+                    ("rejected-one", 70, "rejected"),
+                    ("error-one", 75, "error"),
+                ):
+                    insert_job(db, _job(job_id))
+                    update_job_score(db, job_id, score, "匹配")
+                    update_job_status(db, job_id, status_value)
+                insert_job(db, _job("pending-one"))
+                db.commit()
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/jobs/search?status=scored&limit=100&offset=0")
+            self.assertTrue(status.startswith("200"), body)
+            payload = json.loads(body)
+            found = {job["id"] for job in payload["items"]}
+            self.assertEqual(
+                found,
+                {"ready-one", "filtered-one", "approved-one", "rejected-one", "error-one"},
+            )
+            self.assertNotIn("pending-one", found)
+
+    def test_job_search_ready_filter_matches_ready_and_approved(self):
+        # “等着投”筛的是“还没投出去、等着投的岗位”= ready + approved
+        # （已确认，等下次投递的岗位是 approved，只筛 ready 永远是 0 个，图3）。
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for job_id, score, status_value in (
+                    ("ready-one", 85, "ready"),
+                    ("approved-one", 90, "approved"),
+                    ("filtered-one", 40, "filtered"),
+                ):
+                    insert_job(db, _job(job_id))
+                    update_job_score(db, job_id, score, "匹配")
+                    update_job_status(db, job_id, status_value)
+                insert_job(db, _job("pending-one"))
+                db.commit()
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/jobs/search?status=ready&limit=100&offset=0")
+            self.assertTrue(status.startswith("200"), body)
+            payload = json.loads(body)
+            self.assertEqual(
+                {job["id"] for job in payload["items"]},
+                {"ready-one", "approved-one"},
+            )
+
+    def test_job_search_rejected_and_error_filters_match_their_own_status(self):
+        # “不要了”“没投出去”是两个独立状态的唯一筛法：没有别的选项
+        # 能筛出它们，所以留着（图5 的结论）。
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for job_id, score, status_value in (
+                    ("ready-one", 85, "ready"),
+                    ("rejected-one", 70, "rejected"),
+                    ("error-one", 75, "error"),
+                ):
+                    insert_job(db, _job(job_id))
+                    update_job_score(db, job_id, score, "匹配")
+                    update_job_status(db, job_id, status_value)
+                db.commit()
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/jobs/search?status=rejected&limit=100&offset=0")
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(
+                [job["id"] for job in json.loads(body)["items"]],
+                ["rejected-one"],
+            )
+            status, _, body = self._request("/api/jobs/search?status=error&limit=100&offset=0")
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(
+                [job["id"] for job in json.loads(body)["items"]],
+                ["error-one"],
+            )
+
+    def test_job_search_hr_active_sort_orders_by_recency(self):
+        # 图8/图9：HR 活跃按字符串排顺序全乱。改成按新近程度排：
+        # 今日 < 3日内 < 2周内 < 3月内 < 5月内 < 未知（—）；升序降序未知都最后。
+        # created_at 逐个不同，让同级里的次级排序也有确定顺序。
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for index, (job_id, hr_active) in enumerate((
+                    ("hr-3m", "3月内活跃"),
+                    ("hr-3d", "3日内活跃"),
+                    ("hr-5m", "5月内活跃"),
+                    ("hr-today", "今日活跃"),
+                    ("hr-2w", "2周内活跃"),
+                    ("hr-unknown", ""),
+                    ("hr-2d", "两天内活跃"),
+                    ("hr-week", "本周活跃"),
+                    ("hr-month", "本月活跃"),
+                    ("hr-half", "半年前活跃"),
+                    ("hr-online", "在线"),
+                )):
+                    insert_job(db, _job(job_id))
+                    db.execute(
+                        "UPDATE jobs SET hr_active = ?, created_at = ? WHERE id = ?",
+                        (hr_active, f"2026-11-20 10:00:{index:02d}", job_id),
+                    )
+                db.commit()
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/jobs/search?sort_by=hr_active&sort_order=asc&limit=100&offset=0")
+            self.assertTrue(status.startswith("200"), body)
+            payload = json.loads(body)
+            self.assertEqual(
+                [job["id"] for job in payload["items"]],
+                ["hr-online", "hr-today", "hr-2d", "hr-3d", "hr-week", "hr-2w",
+                 "hr-month", "hr-3m", "hr-5m", "hr-half", "hr-unknown"],
+            )
+            status, _, body = self._request("/api/jobs/search?sort_by=hr_active&sort_order=desc&limit=100&offset=0")
+            self.assertTrue(status.startswith("200"), body)
+            payload = json.loads(body)
+            self.assertEqual(
+                [job["id"] for job in payload["items"]],
+                ["hr-half", "hr-5m", "hr-3m", "hr-month", "hr-2w", "hr-week",
+                 "hr-3d", "hr-2d", "hr-online", "hr-today", "hr-unknown"],
+            )
+
     def test_job_search_hides_blocked_companies_before_pagination_without_deleting_records(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
@@ -1709,6 +1853,37 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(status_after_stop["active"]["id"], task["id"])
         self.assertEqual(status_after_stop["active"]["status"], "stopping")
         self.assertEqual(second_task["mode"], "monitor")
+
+    def test_workbench_pause_resume_routes(self):
+        # Arrange: a hung task on the server's runner, reached over HTTP.
+        started = Event()
+        release = Event()
+
+        def hung_executor(task, config):
+            started.set()
+            release.wait(timeout=30)
+
+        runner = WorkbenchTaskRunner({"collect": hung_executor})
+        task = runner.start("collect", {})
+        task_id = task["id"]
+        self.assertTrue(started.wait(timeout=5))
+        try:
+            with patch.object(server, "task_runner", runner):
+                # Act: pause → resume → unknown id 404.
+                status, _, body = self._request(f"/api/workbench/task/{task_id}/pause", "POST")
+                self.assertTrue(status.startswith("200"), body)
+                self.assertEqual(json.loads(body)["status"], "paused")
+                status, _, body = self._request(f"/api/workbench/task/{task_id}/resume", "POST")
+                self.assertTrue(status.startswith("200"), body)
+                self.assertEqual(json.loads(body)["status"], "running")
+                status, _, body = self._request("/api/workbench/task/no-such-task/pause", "POST")
+                self.assertTrue(status.startswith("404"), body)
+                status, _, body = self._request("/api/workbench/task/no-such-task/resume", "POST")
+                self.assertTrue(status.startswith("404"), body)
+        finally:
+            runner.stop(task_id)
+            release.set()
+            runner.wait(timeout=5)
 
     def test_task_stop_wakes_monitor_interval_wait(self):
         # Arrange

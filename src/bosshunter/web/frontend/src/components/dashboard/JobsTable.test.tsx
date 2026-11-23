@@ -163,10 +163,36 @@ describe('JobsTable 瘦身布局（v38）', () => {
     expect(screen.getByRole('combobox', { name: /改一下/ })).toBeTruthy()
   })
 
-  it('点岗位表头按工资排序', () => {
+  it('点薪资表头按工资排序', () => {
     const { onSortChange } = renderTable()
-    fireEvent.click(screen.getByRole('button', { name: /岗位/ }))
+    fireEvent.click(screen.getByRole('button', { name: /薪资/ }))
     expect(onSortChange).toHaveBeenCalledWith('salary')
+  })
+
+  it('当前排序的表头要发光：只有它带激活态', () => {
+    renderTable()
+    const active = screen.getByRole('button', { name: /打分/ })
+    expect(active.getAttribute('aria-pressed')).toBe('true')
+    expect(active.className).toContain('border-primary')
+    expect(active.className).toContain('bg-secondary')
+    const inactive = screen.getByRole('button', { name: /薪资/ })
+    expect(inactive.getAttribute('aria-pressed')).toBe('false')
+    expect(inactive.className).toContain('border-transparent')
+    expect(inactive.className).not.toContain('border-primary')
+  })
+
+  it('点非当前排序的表头会亮起来', () => {
+    const { rerender } = renderTable()
+    fireEvent.click(screen.getByRole('button', { name: /薪资/ }))
+    const base = {
+      jobs: [job], page: 0, pageSize: 10, total: 1, onPageChange: vi.fn(),
+      selectedIds: [], onToggleSelected: vi.fn(), onSoftDelete: vi.fn(),
+      onMarkManuallySent: vi.fn(), onStatusChange: vi.fn(), onBlockCompany: vi.fn(),
+      sortBy: 'salary' as const, sortOrder: 'asc' as const, onSortChange: vi.fn(), loading: false,
+    }
+    rerender(<JobsTable {...base} />)
+    expect(screen.getByRole('button', { name: /薪资/ }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: /打分/ }).getAttribute('aria-pressed')).toBe('false')
   })
 
   it('数据行带 stagger 淡入类，延迟按行号递增', () => {

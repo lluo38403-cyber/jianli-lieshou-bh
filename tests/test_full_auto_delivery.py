@@ -94,6 +94,32 @@ class RuleScoreFallbackTests(unittest.TestCase):
         )
         self.assertLess(jd_only, 60, "仅 JD 命中且城市/学历不符合时不过线")
 
+    def test_rule_score_reason_lists_each_factor_points(self):
+        """打分原因要让用户对得上分数：每项写清加了几分，封顶也要写出来（图1）。"""
+        from bosshunter.ai.prefilter import rule_score
+
+        score, reason = rule_score(
+            dict(BASE_JOB, title="电话销售代表", jd="负责电话销售，维护客户关系。",
+                 salary="15-25K", city="上海", education="本科"),
+            NO_KEY_CONFIG,
+        )
+        # 基础 40 + 关键词 0 + 薪资 10 + 城市 5 + 学历 5 = 60，无命中封顶 55。
+        self.assertEqual(score, 55)
+        self.assertIn("基础40分", reason)
+        self.assertIn("关键词0分", reason)
+        self.assertIn("薪资10分", reason)
+        self.assertIn("城市5分", reason)
+        self.assertIn("学历5分", reason)
+        self.assertIn("= 60分", reason)
+        self.assertIn("封顶55分", reason)
+        self.assertIn("最终55分", reason)
+
+        matched_score, matched_reason = rule_score(dict(BASE_JOB), NO_KEY_CONFIG)
+        self.assertEqual(matched_score, 70)
+        self.assertIn("关键词10分（命中：Python 后端）", matched_reason)
+        self.assertIn("= 70分", matched_reason)
+        self.assertNotIn("封顶", matched_reason)
+
 
 class ReadyToSendTests(unittest.TestCase):
     def test_non_boss_job_needs_no_greeting(self):

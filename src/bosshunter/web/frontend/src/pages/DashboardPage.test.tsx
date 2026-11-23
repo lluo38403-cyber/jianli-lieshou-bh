@@ -712,6 +712,31 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
     expect((button.closest('button') as HTMLButtonElement | null)?.disabled).toBe(true)
     expect(button.closest('button')?.getAttribute('title')).toBe('先勾选要打分的岗位')
   })
+
+  it('这页全选：点一下选中当前页全部岗位，计数跟着变', async () => {
+    const jobs = [
+      { id: 'job-a', company: '甲公司', title: '岗位A', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
+      { id: 'job-b', company: '乙公司', title: '岗位B', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
+      { id: 'job-c', company: '丙公司', title: '岗位C', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
+    ]
+    const fetchFn = stubDashboardFetch()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/jobs/search')) return jsonResponse({ items: jobs, total: 3, all_total: 3 })
+      return fetchFn(input, init)
+    }))
+    render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
+    const selectAll = await screen.findByText('这页全选')
+    expect((selectAll.closest('button') as HTMLButtonElement | null)?.disabled).toBe(false)
+    fireEvent.click(selectAll)
+    expect(await screen.findByText('已选 3 个')).toBeTruthy()
+    // 全选后这页全选变灰、切换按钮变成“这页都不选”。
+    expect((screen.getByText('这页全选').closest('button') as HTMLButtonElement | null)?.disabled).toBe(true)
+    expect(screen.getByText('这页都不选')).toBeTruthy()
+    // 取消选择后计数归零（徽标常显，0 也显示）。
+    fireEvent.click(screen.getByText('取消选择'))
+    expect(screen.getByText('已选 0 个')).toBeTruthy()
+  })
 })
 
 describe('DashboardPage persisted preflight and platform login status', () => {

@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from bosshunter.ai.credentials import AIRequestError, ai_failure_falls_back, call_ai_text, get_ai_service, get_ai_service_label
-from bosshunter.cancellation import OperationCancelled, run_cancellable
+from bosshunter.cancellation import OperationCancelled, run_cancellable, wait_while_paused
 from bosshunter.collection.text import clean_job_description
 from bosshunter.db import (
     add_history,
@@ -804,6 +804,7 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
     failed = 0
     pause_reason = ""
     stop_event = config.get("_workbench_stop_event")
+    pause_event = config.get("_workbench_pause_event")
     cancelled = False
     workbench_log = config.get("_workbench_log")
 
@@ -824,6 +825,9 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
 
         for index, job in enumerate(jobs, start=1):
             if stop_event is not None and stop_event.is_set():
+                break
+            # 暂停关卡：每生成一条之前都等一下；暂停时不生成下一条。
+            if wait_while_paused(pause_event, stop_event, workbench_log):
                 break
             activity_guard = config.get("_workbench_greeting_activity")
             with activity_guard(job["id"], "generating") if callable(activity_guard) else nullcontext(True) as acquired:

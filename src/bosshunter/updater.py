@@ -1374,6 +1374,13 @@ def run_check(config: dict, timeout: float = CHECK_TIMEOUT, force: bool = False,
         cached = dict(_STATE)
     if fresh and not force:
         return cached
+    # 下载/校验/换文件进行中：检查线程（启动 3 秒后的自动检查、手动点
+    # 检查）不能把进行中的状态盖掉——先盖成 checking、成功后再盖成
+    # idle，界面就以为没在更新，用户再点开始下载会绕过 start_download
+    # 的防重入（它只拦 downloading/verifying/ready）另起一个下载线程。
+    # 进行中直接返回缓存状态，检查等下载走完再跑。
+    if cached.get("status") in {"downloading", "verifying", "applying"}:
+        return cached
     _set_status(status="checking", error="", reason_code="", check_reason="")
     try:
         info, failure = _check_for_update_detailed(config, timeout=timeout)

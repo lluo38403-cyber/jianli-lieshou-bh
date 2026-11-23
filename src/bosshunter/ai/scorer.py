@@ -344,7 +344,8 @@ def _format_structured_reason(
         f"工具行业{components['tools_industry']}/10 · "
         f"实际条件{components['practical_fit']}/10"
     )
-    parts = [f"二次复核后：{labels}" if reviewed else labels]
+    # 原因开头写清引擎：AI 打的和本地规则打的在卡片上要分得清。
+    parts = [f"AI评分（二次复核后）：{labels}" if reviewed else f"AI评分：{labels}"]
     if cap_details:
         parts.append("、".join(detail for _, detail in cap_details))
     if summary_reason:

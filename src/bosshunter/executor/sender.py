@@ -43,6 +43,7 @@ from bosshunter.db import (
 from bosshunter.ai.greeter import effective_greeting
 from bosshunter.collection.capabilities import platform_supports
 from bosshunter.executor.platform_delivery import deliver_job
+from bosshunter.cancellation import get_pause_event, wait_while_paused
 from bosshunter.throttle import RequestThrottle, ProgressiveBackoff
 from bosshunter.platform_safety import PlatformAccessGuard, PlatformSafetyStop
 
@@ -446,17 +447,33 @@ def _wait_for_chat_page(
     attempts: int = 20,
     job: dict | None = None,
     excluded_target_ids: set[str] | None = None,
+    log=None,
 ) -> dict:
-    for _ in range(attempts):
+    """等聊天页打开；每次浏览器调用后都查停下，免得一次等几十分钟。
+
+    浏览器慢的时候，20 次尝试里每次的 evaluate / 标签页扫描都可能
+    耗时几十秒，之前只有每轮开头查停下、中间不记日志——面板上看
+    就是卡在“等待发送”不动。现在每步都查，5 轮记一条进度。
+    """
+    for attempt in range(attempts):
         if _sleep_or_stop(0.5, stop_event):
             close_tab(target_id)
             return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}
         url_now = evaluate(target_id, "location.pathname")
+        if _stop_requested(stop_event):
+            close_tab(target_id)
+            return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}
         if url_now and "/web/geek/chat" in url_now:
             if job is None or _chat_target_matches_job(target_id, job):
                 return {"success": True, "target_id": target_id}
+            if _stop_requested(stop_event):
+                close_tab(target_id)
+                return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}
         if job is not None:
             for candidate in get_page_targets():
+                if _stop_requested(stop_event):
+                    close_tab(target_id)
+                    return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}
                 candidate_id = str(candidate.get("targetId") or "")
                 candidate_url = str(candidate.get("url") or "")
                 if (
@@ -466,6 +483,11 @@ def _wait_for_chat_page(
                     and _chat_target_matches_job(candidate_id, job)
                 ):
                     return {"success": True, "target_id": candidate_id, "opened_new_tab": True}
+                if _stop_requested(stop_event):
+                    close_tab(target_id)
+                    return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}
+        if callable(log) and (attempt + 1) % 5 == 0:
+            log(f"还在等聊天页打开，第 {attempt + 1} 次…")
     return {"success": False, "error": "chat_navigation_timeout"}
 
 
@@ -493,7 +515,13 @@ def _adopt_chat_target(current_target_id: str, chat_ready: dict) -> str:
     return next_target_id
 
 
-def _message_delivery_state(target_id: str, greeting: str) -> str:
+def _message_delivery_state(target_id: str, greeting: str | None) -> str:
+    """Return 'delivered' | 'pending' | 'failed' | 'missing' for one chat.
+
+    greeting 为 None 时不认具体文案，只认“会话里有没有我发出去的消息”——
+    预设招呼语弹窗点确定后，BOSS 已经替我们发了它自己的预设文案，那条
+    就是本次投递的消息，文案不是我们的，按文案认不到。
+    """
     greeting_escaped = json.dumps(greeting, ensure_ascii=False)
     result = _parse_js_result(evaluate(target_id, f"""
     (() => {{
@@ -505,6 +533,7 @@ def _message_delivery_state(target_id: str, greeting: str) -> str:
             .replace(/(发送中|已读|未读|送达|发送成功|重试|重新发送)$/g, '')
             .trim();
         const textMatchesExpected = (value, expectedText) => {{
+            if (expectedText === null) return true;
             const text = removeDeliveryLabels(value);
             return text === expectedText || text.includes(expectedText);
         }};
@@ -515,7 +544,7 @@ def _message_delivery_state(target_id: str, greeting: str) -> str:
             );
             return normalize(contentNode ? contentNode.innerText || contentNode.textContent : node.innerText || node.textContent);
         }};
-        const expected = normalize({greeting_escaped});
+        const expected = {greeting_escaped} === null ? null : normalize({greeting_escaped});
         const ownMessages = Array.from(document.querySelectorAll(
             '.chat-record .message-item.item-myself, .chat-record .item-myself, '
             + '.chat-record .message-item.item-self, .chat-record [class*="item-my"]'
@@ -931,6 +960,7 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
         navigation_attempts,
         job,
         excluded_target_ids=existing_target_ids,
+        log=throttle_config.get("_workbench_log"),
     )
     if chat_ready.get("success"):
         target_id = _adopt_chat_target(target_id, chat_ready)
@@ -938,6 +968,7 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
         return chat_ready, None
     if not chat_ready.get("success") and contact_action not in {
         "first_contact_submitted",
+        "preset_confirmed",
         "startchat_redirected",
     }:
         console.print("[yellow]    ! 沟通按钮未跳转聊天页，尝试真实点击兜底[/yellow]")
@@ -955,6 +986,7 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
                 navigation_attempts,
                 job,
                 excluded_target_ids=existing_target_ids,
+                log=throttle_config.get("_workbench_log"),
             )
             if chat_ready.get("success"):
                 target_id = _adopt_chat_target(target_id, chat_ready)
@@ -986,6 +1018,15 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
                 "history_detail": "首次招呼语已经提交，但未能进入对应会话验证结果；为避免重复发送，请人工检查",
                 "skip_backoff": True,
             }, target_id
+        if contact_action == "preset_confirmed":
+            # 预设文案已经发出去了，但没进聊天页就没法核验是哪一条——
+            # 不认成功、也不重发（重发就是第二条），只报“请人工检查”。
+            return {
+                "success": False,
+                "error": "preset_contact_navigation_unverified",
+                "history_detail": "预设招呼语已经提交，但未能进入对应会话验证结果；为避免重复发送，请人工检查",
+                "skip_backoff": True,
+            }, target_id
         return {
             "success": False,
             "error": "no_chat_input",
@@ -994,31 +1035,47 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
         }, target_id
 
     verification_attempts = int(throttle_config.get("_send_verification_attempts", 20))
-    if contact_action == "first_contact_submitted":
+    if contact_action in {"first_contact_submitted", "preset_confirmed"}:
+        # 预设弹窗点确定后，BOSS 已经发了它自己的预设文案——这条就是本次
+        # 投递的那一条消息，绝不能再发我们的打招呼。之前这里只认
+        # first_contact_submitted，preset_confirmed 会一路走到聊天页再发
+        # 一条，同一 HR 一次收到两条（截图里第一条是 BOSS 预设文案，第二
+        # 条才是我们的固定打招呼）。只核验会话里有没有我方已送达的消息：
+        # 预设文案不是我们的文案，按文案认不到，用 None 认任意一条；聊天
+        # 列表核验也认我们的文案，预设走不通，直接跳过。
+        preset = contact_action == "preset_confirmed"
+        verify_text = None if preset else greeting
+        rejected_detail = (
+            "预设招呼语被标记为发送失败" if preset else "首次沟通招呼语被标记为发送失败"
+        )
+        label = "预设招呼语" if preset else "首次招呼语"
         for _ in range(max(1, verification_attempts)):
             if _sleep_or_stop(0.5, stop_event):
                 close_tab(target_id)
                 return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
-            delivery_state = _message_delivery_state(target_id, greeting)
+            delivery_state = _message_delivery_state(target_id, verify_text)
+            if _stop_requested(stop_event):
+                close_tab(target_id)
+                return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
             if delivery_state == "failed":
                 return {
                     "success": False,
                     "error": "first_contact_send_rejected",
-                    "history_detail": "首次沟通招呼语被标记为发送失败",
+                    "history_detail": rejected_detail,
                     "skip_backoff": True,
                 }, target_id
             if delivery_state == "delivered":
                 if _sleep_or_stop(2, stop_event):
                     close_tab(target_id)
                     return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
-                if _message_delivery_state(target_id, greeting) == "delivered":
+                if _message_delivery_state(target_id, verify_text) == "delivered":
                     close_tab(target_id)
                     return {
                         "success": True,
                         "verified": True,
                         "first_contact": True,
                     }, None
-                if _verify_greeting_in_chat_list(job, greeting, stop_event):
+                if not preset and _verify_greeting_in_chat_list(job, greeting, stop_event):
                     close_tab(target_id)
                     return {
                         "success": True,
@@ -1029,10 +1086,10 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
                 return {
                     "success": False,
                     "error": "first_contact_send_not_stable",
-                    "history_detail": "首次招呼语曾出现但未稳定保留在会话中",
+                    "history_detail": f"{label}曾出现但未稳定保留在会话中",
                     "skip_backoff": True,
                 }, target_id
-        if _verify_greeting_in_chat_list(job, greeting, stop_event):
+        if not preset and _verify_greeting_in_chat_list(job, greeting, stop_event):
             close_tab(target_id)
             return {
                 "success": True,
@@ -1043,7 +1100,7 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
         return {
             "success": False,
             "error": "first_contact_delivery_unverified",
-            "history_detail": "首次招呼语已提交，但会话中未确认对应消息；为避免重复发送，请人工检查",
+            "history_detail": f"{label}已提交，但会话中未确认对应消息；为避免重复发送，请人工检查",
             "skip_backoff": True,
         }, target_id
 
@@ -1093,6 +1150,9 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
             close_tab(target_id)
             return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
         delivery_state = _message_delivery_state(target_id, greeting)
+        if _stop_requested(stop_event):
+            close_tab(target_id)
+            return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
         if delivery_state == "failed":
             return {
                 "success": False,
@@ -1311,6 +1371,12 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
 
         for index, job in enumerate(ordered_jobs):
             if _stop_requested(stop_event):
+                console.print("[yellow]已请求停止，结束发送[/yellow]")
+                send_report["stop_reason"] = "stopped"
+                break
+
+            # 暂停关卡：每发一条之前都等一下；暂停时不发下一条，停下随时能停。
+            if wait_while_paused(get_pause_event(config), stop_event, workbench_log):
                 console.print("[yellow]已请求停止，结束发送[/yellow]")
                 send_report["stop_reason"] = "stopped"
                 break

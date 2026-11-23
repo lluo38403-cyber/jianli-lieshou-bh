@@ -117,6 +117,19 @@ class JobSelectionTests(unittest.TestCase):
         self.assertIn("vue.handleSubmit()", script)
         self.assertIn("enableSubmit", script)
 
+    def test_delivery_check_without_greeting_matches_any_own_message(self):
+        # v44：预设文案不是我们的文案，核验时传 None——只认会话里有没有
+        # 我方已送达的消息，不认具体文案。
+        with patch(
+            "bosshunter.executor.sender.evaluate",
+            return_value='{"success": true, "state": "delivered"}',
+        ) as evaluate_mock:
+            state = _message_delivery_state("target-1", None)
+
+        self.assertEqual(state, "delivered")
+        script = evaluate_mock.call_args.args[1]
+        self.assertIn("expectedText === null", script)
+
     def test_delivery_check_matches_bubble_text_with_status_labels(self):
         greeting = "您好，我的经历和岗位需求比较匹配。"
         with patch(
@@ -295,7 +308,10 @@ class JobSelectionTests(unittest.TestCase):
         self.assertTrue(result["verified_from_chat_list"])
         close_tab.assert_called_once_with("target-1")
 
-    def test_send_greeting_uses_original_flow_when_platform_preset_is_enabled(self):
+    def test_preset_popup_sends_only_once_no_second_greeting(self):
+        # v44：预设弹窗点确定后 BOSS 已经发了它的预设文案，这条就是本次
+        # 投递的消息——再在聊天页发我们的打招呼，同一 HR 一次收到两条。
+        # 预设确认后只核验会话里有没有我方已送达的消息，不再发第二条。
         job = {
             "id": "preset-popup",
             "company": "Example",
@@ -320,8 +336,8 @@ class JobSelectionTests(unittest.TestCase):
              ), \
              patch(
                  "bosshunter.executor.sender._message_delivery_state",
-                 side_effect=["missing", "delivered", "delivered"],
-             ), \
+                 side_effect=["delivered", "delivered"],
+             ) as delivery_state, \
              patch(
                  "bosshunter.executor.sender._fill_chat_input",
                  return_value={"success": True, "disabled": False},
@@ -331,20 +347,27 @@ class JobSelectionTests(unittest.TestCase):
                  return_value={"success": True, "action": "chat_submitted_background"},
              ) as background_submit, \
              patch("bosshunter.executor.sender.click_at", return_value=True), \
-             patch("bosshunter.executor.sender.close_tab"), \
+             patch("bosshunter.executor.sender.close_tab") as close_tab, \
              patch("bosshunter.executor.sender.time.sleep"):
             result, target_id = _send_greeting_once(
                 job,
                 "您好，我对这个岗位很感兴趣。",
-                {"browse_before_greet": False},
+                {"browse_before_greet": False, "_send_verification_attempts": 1},
             )
 
         self.assertIsNone(target_id)
         self.assertTrue(result["success"])
         self.assertTrue(result["verified"])
+        self.assertTrue(result["first_contact"])
         confirm_preset.assert_called_once_with("target-1")
-        background_submit.assert_called_once()
+        background_submit.assert_not_called()
         fill_input.assert_not_called()
+        # 预设文案不是我们的文案：核验时不按文案认，只认会话里有没有我方消息。
+        self.assertEqual(
+            [item.args for item in delivery_state.call_args_list],
+            [("target-1", None), ("target-1", None)],
+        )
+        close_tab.assert_called_once_with("target-1")
 
     def test_send_greeting_redirects_first_contact_and_uses_background_chat_submit(self):
         job = {
@@ -496,6 +519,37 @@ class JobSelectionTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["target_id"], "user-chat")
         matches_job.assert_called_once_with("user-chat", job)
+
+    def test_wait_for_chat_page_stops_promptly_when_stop_is_requested_mid_wait(self):
+        from threading import Event
+
+        stop_event = Event()
+
+        def slow_evaluate(target_id, expression):
+            stop_event.set()
+            return "/job_detail/expected-job"
+
+        with patch("bosshunter.executor.sender.evaluate", side_effect=slow_evaluate), \
+             patch("bosshunter.executor.sender.get_page_targets", return_value=[]), \
+             patch("bosshunter.executor.sender.close_tab") as close_tab:
+            result = _wait_for_chat_page("target-1", stop_event, attempts=20)
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "stopped")
+        close_tab.assert_called_once_with("target-1")
+
+    def test_wait_for_chat_page_logs_progress_every_five_attempts(self):
+        from unittest.mock import Mock
+
+        log = Mock()
+        with patch("bosshunter.executor.sender.evaluate", return_value="/job_detail/expected-job"), \
+             patch("bosshunter.executor.sender.get_page_targets", return_value=[]), \
+             patch("bosshunter.executor.sender.time.sleep"):
+            result = _wait_for_chat_page("target-1", None, attempts=6, log=log)
+
+        self.assertEqual(result["error"], "chat_navigation_timeout")
+        self.assertEqual(log.call_count, 1)
+        self.assertIn("第 5 次", log.call_args.args[0])
 
     def test_send_greeting_adopts_matching_new_chat_tab_and_closes_old_tab(self):
         job = {
