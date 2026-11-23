@@ -187,7 +187,12 @@ export function useConfig() {
       if (data.success) {
         await fetchConfig()
         window.dispatchEvent(new Event('jianli-lieshou-config-saved'))
-        setMessage({ type: 'success', text: '设置已经保存了' })
+        setMessage({
+          type: 'success',
+          text: data.reclassified
+            ? `设置已经保存了；分数线改成 ${data.threshold} 分，${data.reclassified} 个岗位的状态跟着变了。`
+            : '设置已经保存了',
+        })
         setDirty(false)
         return true
       } else {

@@ -1124,6 +1124,23 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
 
     submit_result = _submit_chat_message_background(target_id, greeting)
     if not submit_result.get("success"):
+        # 后台提交报失败不等于没发出去：evaluate 本身超时/解析失败时，
+        # vue.handleSubmit() 可能已经把消息发出去了。先认一下会话里有
+        # 没有这条消息——已经在（发送中也算）就直接走核验，别再手填一遍，
+        # 否则同一 HR 一次收到两条一模一样的招呼（v45 复现）。
+        # 入口处已经确认过会话里没有这条消息，所以这里看到的只能是本次
+        # 后台提交发出去的；真没有（missing）才走手填兜底。
+        recheck_state = _message_delivery_state(target_id, greeting)
+        if recheck_state in {"delivered", "pending"}:
+            submit_result = {"success": True, "action": "chat_submitted_background"}
+        elif recheck_state == "failed":
+            return {
+                "success": False,
+                "error": "background_send_rejected",
+                "history_detail": "后台提交的招呼语被标记为发送失败，未再重发，请人工检查",
+                "skip_backoff": True,
+            }, target_id
+    if not submit_result.get("success"):
         input_result = _fill_chat_input(target_id, greeting)
         if not input_result.get("success"):
             return input_result, target_id

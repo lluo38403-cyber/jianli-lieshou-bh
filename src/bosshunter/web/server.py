@@ -431,9 +431,76 @@ def _config_download_payload(config: dict) -> str:
 	return yaml.dump(redacted, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
 
-def _write_config(config: dict) -> None:
-	"""Persist public settings separately from local AI credentials."""
+def _scoring_threshold(config: dict) -> int | None:
+	"""Read scoring.threshold as a validated int, or None when absent/invalid."""
+	if not isinstance(config, dict):
+		return None
+	scoring = config.get("scoring")
+	if not isinstance(scoring, dict):
+		return None
+	threshold = scoring.get("threshold")
+	if isinstance(threshold, bool):
+		return None
+	try:
+		value = int(threshold)
+	except (TypeError, ValueError):
+		return None
+	if not 0 <= value <= 100:
+		return None
+	return value
+
+
+def _reclassify_jobs_for_threshold(threshold: int) -> int:
+	"""Reclassify ready/filtered jobs when the scoring threshold changes.
+
+	只按分数条重分：score >= 新线 → 等着投，< 新线 → 已筛掉。预筛不
+	通过的（硬要求不过，不是分数不够）和已经在投的一律不动；库不
+	存在或回算失败时返回 0，绝不拦住配置保存。
+	"""
+	db_path = DATA_DIR / "bosshunter.db"
+	if not db_path.exists():
+		return 0
+	try:
+		db = get_db(db_path)
+	except Exception:
+		return 0
+	try:
+		cursor = db.execute(
+			"""
+			UPDATE jobs
+			SET status = CASE WHEN score >= ? THEN 'ready' ELSE 'filtered' END,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE status IN ('ready', 'filtered')
+			  AND deleted_at IS NULL
+			  AND score IS NOT NULL
+			  AND COALESCE(score_reason, '') NOT LIKE '预筛不通过:%'
+			  AND status != CASE WHEN score >= ? THEN 'ready' ELSE 'filtered' END
+			""",
+			(threshold, threshold),
+		)
+		db.commit()
+		return cursor.rowcount
+	except Exception:
+		return 0
+	finally:
+		db.close()
+
+
+def _write_config(config: dict) -> int:
+	"""Persist public settings separately from local AI credentials.
+
+	返回分数线变化回算的岗位数（没变就是 0）：分数线真的变了才触发，
+	只动 ready/filtered 里按分数条定的岗位。
+	"""
+	try:
+		old_threshold = _scoring_threshold(load_config(CONFIG_PATH))
+	except Exception:
+		old_threshold = None
 	save_config(config, CONFIG_PATH)
+	new_threshold = _scoring_threshold(config)
+	if old_threshold is None or new_threshold is None or old_threshold == new_threshold:
+		return 0
+	return _reclassify_jobs_for_threshold(new_threshold)
 
 
 def _sanitize_config_for_write(data):
@@ -3915,9 +3982,13 @@ def api_config_post():
 			return _json_response({"error": error}, 400)
 
 		# Write YAML (backend exclusively owns YAML serialization)
-		_write_config(data)
+		reclassified = _write_config(data)
 
-		return _json_response({"success": True, "message": "配置已保存"})
+		payload = {"success": True, "message": "配置已保存"}
+		if reclassified:
+			payload["reclassified"] = reclassified
+			payload["threshold"] = _scoring_threshold(data)
+		return _json_response(payload)
 	except Exception as e:
 		return _json_response({"error": str(e)}, 500)
 

@@ -184,6 +184,41 @@ class WebConfigApiTests(unittest.TestCase):
 
 		self.assertFalse(cleaned["profile"]["ai_greeting_enabled"])
 		self.assertEqual(cleaned["profile"]["fixed_greeting"], "saved fixed greeting")
+	def test_write_config_reclassifies_jobs_when_threshold_changes(self):
+		# v46：分数线 60→50，55/65 分的已筛掉岗位要变回等着投，45 分的
+		# 等着投要变回已筛掉；预筛不通过的（硬要求不过）和已经在投的
+		# 一律不动；分数线没变时不回算。
+		from bosshunter.config import save_config
+		from bosshunter.db import get_db, insert_job, update_job_score, update_job_status
+
+		with tempfile.TemporaryDirectory() as tmp:
+			tmp_path = Path(tmp)
+			config_path = tmp_path / "config.yaml"
+			save_config({"scoring": {"threshold": 60}}, config_path)
+			db = get_db(tmp_path / "bosshunter.db")
+			cases = [
+				("a", 55, "filtered", "AI评分：职责30/40 · 证据15/25 · 硬要求5/15 · 工具行业3/10 · 实际条件2/10 = 55分"),
+				("b", 65, "filtered", "AI评分：职责35/40 · 证据20/25 · 硬要求5/15 · 工具行业3/10 · 实际条件2/10 = 65分"),
+				("c", 45, "ready", "AI评分：职责25/40 · 证据10/25 · 硬要求5/15 · 工具行业3/10 · 实际条件2/10 = 45分"),
+				("d", 80, "filtered", "预筛不通过: 学历不符"),
+				("e", 90, "approved", "AI评分：职责40/40 · 证据25/25 · 硬要求10/15 · 工具行业8/10 · 实际条件7/10 = 90分"),
+				("f", 40, "filtered", "AI评分：职责20/40 · 证据10/25 · 硬要求5/15 · 工具行业3/10 · 实际条件2/10 = 40分"),
+			]
+			for job_id, score, status, reason in cases:
+				insert_job(db, {"id": job_id, "title": f"岗位{job_id}", "company": "测试公司", "url": f"https://www.zhipin.com/job/{job_id}"})
+				update_job_score(db, job_id, score, reason)
+				update_job_status(db, job_id, status)
+			db.close()
+			with patch.object(server, "CONFIG_PATH", config_path), patch.object(server, "DATA_DIR", tmp_path):
+				reclassified = server._write_config({"scoring": {"threshold": 50}})
+			self.assertEqual(reclassified, 3)
+			db = get_db(tmp_path / "bosshunter.db")
+			statuses = {row["id"]: row["status"] for row in db.execute("SELECT id, status FROM jobs").fetchall()}
+			db.close()
+			self.assertEqual(statuses, {"a": "ready", "b": "ready", "c": "filtered", "d": "filtered", "e": "approved", "f": "filtered"})
+			# 分数线没变时不回算。
+			with patch.object(server, "CONFIG_PATH", config_path), patch.object(server, "DATA_DIR", tmp_path):
+				self.assertEqual(server._write_config({"scoring": {"threshold": 50}}), 0)
 
 
 if __name__ == "__main__":

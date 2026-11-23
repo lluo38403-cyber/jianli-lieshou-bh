@@ -676,6 +676,7 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
       { id: 'job-b', company: '乙公司', title: '岗位B', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
     ]
     const fetchFn = stubDashboardFetch({
+      '/api/scoring/preview': () => jsonResponse({ eligible_jobs: 2, skipped_jobs: 0, first_attempt_requests: 2, max_attempts_per_job: 2, max_possible_requests: 4, note: '' }),
       '/api/scoring/start': () => jsonResponse({ run: { remaining_job_ids: ['job-a', 'job-b'] } }),
     })
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -683,18 +684,47 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
       if (url.startsWith('/api/jobs/search')) return jsonResponse({ items: jobs, total: 2, all_total: 2 })
       return fetchFn(input, init)
     }))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
     fireEvent.click(await screen.findByRole('checkbox', { name: '选这个 甲公司 岗位A' }))
     fireEvent.click(await screen.findByRole('checkbox', { name: '选这个 乙公司 岗位B' }))
     expect(await screen.findByText('已选 2 个')).toBeTruthy()
     fireEvent.click(screen.getByText('给选中的岗位打分'))
     expect((await screen.findAllByText('打分开始了，一共 2 个岗位。')).length).toBeGreaterThan(0)
+    // v46：快捷按钮也重打已打过分的岗位，确认框里要写清楚会重新打一遍。
+    expect(confirmSpy.mock.calls[0][0]).toContain('重新打一遍')
     const startCalls = fetchFn.mock.calls.filter(call => String(call[0]) === '/api/scoring/start')
     expect(startCalls).toHaveLength(1)
     expect(JSON.parse(String(startCalls[0][1]?.body)).options).toEqual({
-      scope: 'selected', limit: null, job_ids: ['job-a', 'job-b'], force_rescore: false,
+      scope: 'selected', limit: null, job_ids: ['job-a', 'job-b'], force_rescore: true,
     })
+  })
+
+  it('quick scoring says so plainly when none of the selected jobs can be scored', async () => {
+    // v46 回归：v45 上选 1 个已打过分的岗位点快捷打分，符合条件的 0 个，
+    // 后端 400，前端只剩一行小字“没有符合条件的待评分岗位”，用户以为
+    // 什么动静都没有。现在先拿预览：能打的 0 个就直接明说，不弹确认、
+    // 不发启动请求（这里用已打过分的 ready 岗位复现：列表加载后它又被
+    // 投出去了，预览说 0 个能打）。
+    const jobs = [
+      { id: 'job-a', company: '甲公司', title: '岗位A', city: '上海', score: 81, status: 'ready', salary: '20-30K', created_at: '' },
+    ]
+    const fetchFn = stubDashboardFetch({
+      '/api/scoring/preview': () => jsonResponse({ eligible_jobs: 0, skipped_jobs: 1, first_attempt_requests: 0, max_attempts_per_job: 2, max_possible_requests: 0, note: '' }),
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/jobs/search')) return jsonResponse({ items: jobs, total: 1, all_total: 1 })
+      return fetchFn(input, init)
+    }))
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选这个 甲公司 岗位A' }))
+    fireEvent.click(screen.getByText('给选中的岗位打分'))
+    expect(await screen.findByText('选中的 1 个岗位已经在投了，不用再打。')).toBeTruthy()
+    expect(confirmSpy).not.toHaveBeenCalled()
+    const startCalls = fetchFn.mock.calls.filter(call => String(call[0]) === '/api/scoring/start')
+    expect(startCalls).toHaveLength(0)
   })
 
   it('quick scoring stays disabled until jobs are selected', async () => {

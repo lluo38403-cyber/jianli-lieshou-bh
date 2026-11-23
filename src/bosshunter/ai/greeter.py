@@ -118,7 +118,9 @@ _GRADUATION_RANGE_RE = re.compile(
     r"(20\d{2})\s*[年./-]\s*(\d{1,2})\s*(?:月)?\s*(?:至|到|-|—|~|～)\s*"
     r"(20\d{2})\s*[年./-]\s*(\d{1,2})\s*(?:月)?"
 )
-_MISSING_SUFFIX_RE = re.compile(r"\s*[|｜]\s*缺失[:：].*$", re.S)
+# 旧格式尾巴是“ | 缺失: …”，v46 起是单独一行“缺失：…”——两种都要剥掉，
+# 不然缺口文案会漏进招呼语的匹配分析里。
+_MISSING_SUFFIX_RE = re.compile(r"(?:\s*[|｜]\s*缺失[:：].*|\n缺失[:：].*)$", re.S)
 
 
 def _parse_graduation_context(resume_content: str) -> str:

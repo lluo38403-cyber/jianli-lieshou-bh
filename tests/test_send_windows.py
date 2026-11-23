@@ -148,6 +148,59 @@ class NoWindowGatingTests(unittest.TestCase):
         self.assertEqual(result["action"], "preset_confirmed")
         confirm.assert_called_once()
 
+class BackgroundSubmitFallbackTests(unittest.TestCase):
+    """后台提交报失败时，手填兜底之前必须先复核会话里有没有这条消息。
+
+    v46 回归：v45 上一次投递发了两条一模一样的固定招呼。预设弹窗那条
+    路 v44 已经堵住了（preset_confirmed 按已发送走）；剩下的另一条路
+    在这里——_submit_chat_message_background 的 evaluate 超时/解析失败
+    时，vue.handleSubmit() 可能已经把消息发出去了，旧代码不复核就直接
+    手填再点一次发送，第二条就这么出来的。
+    """
+
+    def _run_send(self, delivery_states, fill_result=None):
+        job = {"id": "job-1", "title": "测试岗位", "company": "测试公司", "url": "https://www.zhipin.com/job_detail/xxx"}
+        throttle_config = {
+            "browse_before_greet": False,
+            "_chat_button_attempts": 1,
+            "_chat_navigation_attempts": 1,
+            "_send_verification_attempts": 2,
+        }
+        with patch.object(sender, "get_page_targets", return_value=[]), \
+                patch.object(sender, "new_tab", return_value="tab-1"), \
+                patch.object(sender, "close_tab"), \
+                patch.object(sender, "evaluate", return_value='{"success": true}'), \
+                patch.object(sender, "micro_pause", return_value=False), \
+                patch.object(sender, "_page_risk_result", return_value=None), \
+                patch.object(sender, "_click_chat_button", return_value={"success": True}), \
+                patch.object(sender, "_handle_greet_popup", return_value={"success": True, "action": "no_popup"}), \
+                patch.object(sender, "_wait_for_chat_page", return_value={"success": True, "target_id": "tab-1"}), \
+                patch.object(sender, "_sleep_or_stop", return_value=False), \
+                patch.object(sender, "_message_delivery_state", side_effect=delivery_states) as state, \
+                patch.object(sender, "_submit_chat_message_background", return_value={"success": False, "error": "no_response"}), \
+                patch.object(sender, "_fill_chat_input", return_value=fill_result or {"success": True}) as fill, \
+                patch.object(sender, "click_at", return_value=True) as click:
+            result = sender._send_greeting_once(job, "您好，我对贵公司的这个岗位很感兴趣，期待与您进一步沟通，谢谢！", throttle_config)
+        return result, fill, click, state
+
+    def test_failed_background_submit_does_not_resend_when_message_is_already_there(self):
+        # 入口复核 missing → 后台提交报失败 → 再复核已是 delivered：
+        # 消息已经发出去了，手填一次都不能碰，直接走核验记成功。
+        result, fill, click, _ = self._run_send(["missing", "delivered", "delivered", "delivered"])
+        self.assertTrue(result[0]["success"])
+        self.assertTrue(result[0].get("verified"))
+        fill.assert_not_called()
+        click.assert_not_called()
+
+    def test_manual_fill_still_runs_when_nothing_was_sent(self):
+        # 入口复核 missing → 后台提交报失败 → 再复核还是 missing：
+        # 确实什么都没发出去，手填兜底照常只发一次。
+        result, fill, click, _ = self._run_send(["missing", "missing", "delivered", "delivered"])
+        self.assertTrue(result[0]["success"])
+        self.assertTrue(result[0].get("verified"))
+        fill.assert_called_once()
+        click.assert_called_once_with("tab-1", ".btn-send:not(.disabled)")
+
 
 if __name__ == "__main__":
     unittest.main()

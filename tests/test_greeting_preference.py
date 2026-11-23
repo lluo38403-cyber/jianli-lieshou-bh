@@ -97,6 +97,24 @@ def test_positive_match_reason_removes_missing_suffix():
     assert cleaned == "后端技能扎实，项目经验匹配。"
 
 
+def test_positive_match_reason_removes_new_style_missing_line():
+    # v46：理由改成三行后，缺失是单独一行“缺失：…”（不再是“ | 缺失:”尾巴），
+    # 招呼语的匹配分析里同样不能出现缺口文案。
+    reason = (
+        "AI评分：职责35/40 · 证据21/25 · 硬要求7/15 · 工具行业8/10 · 实际条件10/10 = 81分\n"
+        "运营职责与经历高度直接匹配。\n"
+        "缺失：会p图（PS等图像处理能力）无简历证据"
+    )
+
+    cleaned = greeter._positive_match_reason(reason)
+
+    assert cleaned == (
+        "AI评分：职责35/40 · 证据21/25 · 硬要求7/15 · 工具行业8/10 · 实际条件10/10 = 81分\n"
+        "运营职责与经历高度直接匹配。"
+    )
+    assert "缺失" not in cleaned
+
+
 def test_greeting_prompt_uses_positive_match_reason_only():
     captured = {}
 

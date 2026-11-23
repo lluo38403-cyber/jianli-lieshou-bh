@@ -220,7 +220,7 @@ class JobSelectionTests(unittest.TestCase):
                  {"success": False, "error": "chat_navigation_timeout"},
                  {"success": True, "target_id": "target-1"},
              ]), \
-             patch("bosshunter.executor.sender._message_delivery_state", side_effect=["missing", "delivered", "delivered"]), \
+             patch("bosshunter.executor.sender._message_delivery_state", side_effect=["missing", "missing", "delivered", "delivered"]), \
              patch("bosshunter.executor.sender._submit_chat_message_background", return_value={"success": False}), \
              patch("bosshunter.executor.sender._fill_chat_input", return_value={"success": True, "disabled": False}), \
              patch("bosshunter.executor.sender.click_at", return_value=True) as click_at, \
@@ -257,7 +257,7 @@ class JobSelectionTests(unittest.TestCase):
              patch("bosshunter.executor.sender.evaluate", side_effect=evaluate_results) as evaluate_mock, \
              patch("bosshunter.executor.sender._detect_greet_popup", return_value={"success": True, "popup": False}), \
              patch("bosshunter.executor.sender._wait_for_chat_page", return_value={"success": True, "target_id": "target-1"}), \
-             patch("bosshunter.executor.sender._message_delivery_state", side_effect=["missing", "delivered", "delivered"]), \
+             patch("bosshunter.executor.sender._message_delivery_state", side_effect=["missing", "missing", "delivered", "delivered"]), \
              patch("bosshunter.executor.sender._submit_chat_message_background", return_value={"success": False}), \
              patch("bosshunter.executor.sender._fill_chat_input", return_value={"success": True, "disabled": False}), \
              patch("bosshunter.executor.sender.click_at", return_value=True), \

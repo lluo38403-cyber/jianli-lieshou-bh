@@ -326,6 +326,28 @@ def _normalize_short_strings(value: object, *, item_limit: int, maximum: int) ->
     return tuple(normalized)
 
 
+def _missing_already_covered(summary_reason: str, missing: str) -> bool:
+    """True when the reason text already states the gap, so a third line would repeat it.
+
+    比如 reason 里已经写了“唯一缺口是 JD 明确要求的会 p 图无证据”，
+    missing 又是“会 p 图（PS 等图像处理能力）无简历证据”——同一缺口
+    说两遍，第 3 行就不写了。只认文本重合，不猜语义；拿不准就写出来。
+    """
+    reason = " ".join(str(summary_reason or "").split())
+    gap = " ".join(str(missing or "").split())
+    if not reason or not gap:
+        return False
+    if gap in reason:
+        return True
+    # 缺口正文常带括号补充（“会 p 图（PS 等图像处理能力）无简历证据”）：
+    # 括号前的核心词已在 reason 里出现就算提过。
+    head = gap
+    for delimiter in ("（", "(", "，", ",", "、", "；", ";"):
+        head = head.split(delimiter, 1)[0]
+    head = head.strip()
+    return len(head) >= 3 and head in reason
+
+
 def _format_structured_reason(
     components: dict[str, int],
     caps: tuple[str, ...],
@@ -345,15 +367,21 @@ def _format_structured_reason(
         f"实际条件{components['practical_fit']}/10"
     )
     # 原因开头写清引擎：AI 打的和本地规则打的在卡片上要分得清。
-    parts = [f"AI评分（二次复核后）：{labels}" if reviewed else f"AI评分：{labels}"]
+    # 三行：分项 + 总分 / 理由 / 缺失（reason 里提过的不重复写）。
+    # 卡片按原样分行显示（pre-wrap）；已存库的理由只在重新打分时才变。
+    first_line = (
+        f"AI评分（二次复核后）：{labels} = {score}分"
+        if reviewed
+        else f"AI评分：{labels} = {score}分"
+    )
     if cap_details:
-        parts.append("、".join(detail for _, detail in cap_details))
+        first_line += "；" + "、".join(detail for _, detail in cap_details)
+    lines = [first_line]
     if summary_reason:
-        parts.append(summary_reason)
-    reason = "；".join(parts)
-    if missing:
-        reason = f"{reason} | 缺失: {missing}"
-    return score, raw_score, reason
+        lines.append(summary_reason)
+    if missing and not _missing_already_covered(summary_reason, missing):
+        lines.append(f"缺失：{missing}")
+    return score, raw_score, "\n".join(lines)
 
 
 def _structured_score_result(result: dict, *, reviewed: bool = False) -> ScoreResult | None:

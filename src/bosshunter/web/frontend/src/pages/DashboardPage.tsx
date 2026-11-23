@@ -2653,12 +2653,38 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
     // 是“给这些岗位打分”，实际却把当前全部未打分岗位都打了（选 15 个
     // 却跑出 25 个）。现在严格按勾选走：只打选中的，没选的不打；没选
     // 中时按钮直接禁用，不静默扩充成“全部未打分”。
+    // v46：快捷按钮也重打已打过分的岗位（lucky 2026-11-24 01:40 定，
+    // 没有预览，直接重打会再花 AI 调用，确认框里写清楚）；先拿预览看
+    // 有多少个真能打——选中的都已在投时直接明说，不悄悄没动静（v45
+    // 上选 1 个 81 分岗位点了确定却什么都没发生，就是 force_rescore
+    // 为 false 把已打过分的跳过、符合条件的 0 个）。
     if (!selectedIds.length) return
-    if (!window.confirm(`要给选中的 ${selectedIds.length} 个岗位打分吗？只打勾选的这几个，没选的不打。`)) return
     setQuickScoring(true)
     try {
-      const result = await startScoring({ scope: 'selected', limit: null, job_ids: [...selectedIds], force_rescore: false })
-      if (!result.ok) setNotice(result.error || '打分没启动')
+      const previewRes = await fetch('/api/scoring/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ options: { scope: 'selected', limit: null, job_ids: [...selectedIds], force_rescore: true } }),
+      })
+      const preview = await previewRes.json().catch(() => ({}))
+      if (!previewRes.ok) {
+        setNotice(preview.error || '打分预览没拿到，请再点一次试试。')
+        return
+      }
+      const eligible = Number(preview.eligible_jobs) || 0
+      const skipped = Number(preview.skipped_jobs) || 0
+      if (!eligible) {
+        setNotice(`选中的 ${selectedIds.length} 个岗位已经在投了，不用再打。`)
+        return
+      }
+      if (!window.confirm(
+        `要给选中的 ${eligible} 个岗位打分吗？只打勾选的这几个，没选的不打；已经打过分的会重新打一遍。`
+        + (skipped ? `选中的另外 ${skipped} 个已经在投了，不打。` : ''),
+      )) return
+      const result = await startScoring({ scope: 'selected', limit: null, job_ids: [...selectedIds], force_rescore: true })
+      if (!result.ok) {
+        setNotice(result.error === '没有符合条件的待评分岗位' ? '选中的岗位已经在投了，不用再打。' : (result.error || '打分没启动'))
+      }
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : '打分没启动')
     } finally {

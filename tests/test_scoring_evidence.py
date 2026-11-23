@@ -75,3 +75,54 @@ def test_salary_evidence_agrees_with_prefilter(salary, minimum, maximum, ratio, 
 
     assert expected in prompt
     assert (quick_score(job, config)[0] > 0) is passes
+
+
+def _structured_components():
+    return {"core_duties": 35, "transferable_evidence": 21, "hard_requirements": 7, "tools_industry": 8, "practical_fit": 10}
+
+
+def test_structured_reason_is_three_lines_with_total_and_no_repeated_gap():
+    # v46：截图里 81 分岗位的理由是一整段密文，还把“会 p 图”说两遍。
+    # 新格式三行：第 1 行分项 + 总分，第 2 行理由，第 3 行缺失（理由里
+    # 提过的不重复写）。
+    score, raw, reason = scorer._format_structured_reason(
+        _structured_components(),
+        (),
+        "运营职责与经历高度直接匹配，薪资城市均契合；唯一缺口是JD明确要求的会p图无证据。",
+        "会p图（PS等图像处理能力）无简历证据",
+    )
+    assert score == 81
+    assert raw == 81
+    assert "|" not in reason
+    lines = reason.split("\n")
+    assert len(lines) == 2
+    assert lines[0] == "AI评分：职责35/40 · 证据21/25 · 硬要求7/15 · 工具行业8/10 · 实际条件10/10 = 81分"
+    assert lines[1].startswith("运营职责与经历高度直接匹配")
+
+
+def test_structured_reason_keeps_missing_line_when_reason_does_not_mention_it():
+    score, _, reason = scorer._format_structured_reason(
+        _structured_components(),
+        (),
+        "运营职责与经历高度直接匹配，薪资城市均契合。",
+        "会p图（PS等图像处理能力）无简历证据",
+    )
+    assert score == 81
+    lines = reason.split("\n")
+    assert len(lines) == 3
+    assert lines[2] == "缺失：会p图（PS等图像处理能力）无简历证据"
+
+
+def test_structured_reason_reviewed_prefix_and_cap_note_on_first_line():
+    score, raw, reason = scorer._format_structured_reason(
+        {"core_duties": 40, "transferable_evidence": 25, "hard_requirements": 15, "tools_industry": 10, "practical_fit": 10},
+        ("technical_required",),
+        "技术栈高度匹配。",
+        "",
+        reviewed=True,
+    )
+    assert score == 55
+    assert raw == 100
+    lines = reason.split("\n")
+    assert lines[0] == "AI评分（二次复核后）：职责40/40 · 证据25/25 · 硬要求15/15 · 工具行业10/10 · 实际条件10/10 = 55分；硬技术缺口封顶55"
+    assert lines[1] == "技术栈高度匹配。"
