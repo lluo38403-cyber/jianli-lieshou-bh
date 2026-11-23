@@ -1333,10 +1333,31 @@ try {
     foreach ($case in $cases) {
       $filePath = Join-Path $resumeDirResolved $case.file
       if (-not (Test-Path $filePath)) { throw "stage=resume 样本文件找不到：$filePath" }
-      try {
-        $resp = Invoke-RestMethod -Uri "$restartBase/api/resume/upload" -Method Post -Form @{ file = (Get-Item $filePath) } -TimeoutSec 60
-      } catch {
-        throw "stage=resume 上传 $($case.file) 失败：请求失败：$($_.Exception.Message)"
+      # 刚换完文件的新服务偶发一次 500（流水线 25 Lock：sdt.docx 上传报
+      # 500，同包 Main/Retry 都过了、本地复现也是 200，属环境抖动；但当时
+      # Invoke-RestMethod 的异常里不带响应体，后端真正的错误信息被丢了，
+      # 且新 exe 是无窗口启动、traceback 不落盘，排障无据）。这里只重试
+      # 请求层失败一次（5 秒后），并把响应体打出来；内容断言
+      # （success/expects/minLen）不重试、不放宽。
+      $resp = $null
+      $lastError = $null
+      for ($attempt = 1; $attempt -le 2; $attempt++) {
+        try {
+          $resp = Invoke-RestMethod -Uri "$restartBase/api/resume/upload" -Method Post -Form @{ file = (Get-Item $filePath) } -TimeoutSec 60
+          $lastError = $null
+          break
+        } catch {
+          $lastError = $_
+          $body = $_.ErrorDetails.Message
+          if ($body) { Write-Host "stage=resume 上传 $($case.file) 第 $attempt 次失败响应体：$body" }
+          if ($attempt -lt 2) {
+            Write-Host "stage=resume 上传 $($case.file) 第 $attempt 次请求失败（$($_.Exception.Message)），5 秒后重试一次"
+            Start-Sleep -Seconds 5
+          }
+        }
+      }
+      if ($null -eq $resp) {
+        throw "stage=resume 上传 $($case.file) 失败：请求失败：$($lastError.Exception.Message)"
       }
       if ($resp.success -ne $true) {
         throw "stage=resume 上传 $($case.file) 失败：返回 success=$($resp.success)，error=$($resp.error)"
