@@ -34,8 +34,8 @@ it('has no send-window controls and saves without windows', async () => {
   expect(saved.throttle.silent_mode).toBe(true)
 })
 
-it('defaults optimization off and disabling unknown salary filtering follows internship selection', async () => {
-  let saved: Record<string, any> = { profile: { allow_internship: false, filter_unparsed_salary: true } }
+it('unknown salary filtering stands alone without an internship switch', async () => {
+  let saved: Record<string, any> = { profile: { filter_unparsed_salary: true } }
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     let body: unknown = {}
@@ -47,20 +47,18 @@ it('defaults optimization off and disabling unknown salary filtering follows int
     return new Response(JSON.stringify(body), { status: 200 })
   }))
   render(<UpdateProvider><ConfigPage /></UpdateProvider>)
-  const internship = await screen.findByRole('switch', { name: '接受实习/管培岗位' })
-  const filter = screen.getByRole('switch', { name: '过滤面议/无法解析薪资' })
+  const filter = await screen.findByRole('switch', { name: '过滤面议/无法解析薪资' })
   expect(filter.getAttribute('aria-checked')).toBe('true')
   expect(screen.queryByText('自动采用优化版')).toBeNull()
-  fireEvent.click(internship)
+  expect(screen.queryByRole('switch', { name: '接受实习/管培岗位' })).toBeNull()
+  expect(screen.queryByText('实习、管培生的岗位也要')).toBeNull()
+  fireEvent.click(filter)
   expect(filter.getAttribute('aria-checked')).toBe('false')
-  expect((filter as HTMLButtonElement).disabled).toBe(true)
+  expect((filter as HTMLButtonElement).disabled).toBe(false)
   fireEvent.click(screen.getByRole('button', { name: '保存' }))
   await screen.findByText('设置已经保存了')
-  expect(saved.profile.allow_internship).toBe(true)
   expect(saved.profile.filter_unparsed_salary).toBe(false)
-  fireEvent.click(screen.getByRole('switch', { name: '接受实习/管培岗位' }))
-  expect((screen.getByRole('switch', { name: '过滤面议/无法解析薪资' }) as HTMLButtonElement).disabled).toBe(false)
-  expect(screen.getByRole('switch', { name: '过滤面议/无法解析薪资' }).getAttribute('aria-checked')).toBe('false')
+  expect(saved.profile.allow_internship).toBeUndefined()
 })
 
 it('points the guide at the enabled search platform when BOSS is off', async () => {
@@ -348,7 +346,7 @@ it('explains the job-type toggle state in plain words and keeps the three button
   }))
   render(<UpdateProvider><ConfigPage /></UpdateProvider>)
   await screen.findByText('全局过滤规则')
-  expect(screen.getByText(/亮着的就是你要投的类型；全都灭掉/)).toBeTruthy()
+  expect(screen.getByText(/亮着的就是你要投的类型；三个都亮 = 什么类型都要，不限；全都灭掉 = 一个都不投/)).toBeTruthy()
   const fulltime = screen.getByRole('button', { name: '全职' })
   const parttime = screen.getByRole('button', { name: '兼职' })
   const intern = screen.getByRole('button', { name: '实习' })

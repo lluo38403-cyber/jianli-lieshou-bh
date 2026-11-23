@@ -32,7 +32,7 @@ const reasonLabels: Record<string, string> = {
   daily_platform_page_limit: '今天能打开的页面都用完了', consecutive_page_failures: '页面连续打不开',
   search_exhausted: '这轮要找的都找完了', no_new_jobs: '列表里没有新岗位',
   search_page_not_advanced: '列表翻到底了', repeated_search_page: '列表翻来翻去都一样',
-  low_yield: '这个城市新岗位太少', no_jobs_for_search: '什么都没搜到',
+  no_jobs_for_search: '什么都没搜到',
   session_deadline: '到时间了', user_stopped: '按你的要求停下了',
   timing_gap: '计时断了，你看一眼', persistence_error: '没保存上，你看一下',
   collection_error: '找岗位出了点问题，你看一下', salary_decode_failed: '工资没看懂',

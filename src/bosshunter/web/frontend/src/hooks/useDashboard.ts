@@ -109,10 +109,6 @@ export interface CollectionPlatformProgress {
   phase?: string
   reason_code?: string
   message?: string
-  city_elapsed_ms?: number
-  next_check_ms?: number
-  last_window_new?: number | null
-  city_new_total?: number
   city_results?: Record<string, { status: string; new_total: number; reason_code?: string }>
 }
 

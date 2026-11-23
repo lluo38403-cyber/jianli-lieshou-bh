@@ -8,7 +8,6 @@ from bosshunter.employment import classify_employment, internship_rejection
 from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
 
 
-_INTERNSHIP_KEYWORDS = ("实习", "intern", "internship", "管培")
 _ANONYMOUS_COMPANY_PATTERN = re.compile(
     r"^(?:[\u4e00-\u9fff]{2,4})?某.+(?:公司|企业|集团)$"
 )
@@ -42,9 +41,6 @@ def quick_score(job: dict, config: dict) -> tuple[int, str]:
     if jd_breaker:
         return 0, f"触发JD排除词: {jd_breaker}"
 
-    if not profile.get("allow_internship", False) and _contains_internship_signal(job):
-        return 0, "实习/管培岗位"
-
     employment_block = _employment_type_block_reason(job, profile)
     if employment_block:
         return 0, employment_block
@@ -60,10 +56,15 @@ _EMPLOYMENT_TYPE_LABELS = {"internship": "实习", "full_time": "全职", "part_
 
 
 def _employment_type_block_reason(job: dict, profile: dict) -> str | None:
-    """求职类型筛选：只拦截类型明确且不在已选类型里的岗位，类型未知的不拦。"""
+    """求职类型筛选：亮着的类型 = 包含的类型；三个都亮 = 不限；一个都不亮 = 都不通过。
+
+    类型未知的岗位不拦（旧规则保留）；配置里没有 job_types（老配置）时不限。
+    """
     selected = profile.get("job_types")
-    if not isinstance(selected, list) or not selected:
+    if not isinstance(selected, list):
         return None
+    if not selected:
+        return "求职类型未选：没有选中的求职类型"
     kind = classify_employment(job)
     label = _EMPLOYMENT_TYPE_LABELS.get(kind)
     if label and label not in {str(item).strip() for item in selected}:
@@ -199,11 +200,6 @@ def salary_filter_result(salary: str, profile: dict) -> tuple[int, str]:
 
     return 100, "预筛通过"
 
-
-
-def _contains_internship_signal(job: dict) -> bool:
-    title = (job.get("title") or "").lower()
-    return any(keyword.lower() in title for keyword in _INTERNSHIP_KEYWORDS)
 
 
 def _parse_salary_range_k(salary: str) -> tuple[float, float] | None:

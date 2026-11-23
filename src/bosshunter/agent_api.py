@@ -17,7 +17,7 @@ PLATFORMS = ("boss", "zhilian", "51job", "liepin")
 _TEXT_LIST_FIELDS = ("keywords", "cities", "deal_breakers", "jd_deal_breakers", "blocked_companies")
 _OPTIONAL_TEXT_FIELDS = ("education", "recruitment_type")
 _ALLOWED_FIELDS = frozenset(
-    (*_TEXT_LIST_FIELDS, *_OPTIONAL_TEXT_FIELDS, "salary", "allow_internship", "score_threshold", "platform_order", "max_pages")
+    (*_TEXT_LIST_FIELDS, *_OPTIONAL_TEXT_FIELDS, "salary", "score_threshold", "platform_order", "max_pages")
 )
 _MAX_AGENT_EVALUATIONS = 10
 _GREETING_URL_PATTERN = re.compile(r"(?i)(?:https?://|www\.|[a-z0-9-]+\.[a-z]{2,})(?:/[^\s]*)?")
@@ -119,7 +119,6 @@ def agent_preferences(config: dict[str, Any]) -> dict[str, Any]:
         "blocked_companies": _string_list(profile.get("blocked_companies")),
         "education": str(profile.get("education") or ""),
         "recruitment_type": str(profile.get("recruitment_type") or ""),
-        "allow_internship": bool(profile.get("allow_internship", False)),
         "score_threshold": _number(scoring.get("threshold"), 71),
         "platform_order": platform_order,
         "max_pages": max_pages,
@@ -170,11 +169,6 @@ def apply_preferences(config: dict[str, Any], preferences: Any) -> tuple[dict[st
             raise AgentRequestError("salary.min 不能大于 salary.max")
         profile["salary_min"] = minimum
         profile["salary_max"] = maximum
-
-    if "allow_internship" in preferences:
-        if not isinstance(preferences["allow_internship"], bool):
-            raise AgentRequestError("allow_internship 必须是布尔值")
-        profile["allow_internship"] = preferences["allow_internship"]
 
     if "score_threshold" in preferences:
         scoring["threshold"] = _validated_number("score_threshold", preferences["score_threshold"], 0, 100)

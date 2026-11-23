@@ -477,29 +477,15 @@ class LiepinEnhancedTests(TestCase):
         )
         self.assertEqual(len(collected), 0)
 
-    def test_internship_filtered_when_disallowed(self):
-        jobs = [{"source_job_id": "1", "title": "AI实习工程师", "company": "公司", "city": "上海",
-                 "url": "https://www.liepin.com/job/1001.shtml"}]
-        browser = self._browser_with_list(jobs)
-        collected = []
-        collector = LiepinCollector(
-            browser=browser, sleep=lambda _s: None, uniform=lambda _a, _b: 10.0,
-            config={"profile": {"allow_internship": False}},
-        )
-        collector.collect(
-            PlatformCollectionRequest("liepin", ["AI"], ["上海"], {"上海": "020"}, max_pages=1),
-            self._hooks(collected),
-        )
-        self.assertEqual(len(collected), 0)
-
-    def test_internship_allowed_when_explicitly_enabled(self):
+    def test_internship_job_is_collected(self):
+        # v43：采集端不再按标题预拦实习岗；类型筛选只在打分时按求职类型芯片做。
         jobs = [{"source_job_id": "1", "title": "AI实习工程师", "company": "公司", "city": "上海",
                  "salary": "15-25K", "url": "https://www.liepin.com/job/1001.shtml"}]
         browser = self._browser_with_list(jobs)
         collected = []
         collector = LiepinCollector(
             browser=browser, sleep=lambda _s: None, uniform=lambda _a, _b: 10.0,
-            config={"profile": {"allow_internship": True}},
+            config={"profile": {}},
         )
         collector.collect(
             PlatformCollectionRequest("liepin", ["AI"], ["上海"], {"上海": "020"}, max_pages=1),

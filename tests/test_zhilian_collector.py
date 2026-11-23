@@ -439,12 +439,13 @@ class ZhilianEnhancedTests(TestCase):
                          company="黑名单", city="北京", city_code="530")
         self.assertFalse(collector._passes_filters(c))
 
-    def test_internship_filter(self):
+    def test_internship_job_passes_filters(self):
+        # v43：采集端不再按标题预拦实习岗；类型筛选只在打分时按求职类型芯片做。
         from bosshunter.collection.models import JobCandidate
-        collector = ZhilianCollector(config={"profile": {"allow_internship": False}})
+        collector = ZhilianCollector(config={"profile": {}})
         c = JobCandidate(platform="zhilian", source_job_id="1", title="AI实习",
                          company="公司", city="北京", city_code="530")
-        self.assertFalse(collector._passes_filters(c))
+        self.assertTrue(collector._passes_filters(c))
 
     def test_no_filter_passes(self):
         from bosshunter.collection.models import JobCandidate

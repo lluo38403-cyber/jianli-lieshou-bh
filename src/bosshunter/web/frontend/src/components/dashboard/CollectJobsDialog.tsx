@@ -107,7 +107,6 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   const [activeTab, setActiveTab] = useState<PlatformId>('boss')
   const [order, setOrder] = useState<PlatformId[]>(['boss'])
   const [autoScore, setAutoScore] = useState(false)
-  const [cityPolicy, setCityPolicy] = useState({ enabled: true, warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5 })
   const [continuous, setContinuous] = useState(false)
   const [durationHours, setDurationHours] = useState(8)
   const [error, setError] = useState('')
@@ -223,7 +222,6 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         setFullConfig(config)
         setRiskTier(config?.throttle?.risk_tier || 'steady')
         setRandomInterval(config?.throttle?.random_interval ?? true)
-        setCityPolicy({ enabled: true, warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5, ...(config?.platforms?.boss?.search?.city_yield_policy || config?.search?.city_yield_policy || {}) })
       })
       .catch(() => {
         if (!cancelled) setError('默认设置没读出来，直接填好就能开始。')
@@ -348,7 +346,6 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         city_codes: cityCodes,
         max_pages: Number(draft.maxPages),
         sort: draft.sort,
-        ...(platform === 'boss' ? { city_yield_policy: cityPolicy } : {}),
       }
     }
     if (continuous && (mode !== 'collect' || enabledOrder.join(',') !== 'boss')) {
@@ -487,14 +484,6 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
           <div className="flex flex-wrap items-center justify-between gap-3"><div className="min-w-0"><div className="text-sm font-black">先找哪个</div><p className="mt-1 text-xs text-muted">平台一个一个找；智联、前程无忧、猎聘这次不投、也不盯着。</p></div><div className="flex flex-wrap gap-2">{enabledOrder.map((platform, index) => <div key={platform} className="flex items-center gap-1 rounded-full bg-card px-3 py-1 text-xs font-black text-primary"><span>{index + 1}. {PLATFORM_SHORT_LABELS[platform]}</span><button type="button" onClick={() => move(platform, -1)} disabled={index === 0} aria-label="往上"><ArrowUp className="h-3 w-3" /></button><button type="button" onClick={() => move(platform, 1)} disabled={index === enabledOrder.length - 1} aria-label="往下"><ArrowDown className="h-3 w-3" /></button></div>)}</div></div>
         </div>
 
-        {drafts.boss.enabled && <section className="mt-4 border-t border-card-border pt-4">
-          <label className="flex items-center justify-between gap-3 text-sm font-bold">这个城市新岗位太少就换地方<Switch aria-label="城市低产切换" checked={cityPolicy.enabled} onChange={enabled => setCityPolicy(p => ({ ...p, enabled }))} /></label>
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <label className="text-xs text-muted">过几分钟先看一次<Input type="number" min={1} max={60} value={cityPolicy.warmup_minutes} onChange={e => setCityPolicy(p => ({ ...p, warmup_minutes: Number(e.target.value) }))} /></label>
-            <label className="text-xs text-muted">隔几分钟看一次<Input type="number" min={1} max={30} value={cityPolicy.window_minutes} onChange={e => setCityPolicy(p => ({ ...p, window_minutes: Number(e.target.value) }))} /></label>
-            <label className="text-xs text-muted">一次至少新找到几个<Input type="number" min={1} max={1000} value={cityPolicy.min_new_jobs} onChange={e => setCityPolicy(p => ({ ...p, min_new_jobs: Number(e.target.value) }))} /></label>
-          </div>
-        </section>}
         {mode === 'collect' && <section className="mt-4 border-t border-card-border pt-4">
           <label className="flex items-center justify-between gap-3 text-sm font-bold">一直找下去<Switch aria-label="持续采集" checked={continuous} onChange={setContinuous} disabled={enabledOrder.join(',') !== 'boss'} /></label>
           {continuous && <label className="mt-3 block text-xs text-muted">一次最多找几小时<Input type="number" min={1} max={24} value={durationHours} onChange={e => setDurationHours(Number(e.target.value))} /></label>}

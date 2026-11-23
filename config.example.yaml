@@ -12,11 +12,10 @@ profile:
   resume_output_dir: "./data/resumes"
   target_roles: ["你的目标岗位1", "目标岗位2", "目标岗位3"]
   target_cities: ["北京"]
-  salary_min: 15  # K
-  salary_max: 25  # K
+  salary_min: 0  # K，0 = 不限
+  salary_max: 0  # K，0 = 不限
   salary_ceil_ratio: 1.5  # 岗位薪资下限超过 salary_max × 该倍数时过滤
   filter_unparsed_salary: true  # 过滤面议或无法解析薪资的岗位
-  allow_internship: false  # 开启时自动关闭 filter_unparsed_salary，避免日薪实习被误过滤
   deal_breakers: ["外包", "996"]
   jd_deal_breakers: []  # 示例：需要排除完整 JD 中的词时再填写
   blocked_companies: [] # 示例：不希望采集的公司名称或关键词
@@ -51,11 +50,6 @@ platforms:
   boss:
     enabled: true
     search:
-      city_yield_policy:
-        enabled: true
-        warmup_minutes: 10
-        window_minutes: 5
-        min_new_jobs: 5
       keywords: ["关键词1", "关键词2"]
       cities: ["北京"]
       city_codes: {}
@@ -66,7 +60,7 @@ platforms:
     search:
       keywords: []
       cities: []
-      # 只需填写城市名称；BossHunter 会从内置智联目录自动匹配城市编码。
+      # 只需填写城市名称；系统会从内置智联目录自动匹配城市编码。
       city_codes: {}
       max_pages: 3
       sort: default
@@ -85,7 +79,7 @@ platforms:
     search:
       keywords: []
       cities: []
-      # 只需填写城市名称；BossHunter 会从内置猎聘目录自动匹配城市编码。
+      # 只需填写城市名称；系统会从内置猎聘目录自动匹配城市编码。
       city_codes: {}
       max_pages: 1
       sort: default

@@ -14,7 +14,6 @@ from bosshunter.collection.platforms.job51 import (
     _analyze_api_response,
     _ApiRateLimiter,
     _extract_core_terms,
-    _is_internship,
     _is_relevant_to_keyword,
     _parse_salary_range,
     _payload,
@@ -242,7 +241,6 @@ class CollectionFlowSafetyTests(TestCase):
             "deal_breakers": [],
             "jd_deal_breakers": [],
             "blocked_companies": [],
-            "allow_internship": False,
             "salary_min": 0.0,
             "salary_max": 0.0,
         }
@@ -464,22 +462,6 @@ class IsRelevantToKeywordTests(TestCase):
         self.assertFalse(_is_relevant_to_keyword("财务总监", "jd", "AI产品"))
 
 
-class IsInternshipTests(TestCase):
-    """_is_internship — 实习岗位判定。"""
-
-    def test_detects_internship_in_title(self):
-        self.assertTrue(_is_internship("AI实习工程师", ""))
-
-    def test_detects_intern_english(self):
-        self.assertTrue(_is_internship("Software Intern", ""))
-
-    def test_detects_guanpei(self):
-        self.assertTrue(_is_internship("管培生", ""))
-
-    def test_non_internship_returns_false(self):
-        self.assertFalse(_is_internship("高级工程师", "3年"))
-
-
 class SalaryWithinRangeTests(TestCase):
     """_salary_within_range — 薪资范围过滤。"""
 
@@ -564,7 +546,7 @@ class WouldBeCollectedTests(TestCase):
         collector = Job51Collector()
         self.assertTrue(collector._would_be_collected(
             c, "AI", deal_breakers=[], jd_deal_breakers=[],
-            blocked_companies=[], allow_internship=False,
+            blocked_companies=[], 
             salary_min=0, salary_max=0,
         ))
 
@@ -573,7 +555,7 @@ class WouldBeCollectedTests(TestCase):
         collector = Job51Collector()
         self.assertFalse(collector._would_be_collected(
             c, "AI", deal_breakers=["外包"], jd_deal_breakers=[],
-            blocked_companies=[], allow_internship=False,
+            blocked_companies=[], 
             salary_min=0, salary_max=0,
         ))
 
@@ -582,7 +564,7 @@ class WouldBeCollectedTests(TestCase):
         collector = Job51Collector()
         self.assertFalse(collector._would_be_collected(
             c, "AI", deal_breakers=[], jd_deal_breakers=[],
-            blocked_companies=["黑名单公司"], allow_internship=False,
+            blocked_companies=["黑名单公司"], 
             salary_min=0, salary_max=0,
         ))
 
@@ -591,16 +573,17 @@ class WouldBeCollectedTests(TestCase):
         collector = Job51Collector()
         self.assertFalse(collector._would_be_collected(
             c, "AI", deal_breakers=[], jd_deal_breakers=["外包"],
-            blocked_companies=[], allow_internship=False,
+            blocked_companies=[], 
             salary_min=0, salary_max=0,
         ))
 
-    def test_rejects_internship_when_disallowed(self):
+    def test_passes_internship_job_at_collector(self):
+        # v43：采集端不再按标题预拦实习岗；类型筛选只在打分时按求职类型芯片做。
         c = self._make_candidate(title="AI实习工程师")
         collector = Job51Collector()
-        self.assertFalse(collector._would_be_collected(
+        self.assertTrue(collector._would_be_collected(
             c, "AI", deal_breakers=[], jd_deal_breakers=[],
-            blocked_companies=[], allow_internship=False,
+            blocked_companies=[],
             salary_min=0, salary_max=0,
         ))
 
@@ -609,7 +592,7 @@ class WouldBeCollectedTests(TestCase):
         collector = Job51Collector()
         self.assertFalse(collector._would_be_collected(
             c, "AI", deal_breakers=[], jd_deal_breakers=[],
-            blocked_companies=[], allow_internship=False,
+            blocked_companies=[], 
             salary_min=10, salary_max=0,
         ))
 
@@ -630,28 +613,29 @@ class PassesCollectorFiltersTests(TestCase):
         c = self._make_candidate()
         collector = Job51Collector()
         self.assertTrue(collector._passes_collector_filters(
-            c, "AI", allow_internship=False, salary_min=0, salary_max=0,
+            c, "AI", salary_min=0, salary_max=0,
         ))
 
-    def test_rejects_internship(self):
-        c = self._make_candidate(title="实习工程师")
+    def test_passes_internship_job(self):
+        # v43：同上，实习岗在采集过滤层直接放行。
+        c = self._make_candidate(title="AI实习工程师")
         collector = Job51Collector()
-        self.assertFalse(collector._passes_collector_filters(
-            c, "AI", allow_internship=False, salary_min=0, salary_max=0,
+        self.assertTrue(collector._passes_collector_filters(
+            c, "AI", salary_min=0, salary_max=0,
         ))
 
     def test_rejects_irrelevant_title(self):
         c = self._make_candidate(title="财务总监")
         collector = Job51Collector()
         self.assertFalse(collector._passes_collector_filters(
-            c, "AI", allow_internship=False, salary_min=0, salary_max=0,
+            c, "AI", salary_min=0, salary_max=0,
         ))
 
     def test_rejects_salary_out_of_range(self):
         c = self._make_candidate(salary="50K")
         collector = Job51Collector()
         self.assertFalse(collector._passes_collector_filters(
-            c, "AI", allow_internship=False, salary_min=0, salary_max=30,
+            c, "AI", salary_min=0, salary_max=30,
         ))
 
 
@@ -936,10 +920,10 @@ class Job51FilterRegressionTests(TestCase):
                         expected = quick_score({"salary": salary}, {"profile": profile})[0] > 0
                         candidate = JobCandidate("51job", "sample", "IT运维工程师", "示例公司", salary=salary)
                         self.assertEqual(collector._passes_collector_filters(
-                            candidate, "IT运维", allow_internship=False, salary_min=12, salary_max=20,
+                            candidate, "IT运维", salary_min=12, salary_max=20,
                         ), expected)
                         self.assertEqual(collector._would_be_collected(
-                            candidate, "IT运维", allow_internship=False, salary_min=12, salary_max=20,
+                            candidate, "IT运维", salary_min=12, salary_max=20,
                             deal_breakers=[], jd_deal_breakers=[], blocked_companies=[],
                         ), expected)
 

@@ -1846,8 +1846,7 @@ function CollectionProgressPanel({ progress, onRetryCollection }: { progress: Co
               <span className="text-muted">{state.status === 'queued' ? '等前面的平台找完' : `${state.city || '这个城市还没开始'} · ${state.keyword || '这个词还没开始'} · 第 ${state.page || 0}/${state.max_pages || 0} 页`}</span>
             </div>
             <p className="text-muted">看了 {state.seen || 0} · 新增 {state.new} · 重复 {state.duplicate || 0} · 筛掉的 {state.filtered || 0} · 没看懂 {state.parse_failed || 0} · 没保存上 {state.save_failed || 0}</p>
-            {platform === 'boss' && state.next_check_ms !== undefined && <p className="text-muted">这个城市新找到 {state.city_new_total || 0} · 最近一次看的时间 {state.last_window_new ?? '等着看'} · 过多久再看 {Math.max(0, Math.ceil(((state.next_check_ms || 0) - (state.city_elapsed_ms || 0)) / 1000))} 秒</p>}
-            {state.city_results && <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-muted">{Object.entries(state.city_results).map(([city, result]) => <span key={city}>{city}：新增 {result.new_total || 0} · {({ running: '采集中', completed_scope: '这轮找完了', low_yield: '换个城市找', yielded_no_ids: '没有新的了', partial: '找了一部分', interrupted: '中断' } as Record<string, string>)[result.status] || result.status}</span>)}</div>}
+            {state.city_results && <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-muted">{Object.entries(state.city_results).map(([city, result]) => <span key={city}>{city}：新增 {result.new_total || 0} · {({ running: '采集中', completed_scope: '这轮找完了', partial: '找了一部分', interrupted: '中断' } as Record<string, string>)[result.status] || result.status}</span>)}</div>}
             {Number(state.filtered) > 0 && (
               <details className="mt-2 rounded-lg border border-card-border bg-secondary/40 p-2" open>
                 <summary className="cursor-pointer font-medium">筛掉的记录 · {state.filtered} 条</summary>

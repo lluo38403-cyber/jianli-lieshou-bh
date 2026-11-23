@@ -10,7 +10,6 @@ from uuid import uuid4
 
 from bosshunter.cities import get_city_map
 from bosshunter.collection.base import CollectionError, CollectorHooks
-from bosshunter.collection.city_yield import normalize_city_policy
 from bosshunter.collection.models import (
     CollectionProgress,
     JobCandidate,
@@ -27,7 +26,6 @@ from bosshunter.collection_run_store import (
     save_boss_checkpoint, save_city_state, append_run_job, update_collection_run,
 )
 from bosshunter.db import get_db, insert_job_if_new, job_identity_exists, recompute_outsourcing
-from bosshunter.employment import internship_config_error
 from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
 from bosshunter.outsourcing import load_rules
 
@@ -125,10 +123,7 @@ def normalize_collection_options(config: dict[str, Any], raw_options: dict[str, 
             "filters": normalize_boss_search_filters(base.get("filters")) if platform == "boss" else {},
         }
         if platform == "boss":
-            platforms[platform]["city_yield_policy"] = normalize_city_policy(base.get("city_yield_policy"))
             platforms[platform]["keyword_start"] = base.get("keyword_start", {})
-        elif "city_yield_policy" in search:
-            raise ValueError("城市产出策略仅支持 BOSS")
 
     order = supplied.get("platform_order")
     explicit_order = isinstance(order, list)
@@ -171,12 +166,6 @@ def normalize_collection_options(config: dict[str, Any], raw_options: dict[str, 
     if "continuous_collection" in supplied:
         options["continuous_collection"] = supplied["continuous_collection"]
     normalized = validate_collection_options(options)
-    if "boss" in normalized["platform_order"]:
-        effective = {"profile": config.get("profile", {}), "platforms": {
-            "boss": {"search": {"filters": normalized["platforms"]["boss"]["filters"]}},
-        }}
-        if conflict := internship_config_error(effective):
-            raise ValueError(conflict)
     # v37②a：记下平台顺序是不是用户这次明确选的。预检里缺页的严重
     # 程度按它区分：明确选了的平台缺页才报错（用户点名要它）；默认/
     # 启用带进来的平台缺页只警告，不拦其他平台跑。
@@ -286,14 +275,11 @@ def validate_collection_options(options: dict[str, Any]) -> dict[str, Any]:
                         seen_codes.add(code)
             normalized["platforms"][platform].update(
                 cities=unique_cities, city_codes={city: code for city, code in resolved if code},
-                city_yield_policy=normalize_city_policy(value.get("city_yield_policy")),
                 keyword_start=value.get("keyword_start", {}),
             )
             cursor = value.get("keyword_start", {})
             if not isinstance(cursor, dict) or any(type(v) is not int or not 0 <= v < len(keywords) for v in cursor.values()):
                 raise ValueError("关键词游标无效")
-        elif "city_yield_policy" in value:
-            raise ValueError("城市产出策略仅支持 BOSS")
     return normalized
 
 
@@ -331,8 +317,8 @@ class _SharedProcessor:
         self.city_context = None
         self.last_receipt = {"sequence": 0, "inserted": False}
 
-    def bind_city(self, city, tracker) -> None:
-        self.city_context = (city, tracker)
+    def bind_city(self, city) -> None:
+        self.city_context = city
 
     def event(self, *, phase: str | None = None, **values: Any) -> None:
         if phase:
@@ -391,21 +377,15 @@ class _SharedProcessor:
             return True
         try:
             if self.city_context:
-                city, tracker = self.city_context
+                city = self.city_context
                 with self.conn:
                     inserted = insert_job_if_new(
                         self.conn, candidate.as_job_record(), rules=self.outsourcing_rules, commit=False,
                     )
                     if inserted:
-                        elapsed = tracker.elapsed_ms()
-                        state = tracker.with_insert(candidate.storage_id, elapsed)
                         append_run_job(self.conn, self.run_id, candidate.storage_id)
-                        save_city_state(self.conn, self.run_id, city, state, commit=False)
                 self.last_receipt.update(inserted=inserted, job_id=candidate.storage_id,
-                                         event_elapsed_ms=elapsed if inserted else 0, search_city=city)
-                if inserted:
-                    tracker.record_inserted(candidate.storage_id, elapsed)
-                    self.last_receipt["recorded"] = True
+                                         search_city=city)
             else:
                 inserted = insert_job_if_new(self.conn, candidate.as_job_record(), rules=self.outsourcing_rules)
         except Exception as exc:
@@ -414,7 +394,7 @@ class _SharedProcessor:
             self.record_failure("save", reason, candidate)
             self.event(message=reason)
             if self.city_context:
-                raise CollectionError("persistence_error", "岗位或城市账本保存失败，采集已停止") from exc
+                raise CollectionError("persistence_error", "岗位或任务账本保存失败，采集已停止") from exc
             return True
         if inserted:
             self.new_job_ids.append(candidate.storage_id)
@@ -655,9 +635,7 @@ class CollectionOrchestrator:
             "keyword": progress.keyword, "city": progress.city, "page": progress.page,
             "max_pages": progress.max_pages, "phase": progress.phase, "reason_code": progress.reason_code,
             "message": progress.message,
-            "city_results": progress.city_results, "city_elapsed_ms": progress.city_elapsed_ms,
-            "next_check_ms": progress.next_check_ms, "last_window_new": progress.last_window_new,
-            "city_new_total": progress.city_new_total,
+            "city_results": progress.city_results,
         })
         callback = self.config.get("_workbench_collect_progress")
         state = {

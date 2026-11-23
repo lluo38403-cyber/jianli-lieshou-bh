@@ -35,7 +35,6 @@ class PlatformCollectionRequest:
     max_pages: int = 3
     sort: str = "default"
     filters: dict[str, Any] = field(default_factory=dict)
-    city_yield_policy: dict[str, Any] | None = None
     keyword_start: dict[str, int] = field(default_factory=dict)
 
 
@@ -117,10 +116,6 @@ class CollectionProgress:
     reason_code: str = ""
     message: str = ""
 
-    city_elapsed_ms: int = 0
-    next_check_ms: int = 0
-    last_window_new: int | None = None
-    city_new_total: int = 0
     city_results: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

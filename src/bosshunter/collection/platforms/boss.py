@@ -19,10 +19,9 @@ from bosshunter.lazy_module import lazy_module
 httpx = lazy_module("httpx")
 
 from bosshunter.ai.prefilter import quick_score
-from bosshunter.employment import internship_config_error, internship_only, internship_rejection
+from bosshunter.employment import internship_only, internship_rejection
 from bosshunter.browser import close_tab, evaluate, navigate, new_tab, scroll, wait_for_load
 from bosshunter.cities import get_city_code
-from bosshunter.collection.city_yield import CityYieldTracker, TERMINAL_CITIES, normalize_city_policy
 from bosshunter.collection.base import CollectionError, CollectorHooks
 from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest, PlatformCollectionResult
 from bosshunter.collection.platforms.boss_font import (
@@ -408,19 +407,13 @@ class BossCollector:
             "profile": self.config.get("profile", {}),
             "platforms": {"boss": {"search": {"filters": request.filters}}},
         }
-        if conflict := internship_config_error(type_config):
-            return PlatformCollectionResult(self.platform, "failed", "internship_config_conflict", conflict)
         city_results: dict[str, dict] = {}
         active_city = ""
-        tracker = None
-        current_keyword = ""
-        skipped_cities: set[str] = set()
-        last_yield_reason = ""
+        city_new: dict[str, int] = {}
+        finalized_cities: set[str] = set()
         consumed_receipt = 0
         partial_cities: set[str] = set()
-        policy = normalize_city_policy(request.city_yield_policy, default_enabled=False)
-        if policy["enabled"] and hooks.last_save_receipt is None:
-            raise CollectionError("missing_save_receipt", "城市产出检查需要可靠的新增成功回执")
+        last_abandon_reason = ""
 
         def make_result(*args, **kwargs):
             if len(args) > 2 and args[2] == "user_stopped" and getattr(hooks.stop_event, "reason", "") == "session_deadline":
@@ -588,44 +581,25 @@ class BossCollector:
             ))
 
 
-        class CityYielded(Exception):
-            pass
+        def finalize_city(status: str, reason: str = "") -> None:
+            """把当前城市的最终状态写进 city_results 并落到断点账本。
 
-        def publish() -> None:
-            if tracker is None:
+            只在切城市、整轮结束或异常中断时调一次；next_keyword_index
+            按起始游标 +1 轮换，保证持续采集下一轮换到下一个关键词。
+            """
+            if not active_city or active_city in finalized_cities:
                 return
-            state = tracker.snapshot()
-            city_results[active_city] = state
-            hooks.on_city_state(active_city, state)
-            hooks.on_event(city_results=city_results, city_elapsed_ms=state["active_elapsed_ms"],
-                           next_check_ms=state["next_check_ms"], city_new_total=state["new_total"],
-                           last_window_new=state.get("last_window_new"))
-
-        def finish_city(status: str, reason: str = "") -> None:
-            if tracker is None:
-                return
-            tracker.state.update(status=status, reason_code=reason)
             start = request.keyword_start.get(active_city, 0)
-            index = request.keywords.index(current_keyword) if current_keyword in request.keywords else start
-            tracker.state["next_keyword_index"] = ((index + 1) if status in {"low_yield", "yielded_no_ids"} else (start + 1)) % len(request.keywords)
-            publish()
-
-        def yield_city(reason: str, status: str = "yielded_no_ids") -> None:
-            nonlocal last_yield_reason
-            check_limits()
-            last_yield_reason = reason
-            finish_city(status, reason)
-            skipped_cities.add(active_city)
-            hooks.on_event(reason_code=reason, message=f"BOSS {active_city}：{reason}，跳过本城剩余关键词，切换下一城市")
-            raise CityYielded()
-
-        def check_limits() -> None:
-            if guard is not None:
-                try:
-                    guard.check_available("search_page", daily_limit=search_limit)
-                    guard.check_available("detail_page", daily_limit=detail_limit)
-                except PlatformSafetyStop as exc:
-                    raise ListStopped(limited(exc.reason)) from exc
+            state = {
+                "status": status,
+                "reason_code": reason,
+                "new_total": city_new.get(active_city, 0),
+                "next_keyword_index": (start + 1) % len(request.keywords) if request.keywords else 0,
+            }
+            city_results[active_city] = state
+            finalized_cities.add(active_city)
+            hooks.on_city_state(active_city, state)
+            hooks.on_event(city_results=city_results)
 
         def schedule() -> None:
             if hooks.stop_event is not None and hooks.stop_event.is_set():
@@ -635,19 +609,8 @@ class BossCollector:
                     guard.ensure_unlocked()
                 except PlatformSafetyStop as exc:
                     raise ListStopped(limited(exc.reason)) from exc
-            if tracker is None:
-                return
             if not hooks.can_checkpoint():
                 raise CollectionError("persistence_error", "存在未解决的保存失败，采集已停止")
-            if policy["enabled"] and tracker.elapsed_ms() >= tracker.state["next_check_ms"]:
-                check_limits()
-            decision = tracker.evaluate_due()
-            if decision == "timing_gap":
-                publish()
-                raise ListStopped(make_result(self.platform, "stopped", "timing_gap", "采集计时中断，请检查运行环境后继续"))
-            if decision == "low_yield":
-                yield_city("low_yield", "low_yield")
-            publish()
 
         def wait(seconds: float) -> bool:
             remaining = seconds
@@ -668,17 +631,11 @@ class BossCollector:
             if city_code in resolved_codes:
                 continue
             resolved_codes.add(city_code)
-            saved_city = hooks.city_state(city)
-            if saved_city.get("status") in TERMINAL_CITIES:
-                city_results[city] = saved_city
-                continue
             cursor = request.keyword_start.get(city, 0)
             ordered_keywords = request.keywords[cursor:] + request.keywords[:cursor]
             for keyword in ordered_keywords:
                 combos.append((city, city_code, keyword))
         if not combos:
-            if city_results:
-                return make_result(self.platform, "completed", "search_exhausted", "本轮城市均已处理")
             return make_result(
                 self.platform, "completed_with_shortage", "no_valid_city", "没有有效的 BOSS 搜索组合"
             )
@@ -691,15 +648,11 @@ class BossCollector:
 
         try:
             for city, city_code, keyword in combos:
-                if city in skipped_cities:
-                    continue
                 if city != active_city:
-                    if tracker is not None and tracker.state["status"] == "running":
-                        finish_city("partial" if active_city in partial_cities else "completed_scope")
+                    if active_city:
+                        finalize_city("partial" if active_city in partial_cities else "completed_scope")
                     active_city = city
-                    tracker = CityYieldTracker(policy, hooks.city_state(city), clock=self.clock)
-                    hooks.on_city_start(city, tracker)
-                current_keyword = keyword
+                    hooks.on_city_start(city)
                 try:
                     if hooks.stop_event is not None and hooks.stop_event.is_set():
                         return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
@@ -783,7 +736,11 @@ class BossCollector:
                             return limited(exc.reason)
                         except ListStopped as exc:
                             if exc.result.reason_code == "search_page_not_advanced":
-                                yield_city(exc.result.reason_code)
+                                # 列表翻到底了：只放弃这个（城市，关键词）组合，
+                                # 继续找下一个组合，不换城市、不停整轮。
+                                last_abandon_reason = exc.result.reason_code
+                                combo_complete = False
+                                break
                             return exc.result
                         if not isinstance(jobs, list):
                             combo_complete = False
@@ -803,7 +760,9 @@ class BossCollector:
                                 return risk(signal["kind"], signal["evidence"], signal.get("detail", ""))
                             if self.browser.evaluate(worker_target, JS_SEARCH_READY) is not True:
                                 return make_result(self.platform, "failed", "list_load_unconfirmed", "BOSS 空列表尚未可靠加载，等待检查")
-                            yield_city("no_jobs_for_search")
+                            last_abandon_reason = "no_jobs_for_search"
+                            combo_complete = False
+                            break
                         fingerprint = frozenset(list_ids(jobs))
                         if fingerprint and fingerprint in page_fingerprints:
                             hooks.on_parse_failed("BOSS 翻页未生效：岗位 ID 与之前页面完全相同")
@@ -812,7 +771,9 @@ class BossCollector:
                                 return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
                             if signal:
                                 return risk(signal["kind"], signal["evidence"], signal.get("detail", ""))
-                            yield_city("repeated_search_page")
+                            last_abandon_reason = "repeated_search_page"
+                            combo_complete = False
+                            break
                         if fingerprint:
                             page_fingerprints.add(fingerprint)
                         schedule()
@@ -916,7 +877,17 @@ class BossCollector:
                             if type_reason:
                                 hooks.on_event(message=type_reason, increment_filtered=True)
                                 continue
-                            should_continue = hooks.on_candidate(merged)
+                            try:
+                                should_continue = hooks.on_candidate(merged)
+                            except Exception:
+                                # 保存成功后回调里抛错（如 UI 回调失败）也要把这条新增
+                                # 计入城市统计，再把原异常抛出去。
+                                if hooks.last_save_receipt is not None:
+                                    receipt = hooks.last_save_receipt()
+                                    if receipt.get("inserted") and receipt.get("job_id") == merged.storage_id \
+                                            and receipt.get("search_city") == city:
+                                        city_new[city] = city_new.get(city, 0) + 1
+                                raise
                             if hooks.last_save_receipt is not None:
                                 receipt = hooks.last_save_receipt()
                                 if receipt.get("sequence", 0) <= consumed_receipt:
@@ -925,8 +896,7 @@ class BossCollector:
                                 if receipt.get("inserted"):
                                     if receipt.get("job_id") != merged.storage_id or receipt.get("search_city") != city:
                                         raise CollectionError("invalid_save_receipt", "保存回执城市或岗位不匹配")
-                                    if not receipt.get("recorded"):
-                                        tracker.record_inserted(merged.storage_id, receipt["event_elapsed_ms"])
+                                    city_new[city] = city_new.get(city, 0) + 1
                             if not should_continue:
                                 return make_result(self.platform, "completed", "callback_stopped", "采集回调已停止")
                             schedule()
@@ -939,18 +909,12 @@ class BossCollector:
                     if not combo_complete:
                         incomplete_combos += 1
                         partial_cities.add(city)
-                except CityYielded:
-                    incomplete_combos += 1
-                    continue
                 except ListStopped as exc:
                     return exc.result
-            if tracker is not None and tracker.state["status"] == "running":
-                finish_city("partial" if active_city in partial_cities else "completed_scope")
+            finalize_city("partial" if active_city in partial_cities else "completed_scope")
         finally:
             try:
-                if tracker is not None and tracker.state["status"] == "running":
-                    tracker.state["status"] = "interrupted"
-                    publish()
+                finalize_city("interrupted")
             finally:
                 if detail_worker:
                     self.browser.close_tab(detail_worker)
@@ -958,12 +922,12 @@ class BossCollector:
                     self.browser.close_tab(worker_target)
         if not seen_jobs:
             return make_result(
-                self.platform, "completed_with_shortage", last_yield_reason or "no_jobs_extracted",
+                self.platform, "completed_with_shortage", last_abandon_reason or "no_jobs_extracted",
                 "BOSS 本轮未读取到岗位，请检查搜索页是否加载完成、登录状态及搜索条件",
             )
         if incomplete_combos:
             return make_result(
-                self.platform, "completed_with_shortage", last_yield_reason or "incomplete_search",
+                self.platform, "completed_with_shortage", last_abandon_reason or "incomplete_search",
                 f"BOSS 本轮搜索结束，{incomplete_combos} 个搜索组合未完整读取，可再次采集",
             )
         return make_result(self.platform, "completed", "search_exhausted", "BOSS 本轮搜索已结束")

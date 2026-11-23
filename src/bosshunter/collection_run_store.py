@@ -139,7 +139,7 @@ def can_resume_boss_run(run: dict[str, Any]) -> bool:
     return any(
         (search.get("city_codes", {}).get(city) or get_city_code(city))
         and pages.get(boss_combo_key(city, keyword), 0) < search.get("max_pages", 1)
-        and checkpoint.get("cities", {}).get(city, {}).get("status") not in {"completed_scope", "low_yield", "yielded_no_ids"}
+        and checkpoint.get("cities", {}).get(city, {}).get("status") not in {"completed_scope"}
         for city in search.get("cities", []) for keyword in search.get("keywords", [])
     )
 
@@ -149,7 +149,6 @@ def boss_resume_options(db_path: Path, run_id: str, *, session_id: str | None = 
     if not run or not (run["can_resume"] or (session_id and run.get("session_id") == session_id and can_resume_boss_run({**run, "session_id": None}))):
         raise ValueError("该任务没有可恢复的 BOSS 采集进度，请重新采集")
     options = run["options"]
-    options["platforms"]["boss"].setdefault("city_yield_policy", {"enabled": False})
     return {**options, "resume_run_id": run_id}
 
 

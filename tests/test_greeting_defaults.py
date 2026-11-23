@@ -22,16 +22,3 @@ def test_default_generation_skips_review_but_explicit_opt_in_survives(tmp_path):
     config['ai']['greeting_style_suggestions'] = True
     save_config(config, tmp_path / 'config.yaml')
     assert load_config(tmp_path / 'config.yaml')['ai']['greeting_style_suggestions'] is True
-
-
-def test_internship_disables_unknown_salary_filter_on_load_and_save(tmp_path):
-    path = tmp_path / 'config.yaml'
-    path.write_text('profile:\n  allow_internship: true\n  filter_unparsed_salary: true\n')
-    config = load_config(path)
-    assert config['profile']['filter_unparsed_salary'] is False
-    config['profile']['filter_unparsed_salary'] = True
-    save_config(config, path)
-    assert yaml.safe_load(path.read_text())['profile']['filter_unparsed_salary'] is False
-    assert config['profile']['filter_unparsed_salary'] is True  # save does not mutate caller
-    save_config({'profile': {'allow_internship': False, 'filter_unparsed_salary': True}}, path)
-    assert load_config(path)['profile']['filter_unparsed_salary'] is True

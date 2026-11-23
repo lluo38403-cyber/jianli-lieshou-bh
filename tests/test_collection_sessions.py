@@ -66,9 +66,9 @@ class SessionTests(TestCase):
                     for job_id in new_ids:
                         if insert_job_if_new(conn, {"id": job_id, "title": "Test", "company": "Test"}):
                             inserted.append(job_id)
-                    if reason in {"search_page_not_advanced", "search_exhausted", "low_yield"}:
+                    if reason in {"search_page_not_advanced", "search_exhausted"}:
                         for city in ("北京", "上海"):
-                            state = {"status": "yielded_no_ids", "new_total": len(inserted) if city == "北京" else 0,
+                            state = {"status": "partial", "new_total": len(inserted) if city == "北京" else 0,
                                      "next_keyword_index": (actual_options["platforms"]["boss"].get("keyword_start", {}).get(city, 0) + 1) % 3}
                             city_results[city] = state
                             save_city_state(conn, run_id, city, state)

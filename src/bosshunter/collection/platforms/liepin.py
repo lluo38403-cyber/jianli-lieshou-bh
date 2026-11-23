@@ -63,8 +63,6 @@ PAGE_DELAY_MAX_SECONDS = 35.0
 RENDER_POLL_INTERVAL_SECONDS = 0.75
 RENDER_POLL_ATTEMPTS = 10
 
-_INTERNSHIP_TITLE_TERMS = ("实习", "intern", "internship", "管培")
-
 WAVE_SHORT_PROB = 0.60
 WAVE_MEDIUM_PROB = 0.85
 
@@ -225,12 +223,6 @@ def _payload(raw: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def _is_internship(title: str) -> bool:
-    """判断岗位是否为实习/管培（只查标题）。"""
-    t = (title or "").lower()
-    return any(s in t for s in _INTERNSHIP_TITLE_TERMS)
-
-
 class LiepinCollector:
     platform = "liepin"
 
@@ -292,7 +284,10 @@ class LiepinCollector:
         return not self._filter_reason(candidate)
 
     def _filter_reason(self, candidate: JobCandidate) -> str:
-        """collector 增值过滤：deal_breakers / blocked_company / 实习（薪资见 _salary_block_reason）。"""
+        """collector 增值过滤：deal_breakers / blocked_company（薪资见 _salary_block_reason）。
+
+        求职类型（实习/全职/兼职）不在这里判，由 prefilter 的求职类型芯片统一管。
+        """
         profile = self.config.get("profile", {}) if isinstance(self.config.get("profile"), dict) else {}
         if matched := matching_deal_breaker(candidate.title, profile.get("deal_breakers") or []):
             return f"职位名命中排除词：{matched}"
@@ -300,9 +295,6 @@ class LiepinCollector:
             return f"公司命中屏蔽规则：{matched}"
         if matched := matching_deal_breaker(candidate.jd, profile.get("jd_deal_breakers") or []):
             return f"JD 命中排除词：{matched}"
-        allow_internship = bool(profile.get("allow_internship", False))
-        if not allow_internship and _is_internship(candidate.title):
-            return "当前设置不接受实习岗位"
         return ""
 
     def _salary_block_reason(self, candidate: JobCandidate) -> str | None:

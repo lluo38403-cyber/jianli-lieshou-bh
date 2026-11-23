@@ -165,7 +165,6 @@ DEFAULTS: dict[str, Any] = {
         "salary_max": 0,
         "salary_ceil_ratio": 1.5,
         "filter_unparsed_salary": True,
-        "allow_internship": False,
         "deal_breakers": [],
         "jd_deal_breakers": [],
         "blocked_companies": [],
@@ -200,7 +199,6 @@ DEFAULTS: dict[str, Any] = {
                 "max_pages": 3,
                 "sort": "default",
                 "filters": {},
-                "city_yield_policy": {"enabled": True, "warmup_minutes": 10, "window_minutes": 5, "min_new_jobs": 5},
             },
         },
         "zhilian": {
@@ -415,7 +413,6 @@ def save_config(config: dict[str, Any], config_path: Path | None = None) -> None
     validate_config_send_windows(config)
     config_path = Path(config_path or "config.yaml")
     public_config = _deep_copy_dict(config)
-    _normalize_internship_salary_filter(public_config)
     # 落盘前同样归一化 browser_choice：写错了回自动选择，别让脏值进文件。
     browser_cfg = public_config.get("browser")
     if isinstance(browser_cfg, dict) and browser_cfg.get("browser_choice") not in BROWSER_CHOICES:
@@ -496,9 +493,6 @@ def save_config(config: dict[str, Any], config_path: Path | None = None) -> None
 _CONFIG_NUMBER_RULES: tuple[tuple[str, str, float, float, bool], ...] = (
     ("search.max_pages", "最多翻几页", 1, 10, True),
     ("platforms.*.search.max_pages", "最多翻几页", 1, 10, True),
-    ("platforms.boss.search.city_yield_policy.warmup_minutes", "过几分钟先看一次", 1, 60, True),
-    ("platforms.boss.search.city_yield_policy.window_minutes", "隔几分钟看一次", 1, 30, True),
-    ("platforms.boss.search.city_yield_policy.min_new_jobs", "一次至少新找到几个", 1, 1000, True),
     ("scoring.max_candidates", "一次最多看多少个", 1, 100, True),
     ("scoring.threshold", "多少分以上才投", 0, 100, True),
     ("collection.daily_search_page_limit", "每天最多翻多少页", 1, 200, True),
@@ -614,7 +608,6 @@ def migrate_legacy_credentials(config_path: Path | None = None) -> bool:
     """
     config_path = Path(config_path or "config.yaml")
     public_config = _load_yaml_mapping(config_path)
-    _normalize_internship_salary_filter(public_config)
     moved = False
 
     ai_cfg = public_config.get("ai")
@@ -723,13 +716,6 @@ def _write_yaml_atomic(path: Path, data: dict[str, Any]) -> None:
                 pass
 
 
-def _normalize_internship_salary_filter(config: dict[str, Any]) -> None:
-    """Daily internship pay must not be rejected as an unparsed monthly salary."""
-    profile = config.get("profile")
-    if isinstance(profile, dict) and profile.get("allow_internship") is True:
-        profile["filter_unparsed_salary"] = False
-
-
 def _normalize_config_sections(config: dict[str, Any]) -> dict[str, Any]:
     """Replace malformed sections and discard retired collection-count settings."""
     for section, defaults in DEFAULTS.items():
@@ -749,12 +735,11 @@ def _normalize_config_sections(config: dict[str, Any]) -> dict[str, Any]:
         if throttle_cfg.get("risk_tier", "steady") not in RISK_TIER_CHOICES:
             throttle_cfg["risk_tier"] = "steady"
 
-    _normalize_internship_salary_filter(config)
     return remove_retired_collection_settings(config)
 
 
 def remove_retired_collection_settings(config: dict[str, Any]) -> dict[str, Any]:
-    """Remove collection-count settings that are no longer supported."""
+    """Remove retired settings that are no longer supported."""
 
     # These settings existed briefly, but a result-count limit is not a page-access
     # safety control. Ignore stale values so old config files cannot re-enable it or
@@ -764,14 +749,23 @@ def remove_retired_collection_settings(config: dict[str, Any]) -> dict[str, Any]
     collection.pop("default_target_count", None)
     if "delivery_cooldown_min_minutes" in collection or "delivery_cooldown_max_minutes" in collection:
         collection.pop("delivery_cooldown_minutes", None)
+    # v43 删掉的设置：实习开关（profile.allow_internship）与城市低产切换
+    # （city_yield_policy）。老 config.yaml 里残留的值在这里清掉，不让它
+    # 再出现在 Web UI/API，也不让它悄悄影响过滤。
+    profile = config.get("profile", {})
+    if isinstance(profile, dict):
+        profile.pop("allow_internship", None)
     search = config.get("search", {})
     search.pop("target_count", None)
+    if isinstance(search, dict):
+        search.pop("city_yield_policy", None)
     platforms = config.get("platforms", {})
     for platform_config in platforms.values():
         if isinstance(platform_config, dict):
             platform_search = platform_config.get("search", {})
             if isinstance(platform_search, dict):
                 platform_search.pop("target_count", None)
+                platform_search.pop("city_yield_policy", None)
     return config
 
 

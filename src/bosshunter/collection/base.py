@@ -41,7 +41,7 @@ class CollectorHooks:
     completed_page: Callable[[str, str], int] = lambda city, keyword: 0
     on_page_complete: Callable[[str, str, int], None] = lambda city, keyword, page: None
     last_save_receipt: Callable[[], dict] | None = None
-    on_city_start: Callable[[str, Any], None] = lambda city, tracker: None
+    on_city_start: Callable[[str], None] = lambda city: None
     city_state: Callable[[str], dict] = lambda city: {}
     on_city_state: Callable[[str, dict], None] = lambda city, state: None
 

@@ -57,8 +57,8 @@ class VersionMetadataTests(unittest.TestCase):
             / "Sidebar.tsx"
         ).read_text(encoding="utf-8")
 
-        # 简历猎手自有版本号（v2 改版定为 1.0.0，自动更新版升到 1.0.1，卡密鉴权版升到 1.0.2，万能卡显示版升到 1.0.3，面板加项目 logo 版升到 1.0.4，反检测版升到 1.0.5，界面大改版升到 1.0.6，四项紧急修复版升到 1.0.7，update.bat 卡死修复版升到 1.0.8，浏览器自动拉起+去代码日志版升到 1.0.9，update.bat 等待改 PID+进程名双重匹配版升到 1.1.0，验证 v14 bat 版升到 1.1.1，update.bat 拿掉 findstr 管道改 PowerShell 直查版升到 1.1.2，验证 v16 bat 版升到 1.1.3，去 INSTALL_DIR 末尾反斜杠修 robocopy 版升到 1.1.4，验证 v18 bat 版升到 1.1.5，黑框隐藏+更新弹窗+SmartScreen 指引+独立应用窗口版升到 1.1.6，验证 v20 的 updater 改动版升到 1.1.7，桌面快捷方式版升到 1.1.8，界面文案与交互优化版升到 1.1.10，孤儿进程清理+关窗确认版升到 1.1.11，桌面快捷方式换 logo 图标版升到 1.1.12，浏览器窗口统一+验证码误判收紧+HR 聊天页按平台分版升到 1.1.13，预检误拦+平台改名+停止卡住+启动提速+PDF 导入+浏览器落点版升到 1.1.14，启动自愈+更新重开核实版升到 1.1.15，启动提速版升到 1.1.16，自动更新弹窗复查+体检第一批版升到 1.1.17，Retry 原因码修复+窗口尺寸位置记忆+打分提速+弹窗位置版升到 1.1.18，投递跟进任务列表+已投出岗位搬家+退出统一清理版升到 1.1.19，找工作列表响应式重构+智能定制打招呼开关+去掉×离开确认版升到 1.1.20，更新一键完成+按钮文案统一+启动提速版升到 1.1.21，平台未启用文案统一+重新采集超时恢复+采集限额四平台通用+登录状态同步版升到 1.1.22，更新全程无窗口+预检去BOSS化+单实例互斥锁与启动提速版升到 1.1.23，找工作页瘦身布局+筛选折叠+动效+打分只打勾选版升到 1.1.24，安装/卸载程序版升到 1.1.25，安装默认文件夹改名+卸载清理强化版升到 1.1.26，安装向导四项修复版升到 1.1.27，安装文件夹改名+卸载探针加时与日志版升到 1.1.28，不再沿用上游 BossHunter 的 2.4.0）。
-        version = "1.1.28"
+        # 简历猎手自有版本号（v2 改版定为 1.0.0，自动更新版升到 1.0.1，卡密鉴权版升到 1.0.2，万能卡显示版升到 1.0.3，面板加项目 logo 版升到 1.0.4，反检测版升到 1.0.5，界面大改版升到 1.0.6，四项紧急修复版升到 1.0.7，update.bat 卡死修复版升到 1.0.8，浏览器自动拉起+去代码日志版升到 1.0.9，update.bat 等待改 PID+进程名双重匹配版升到 1.1.0，验证 v14 bat 版升到 1.1.1，update.bat 拿掉 findstr 管道改 PowerShell 直查版升到 1.1.2，验证 v16 bat 版升到 1.1.3，去 INSTALL_DIR 末尾反斜杠修 robocopy 版升到 1.1.4，验证 v18 bat 版升到 1.1.5，黑框隐藏+更新弹窗+SmartScreen 指引+独立应用窗口版升到 1.1.6，验证 v20 的 updater 改动版升到 1.1.7，桌面快捷方式版升到 1.1.8，界面文案与交互优化版升到 1.1.10，孤儿进程清理+关窗确认版升到 1.1.11，桌面快捷方式换 logo 图标版升到 1.1.12，浏览器窗口统一+验证码误判收紧+HR 聊天页按平台分版升到 1.1.13，预检误拦+平台改名+停止卡住+启动提速+PDF 导入+浏览器落点版升到 1.1.14，启动自愈+更新重开核实版升到 1.1.15，启动提速版升到 1.1.16，自动更新弹窗复查+体检第一批版升到 1.1.17，Retry 原因码修复+窗口尺寸位置记忆+打分提速+弹窗位置版升到 1.1.18，投递跟进任务列表+已投出岗位搬家+退出统一清理版升到 1.1.19，找工作列表响应式重构+智能定制打招呼开关+去掉×离开确认版升到 1.1.20，更新一键完成+按钮文案统一+启动提速版升到 1.1.21，平台未启用文案统一+重新采集超时恢复+采集限额四平台通用+登录状态同步版升到 1.1.22，更新全程无窗口+预检去BOSS化+单实例互斥锁与启动提速版升到 1.1.23，找工作页瘦身布局+筛选折叠+动效+打分只打勾选版升到 1.1.24，安装/卸载程序版升到 1.1.25，安装默认文件夹改名+卸载清理强化版升到 1.1.26，安装向导四项修复版升到 1.1.27，安装文件夹改名+卸载探针加时与日志版升到 1.1.28，求职类型筛选改语义+薪资默认不限+去掉实习开关与城市低产切换版升到 1.1.29，不再沿用上游 BossHunter 的 2.4.0）。
+        version = "1.1.29"
         frontend = ROOT / "src" / "bosshunter" / "web" / "frontend"
         package = json.loads((frontend / "package.json").read_text(encoding="utf-8"))
         lock = json.loads((frontend / "package-lock.json").read_text(encoding="utf-8"))
@@ -92,10 +92,12 @@ class ConfigExampleTests(unittest.TestCase):
         self.assertIsInstance(config["search"]["cities"], list)
         self.assertNotIn("city", config["search"])
 
-    def test_example_defaults_to_not_allowing_internships(self):
+    def test_example_salary_defaults_to_unlimited_without_internship_switch(self):
         config = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
 
-        self.assertIs(config["profile"]["allow_internship"], False)
+        self.assertNotIn("allow_internship", config["profile"])
+        self.assertEqual(config["profile"]["salary_min"], 0)
+        self.assertEqual(config["profile"]["salary_max"], 0)
 
     def test_example_includes_salary_filter_controls(self):
         config = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
@@ -134,7 +136,6 @@ class ConfigValidationTests(unittest.TestCase):
 
             config = load_config(config_path)
 
-        self.assertIs(config["profile"]["allow_internship"], False)
         self.assertEqual(config["profile"]["salary_ceil_ratio"], 1.5)
         self.assertIs(config["profile"]["filter_unparsed_salary"], True)
         self.assertNotIn("prefilter_threshold", config["scoring"])
@@ -326,32 +327,43 @@ class PrefilterHardGateTests(unittest.TestCase):
         self.assertEqual(score, 0)
         self.assertEqual(reason, "触发JD排除词: SQL")
 
-    def test_default_rejects_internship_titles(self):
+    def test_job_type_chips_block_unselected_internship(self):
         from bosshunter.ai.prefilter import quick_score
 
-        config = {"profile": {"deal_breakers": [], "salary_min": 0}}
+        config = {"profile": {"deal_breakers": [], "job_types": ["全职", "兼职"], "salary_min": 0}}
         job = {"title": "AI产品实习生", "jd": "", "salary": "3-5K"}
 
         score, reason = quick_score(job, config)
 
         self.assertEqual(score, 0)
-        self.assertEqual(reason, "实习/管培岗位")
+        self.assertEqual(reason, "求职类型不符合：实习不在已选类型中")
 
-    def test_default_rejects_management_trainee_titles(self):
+    def test_empty_job_types_blocks_every_job(self):
         from bosshunter.ai.prefilter import quick_score
 
-        config = {"profile": {"deal_breakers": [], "salary_min": 0}}
-        job = {"title": "产品管培生", "jd": "", "salary": "8-12K"}
+        config = {"profile": {"deal_breakers": [], "job_types": [], "salary_min": 0}}
+        job = {"title": "AI工程师", "jd": "", "salary": "10-20K"}
 
         score, reason = quick_score(job, config)
 
         self.assertEqual(score, 0)
-        self.assertEqual(reason, "实习/管培岗位")
+        self.assertEqual(reason, "求职类型未选：没有选中的求职类型")
 
-    def test_allow_internship_lets_internship_titles_pass_prefilter(self):
+    def test_unknown_type_management_trainee_is_not_blocked_by_job_type_chips(self):
         from bosshunter.ai.prefilter import quick_score
 
-        config = {"profile": {"deal_breakers": [], "allow_internship": True, "salary_min": 0}}
+        config = {"profile": {"deal_breakers": [], "job_types": ["全职"], "salary_min": 0}}
+        job = {"title": "产品管培生", "jd": "", "salary": "8-12K"}
+
+        score, reason = quick_score(job, config)
+
+        self.assertEqual(score, 100)
+        self.assertEqual(reason, "预筛通过")
+
+    def test_job_type_chips_let_selected_internship_pass_prefilter(self):
+        from bosshunter.ai.prefilter import quick_score
+
+        config = {"profile": {"deal_breakers": [], "job_types": ["实习", "全职", "兼职"], "salary_min": 0}}
         job = {"title": "AI Product Intern", "jd": "", "salary": "3-5K"}
 
         score, reason = quick_score(job, config)
@@ -831,14 +843,10 @@ class ConfigPageTests(unittest.TestCase):
         self.assertNotIn("prefilter_threshold", self.source)
         self.assertNotIn("预筛阈值", self.source)
 
-    def test_allow_internship_switch_appears_below_deal_breakers(self):
-        # Act
-        deal_breakers_index = self.source.index("这些词的岗位不要")
-        allow_internship_index = self.source.index("实习、管培生的岗位也要")
-
-        # Assert
-        self.assertGreater(allow_internship_index, deal_breakers_index)
-        self.assertIn("profile.allow_internship", self.source)
+    def test_config_page_has_no_allow_internship_switch(self):
+        self.assertNotIn("实习、管培生的岗位也要", self.source)
+        self.assertNotIn("profile.allow_internship", self.source)
+        self.assertNotIn("接受实习/管培岗位", self.source)
 
     def test_config_page_exposes_jd_deal_breakers(self):
         self.assertIn("岗位介绍里有这些词也不要", self.source)
@@ -925,17 +933,12 @@ class ConfigSchemaTests(unittest.TestCase):
     def test_schema_does_not_include_prefilter_threshold(self):
         self.assertNotIn("prefilter_threshold", self.schema_source)
 
-    def test_schema_adds_allow_internship_after_deal_breakers(self):
+    def test_schema_has_no_allow_internship(self):
         profile = next(section for section in self.schema["sections"] if section["key"] == "profile")
         keys = [field["key"] for field in profile["fields"]]
 
-        self.assertIn("allow_internship", keys)
-        self.assertGreater(keys.index("allow_internship"), keys.index("deal_breakers"))
-
-        allow_field = profile["fields"][keys.index("allow_internship")]
-        self.assertEqual(allow_field["label"], "接受实习/管培岗位")
-        self.assertEqual(allow_field["type"], "switch")
-        self.assertIs(allow_field["default"], False)
+        self.assertNotIn("allow_internship", keys)
+        self.assertNotIn("接受实习/管培岗位", self.schema_source)
 
     def test_schema_includes_salary_filter_controls(self):
         profile = next(section for section in self.schema["sections"] if section["key"] == "profile")

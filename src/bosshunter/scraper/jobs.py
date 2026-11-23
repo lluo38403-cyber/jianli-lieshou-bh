@@ -16,7 +16,6 @@ from bosshunter.browser import close_tab, evaluate, navigate, new_tab, scroll, w
 from bosshunter.cancellation import get_stop_event
 from bosshunter.cities import get_city_code
 from bosshunter.collection.base import CollectorHooks
-from bosshunter.collection.city_yield import normalize_city_policy
 from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest
 from bosshunter.collection.platforms.boss import BossBrowser, BossCollector, generate_boss_job_id
 from bosshunter.db import get_db, insert_job, job_exists, recompute_outsourcing
@@ -60,7 +59,6 @@ def _legacy_request(config: dict, keywords: list[str]) -> PlatformCollectionRequ
         max_pages=min(_positive_int(search_config.get("max_pages", 3), 3), 10),
         sort=str(search_config.get("sort") or "default"),
         filters=search_config.get("filters") if isinstance(search_config.get("filters"), dict) else {},
-        city_yield_policy=normalize_city_policy(search_config.get("city_yield_policy")),
     )
 
 
@@ -97,8 +95,8 @@ def _scrape_jobs_impl(
     receipt = {"sequence": 0, "inserted": False}
     city_context = {}
 
-    def bind_city(city, tracker):
-        city_context.update(city=city, tracker=tracker)
+    def bind_city(city):
+        city_context.update(city=city)
 
     def emit() -> None:
         if callable(progress_callback):
@@ -136,8 +134,7 @@ def _scrape_jobs_impl(
         if inserted is False:
             counts["duplicate"] += 1
         else:
-            receipt.update(inserted=True, job_id=candidate.storage_id, search_city=city_context["city"],
-                           event_elapsed_ms=city_context["tracker"].elapsed_ms())
+            receipt.update(inserted=True, job_id=candidate.storage_id, search_city=city_context["city"])
             counts["new"] += 1
             report_state["new_count"] = counts["new"]
             if collected_job_ids is not None:

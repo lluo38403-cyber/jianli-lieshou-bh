@@ -254,7 +254,7 @@ export default function ConfigPage() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={resetConfig}><RotateCcw className="w-3 h-3 mr-1" />恢复原样</Button>
+            <Button variant="ghost" size="sm" onClick={resetConfig}><RotateCcw className="w-3 h-3 mr-1" />恢复默认设置</Button>
             <Button data-tour="config-save" size="sm" onClick={saveConfig} disabled={saving || !dirty}><Save className="w-3 h-3 mr-1" />{saving ? '保存中…' : '保存'}</Button>
           </div>
         </div>
@@ -299,13 +299,6 @@ export default function ConfigPage() {
               <TagsInput value={config.profile?.blocked_companies || []} onChange={v => updateConfig('profile.blocked_companies', v)} placeholder="输入公司名称或关键词" />
               <p className="mt-1 text-xs text-muted">公司名字里有这些词，就不去找，也不会打分。</p>
             </Field>
-            <div className="flex items-center justify-between">
-              <label className="text-xs text-foreground">实习、管培生的岗位也要</label>
-              <Switch aria-label="接受实习/管培岗位" checked={config.profile?.allow_internship ?? false} onChange={v => {
-                updateConfig('profile.allow_internship', v)
-                if (v) updateConfig('profile.filter_unparsed_salary', false)
-              }} />
-            </div>
           </div>
         </SectionCard>
 
@@ -401,10 +394,6 @@ export default function ConfigPage() {
                         </Select>
                       </Field>
                     </div>
-                    {platform === 'boss' && <div className="space-y-3 border-t border-card-border pt-3">
-                      <label className="flex items-center justify-between text-sm font-bold">这个城市新岗位太少就换地方<Switch checked={search.city_yield_policy?.enabled ?? true} onChange={enabled => updatePlatformSearch('boss', 'city_yield_policy', { warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5, ...search.city_yield_policy, enabled })} /></label>
-                      <div className="grid gap-3 sm:grid-cols-3">{([{ key: 'warmup_minutes', label: '过几分钟先看一次', initial: 10, max: 60 }, { key: 'window_minutes', label: '隔几分钟看一次', initial: 5, max: 30 }, { key: 'min_new_jobs', label: '一次至少新找到几个', initial: 5, max: 1000 }]).map(field => <Field key={field.key} label={field.label}><ValidatedNumberInput label={field.label} value={search.city_yield_policy?.[field.key] ?? field.initial} onChange={value => updatePlatformSearch('boss', 'city_yield_policy', { enabled: true, warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5, ...search.city_yield_policy, [field.key]: value })} min={1} max={field.max} /></Field>)}</div>
-                    </div>}
                     {platform === 'boss' && <div className="space-y-3 rounded-xl border border-card-border bg-card p-3">
                       <p className="text-xs font-black text-foreground">再细筛一下（可以不填）</p>
                       <div className="grid gap-3 md:grid-cols-2">
@@ -496,7 +485,7 @@ export default function ConfigPage() {
                   )
                 })}
               </div>
-              <p className="mt-1 rounded-lg bg-secondary px-3 py-2 text-xs font-bold text-foreground">亮着的就是你要投的类型；全都灭掉 = 什么类型都要，不限。看不出是哪种类型的岗位不会拦。</p>
+              <p className="mt-1 rounded-lg bg-secondary px-3 py-2 text-xs font-bold text-foreground">亮着的就是你要投的类型；三个都亮 = 什么类型都要，不限；全都灭掉 = 一个都不投。看不出是哪种类型的岗位不会拦。</p>
             </Field>
             <NumberRangeField
               label="我想要的工资（千元）"
@@ -525,9 +514,9 @@ export default function ConfigPage() {
             <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
               <div>
                 <label className="text-xs text-foreground">不写工资的岗位不要</label>
-                <p className="mt-1 text-xs text-muted">{config.profile?.allow_internship ? '你已经要实习岗位了，这个过滤自动关了，免得把按天算钱的岗位误伤了。' : '关掉后，这类岗位会留下来打分的时候再看。'}</p>
+                <p className="mt-1 text-xs text-muted">关掉后，这类岗位会留下来打分的时候再看。</p>
               </div>
-              <Switch aria-label="过滤面议/无法解析薪资" checked={config.profile?.allow_internship ? false : (config.profile?.filter_unparsed_salary ?? true)} disabled={config.profile?.allow_internship === true} onChange={v => updateConfig('profile.filter_unparsed_salary', v)} />
+              <Switch aria-label="过滤面议/无法解析薪资" checked={config.profile?.filter_unparsed_salary ?? true} onChange={v => updateConfig('profile.filter_unparsed_salary', v)} />
             </div>
             <Field label="只要最近发布的">
               <Select value={String(config.profile?.posted_days ?? 7)} onChange={e => updateConfig('profile.posted_days', Number(e.target.value))}>
@@ -1006,7 +995,7 @@ function ValidatedNumberInput({
   )
   const committedRef = useRef<number | undefined | null>(value)
   const display = raw ?? (value === undefined || value === null ? '' : String(value))
-  // 外部改了配置值（如恢复原样）时跟上，不留着旧的输入残影。
+  // 外部改了配置值（如恢复默认设置）时跟上，不留着旧的输入残影。
   useEffect(() => {
     if (value !== committedRef.current) {
       committedRef.current = value

@@ -29,9 +29,6 @@ type NumberRule = {
 const RULES: NumberRule[] = [
   { path: 'search.max_pages', label: '最多翻几页', min: 1, max: 10, integer: true },
   { path: 'platforms.*.search.max_pages', label: '最多翻几页', min: 1, max: 10, integer: true },
-  { path: 'platforms.boss.search.city_yield_policy.warmup_minutes', label: '过几分钟先看一次', min: 1, max: 60, integer: true },
-  { path: 'platforms.boss.search.city_yield_policy.window_minutes', label: '隔几分钟看一次', min: 1, max: 30, integer: true },
-  { path: 'platforms.boss.search.city_yield_policy.min_new_jobs', label: '一次至少新找到几个', min: 1, max: 1000, integer: true },
   { path: 'scoring.max_candidates', label: '一次最多看多少个', min: 1, max: 100, integer: true },
   { path: 'scoring.threshold', label: '多少分以上才投', min: 0, max: 100, integer: true },
   { path: 'collection.daily_search_page_limit', label: '每天最多翻多少页', min: 1, max: 200, integer: true },

@@ -65,7 +65,6 @@ class _QuotaStop(Exception):
 SEARCH_URL = "https://www.zhaopin.com/sou/jl{city_code}/"
 DETAIL_BASE_URL = "https://www.zhaopin.com"
 CITY_SNAPSHOT_PATH = Path(__file__).resolve().parents[2] / "data" / "zhilian_cities.json"
-_INTERNSHIP_TITLE_TERMS = ("实习", "intern", "internship", "管培")
 LIST_ITEM_CLASSES = ("joblist-box__item", "joblist-item", "job-card")
 TITLE_CLASSES = ("summary-planes__title", "jobinfo__name", "job-name", "job-title")
 SALARY_CLASSES = ("summary-planes__salary", "jobinfo__salary", "job-salary", "salary")
@@ -123,12 +122,6 @@ def load_zhilian_city_snapshot() -> dict[str, Any]:
         "note": payload.get("note", "智联城市编码需要人工核验") if isinstance(payload, dict) else "智联城市编码需要人工核验",
         "cities": cities,
     }
-
-
-def _is_internship(title: str) -> bool:
-    """判断岗位是否为实习/管培（只查标题）。"""
-    t = (title or "").lower()
-    return any(s in t for s in _INTERNSHIP_TITLE_TERMS)
 
 
 def _city_name_variants(city: str) -> set[str]:
@@ -836,7 +829,10 @@ class ZhilianCollector:
         return not self._filter_reason(candidate)
 
     def _filter_reason(self, candidate: JobCandidate) -> str:
-        """collector 增值过滤：deal_breakers / blocked_company / 实习。"""
+        """collector 增值过滤：deal_breakers / blocked_company。
+
+        求职类型（实习/全职/兼职）不在这里判，由 prefilter 的求职类型芯片统一管。
+        """
         profile = self.config.get("profile", {}) if isinstance(self.config.get("profile"), dict) else {}
         if matched := matching_deal_breaker(candidate.title, profile.get("deal_breakers") or []):
             return f"职位名命中排除词：{matched}"
@@ -844,9 +840,6 @@ class ZhilianCollector:
             return f"公司命中屏蔽规则：{matched}"
         if matched := matching_deal_breaker(candidate.jd, profile.get("jd_deal_breakers") or []):
             return f"JD 命中排除词：{matched}"
-        allow_internship = bool(profile.get("allow_internship", False))
-        if not allow_internship and _is_internship(candidate.title):
-            return "当前设置不接受实习岗位"
         return ""
 
     def _salary_block_reason(self, candidate: JobCandidate) -> str | None:
@@ -1178,7 +1171,6 @@ class ZhilianCollector:
         deal_breakers = profile.get("deal_breakers") or []
         jd_deal_breakers = profile.get("jd_deal_breakers") or []
         blocked_companies = profile.get("blocked_companies") or []
-        allow_internship = bool(profile.get("allow_internship", False))
 
         api_failed = False
         try:
@@ -1209,7 +1201,7 @@ class ZhilianCollector:
                         city=city, city_id=city_id, kw=kw, kw_encoded=kw_encoded,
                         start_page=start_page, max_pages=max_pages,
                         deal_breakers=deal_breakers, jd_deal_breakers=jd_deal_breakers,
-                        blocked_companies=blocked_companies, allow_internship=allow_internship,
+                        blocked_companies=blocked_companies,
                     )
                     if api_failed:
                         return None
@@ -1236,7 +1228,6 @@ class ZhilianCollector:
         deal_breakers: list[str],
         jd_deal_breakers: list[str],
         blocked_companies: list[str],
-        allow_internship: bool,
     ) -> bool:
         """单个 (城市, 关键词) 的 API 采集闭环。
 

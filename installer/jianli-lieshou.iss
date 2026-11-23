@@ -1,4 +1,4 @@
-﻿; 简历猎手 · Inno Setup 6 安装 / 卸载脚本（v42，1.1.28）。
+﻿; 简历猎手 · Inno Setup 6 安装 / 卸载脚本（v43，1.1.29）。
 ;
 ; 口径唯一来源是 src/bosshunter/installer.py：默认路径、卸载清理清单、
 ; 安全谓词、停进程判定都必须与那个模块逐项一致，对应关系由
@@ -6,11 +6,11 @@
 ;
 ; 编译（Windows，CI 里由 build-exe.yml 跑）：
 ;   choco install innosetup -y
-;   iscc /DMyAppVersion=1.1.28 installer\jianli-lieshou.iss
+;   iscc /DMyAppVersion=1.1.29 installer\jianli-lieshou.iss
 ; 不传 /DMyAppVersion 时用下面 #define 的默认值（发版时记得与
 ; pyproject.toml 的 version 保持一致，verify.sh 不校验这一项，
 ; CI 里读 pyproject.toml 传值才是准的）。
-; 产物：dist-installer\简历猎手-安装程序-1.1.28.exe。
+; 产物：dist-installer\简历猎手-安装程序-1.1.29.exe。
 ; 编译前必须先跑 pyinstaller（dist\简历猎手\ 要有内容），[Files]
 ; 直接把 dist 产物原样打进安装包。
 ;
@@ -39,7 +39,7 @@
 ;   InitializeUninstall 的注释），所以改问 SuppressibleMsgBox 对话框。
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.28"
+  #define MyAppVersion "1.1.29"
 #endif
 
 [Setup]

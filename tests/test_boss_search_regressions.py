@@ -222,7 +222,7 @@ class BossSearchRegressionTests(TestCase):
             self.assertEqual(browser.scrolls, 0)
             self.assertEqual(len(self.seen), 1)
 
-    def test_stalled_city_is_terminal_but_a_new_run_can_find_new_jobs(self):
+    def test_stalled_city_is_resumable_but_a_new_run_can_find_new_jobs(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "jobs.db"
             browser = SearchBrowser([[card("a")]])
@@ -232,11 +232,13 @@ class BossSearchRegressionTests(TestCase):
             }}}
             first = CollectionOrchestrator({}, db_path=path, registry=registry).run(options)
             saved = get_collection_run(path, first["run_id"])
-            self.assertFalse(saved["can_resume"])
+            # v43：没找全的城市是 partial（可续采），不再是低产终态。
+            self.assertTrue(saved["can_resume"])
             self.assertEqual(saved["boss_checkpoint"]["pages"], {boss_combo_key("北京", "AI"): 1})
-            self.assertEqual(saved["boss_checkpoint"]["cities"]["北京"]["status"], "yielded_no_ids")
-            with self.assertRaises(ValueError):
-                CollectionOrchestrator({}, db_path=path, registry=registry).run({"resume_run_id": first["run_id"]})
+            self.assertEqual(saved["boss_checkpoint"]["cities"]["北京"]["status"], "partial")
+            resumed = CollectionOrchestrator({}, db_path=path, registry=registry).run({"resume_run_id": first["run_id"]})
+            # 续采没找到新岗位：累计列表仍是第一轮的 a，没有重复入库。
+            self.assertEqual(resumed["collected_job_ids"], ["a"])
             browser = SearchBrowser([[card("a")], [card("a"), card("b")]])
             fresh = CollectionOrchestrator({}, db_path=path, registry=registry).run(options)
             self.assertEqual(fresh["collected_job_ids"], ["b"])

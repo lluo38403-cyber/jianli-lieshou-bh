@@ -21,7 +21,7 @@ SESSION_DEFAULTS = {
     "quota_resume_buffer_minutes": 5,
 }
 QUOTA_REASONS = {"daily_search_page_limit", "daily_detail_page_limit", "daily_platform_page_limit"}
-ROUND_REASONS = {"search_exhausted", "no_new_jobs", "search_page_not_advanced", "repeated_search_page", "low_yield", "no_jobs_for_search"}
+ROUND_REASONS = {"search_exhausted", "no_new_jobs", "search_page_not_advanced", "repeated_search_page", "no_jobs_for_search"}
 
 
 def normalize_session_options(value) -> dict:

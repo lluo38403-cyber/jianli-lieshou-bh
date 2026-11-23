@@ -149,7 +149,6 @@ _GENERIC_ROLE_WORDS = [
     "工程师", "管理员", "顾问", "助理", "实习生", "管培生", "培训生",
     "专家", "主任", "副总裁", "总裁", "高级", "资深", "初级", "中级", "师",
 ]
-_INTERNSHIP_TITLE_TERMS = ("实习", "intern", "internship", "管培")
 
 
 # 城市快照从 JSON 数据文件加载（160 城市已核验编码）。
@@ -312,12 +311,6 @@ def _is_relevant_to_keyword(title: str, jd: str, kw: str) -> bool:
         elif core_l in re.sub(r"\s+", "", t):
             return True
     return False
-
-
-def _is_internship(title: str, experience: str) -> bool:
-    """判断岗位是否为实习/管培（只查标题，experience 的「无需经验」会误伤 entry-level）。"""
-    t = (title or "").lower()
-    return any(s in t for s in _INTERNSHIP_TITLE_TERMS)
 
 
 def _salary_within_range(
@@ -544,7 +537,6 @@ class Job51Collector:
         deal_breakers: list[str],
         jd_deal_breakers: list[str],
         blocked_companies: list[str],
-        allow_internship: bool,
         salary_min: float,
         salary_max: float,
     ) -> bool:
@@ -566,9 +558,6 @@ class Job51Collector:
         # 官方统一层：jd deal_breakers（save）
         if matching_deal_breaker(candidate.jd, jd_deal_breakers):
             return False
-        # collector 增值层：实习过滤
-        if not allow_internship and _is_internship(candidate.title, candidate.experience):
-            return False
         # collector 增值层：关键词相关性（方案 C）
         if not _is_relevant_to_keyword(candidate.title, candidate.jd, kw):
             return False
@@ -577,8 +566,8 @@ class Job51Collector:
             return False
         return True
 
-    def _passes_collector_filters(self, candidate, kw, *, allow_internship, salary_min, salary_max) -> bool:
-        return not self._collector_filter_reason(candidate, kw, allow_internship=allow_internship,
+    def _passes_collector_filters(self, candidate, kw, *, salary_min, salary_max) -> bool:
+        return not self._collector_filter_reason(candidate, kw,
                                                  salary_min=salary_min, salary_max=salary_max)
 
     def _collector_filter_reason(
@@ -586,7 +575,6 @@ class Job51Collector:
         candidate: JobCandidate,
         kw: str,
         *,
-        allow_internship: bool,
         salary_min: float,
         salary_max: float,
     ) -> str:
@@ -594,9 +582,8 @@ class Job51Collector:
 
         deal_breakers / blocked_company / jd_deal_breakers 在正式入库时交给官方
         ``_SharedProcessor`` 的 hooks 回调处理，这里只做官方没有的增值过滤。
+        求职类型（实习/全职/兼职）不在这里判，由 prefilter 的求职类型芯片统一管。
         """
-        if not allow_internship and _is_internship(candidate.title, candidate.experience):
-            return "当前设置不接受实习岗位"
         if not _is_relevant_to_keyword(candidate.title, candidate.jd, kw):
             return "职位与搜索关键词不相关"
         if not _salary_within_range(candidate.salary, salary_min, salary_max, self.config.get("profile")):
@@ -755,7 +742,6 @@ class Job51Collector:
         deal_breakers = profile.get("deal_breakers") or []
         jd_deal_breakers = profile.get("jd_deal_breakers") or []
         blocked_companies = profile.get("blocked_companies") or []
-        allow_internship = bool(profile.get("allow_internship", False))
         try:
             salary_min = float(profile.get("salary_min") or 0)
             salary_max = float(profile.get("salary_max") or 0)
@@ -799,7 +785,7 @@ class Job51Collector:
                         request, hooks, host_target, rate_limiter,
                         city=city, area=area, kw=kw, max_pages=max_pages,
                         deal_breakers=deal_breakers, jd_deal_breakers=jd_deal_breakers,
-                        blocked_companies=blocked_companies, allow_internship=allow_internship,
+                        blocked_companies=blocked_companies,
                         salary_min=salary_min, salary_max=salary_max,
                     )
         except _QuotaStop as exc:
@@ -825,7 +811,6 @@ class Job51Collector:
         deal_breakers: list[str],
         jd_deal_breakers: list[str],
         blocked_companies: list[str],
-        allow_internship: bool,
         salary_min: float,
         salary_max: float,
     ) -> None:
@@ -893,7 +878,7 @@ class Job51Collector:
                 if self._would_be_collected(
                     cand, kw,
                     deal_breakers=deal_breakers, jd_deal_breakers=jd_deal_breakers,
-                    blocked_companies=blocked_companies, allow_internship=allow_internship,
+                    blocked_companies=blocked_companies,
                     salary_min=salary_min, salary_max=salary_max,
                 ):
                     new_on_page += 1
@@ -953,7 +938,7 @@ class Job51Collector:
                     if self._would_be_collected(
                         cand, kw,
                         deal_breakers=deal_breakers, jd_deal_breakers=jd_deal_breakers,
-                        blocked_companies=blocked_companies, allow_internship=allow_internship,
+                        blocked_companies=blocked_companies,
                         salary_min=salary_min, salary_max=salary_max,
                     ):
                         fp_new += 1
@@ -1022,8 +1007,8 @@ class Job51Collector:
                 cand = self._item_to_candidate(item, city, area, kw)
                 if cand is None:
                     continue
-                # collector 增值层过滤（官方无：实习 / 相关性 / 薪资）
-                filter_reason = self._collector_filter_reason(cand, kw, allow_internship=allow_internship,
+                # collector 增值层过滤（官方无：相关性 / 薪资）
+                filter_reason = self._collector_filter_reason(cand, kw,
                                                              salary_min=salary_min, salary_max=salary_max)
                 if filter_reason:
                     hooks.on_event(message=filter_reason, increment_filtered=True, filtered_candidate=cand)

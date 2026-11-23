@@ -12,7 +12,7 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
-it('submits the city policy and only enables an eight hour session when explicitly selected', async () => {
+it('submits without a city policy and only enables an eight hour session when explicitly selected', async () => {
   const start = vi.fn(async (_options: Record<string, unknown>) => ({ ok: true }))
   const close = vi.fn()
   render(<CollectJobsDialog open activeTask={null} onClose={close} onStart={start} />)
@@ -24,7 +24,7 @@ it('submits the city policy and only enables an eight hour session when explicit
   await waitFor(() => expect(start).toHaveBeenCalledTimes(1))
   expect(start.mock.calls[0][0]).toMatchObject({
     platform_order: ['boss'], continuous_collection: { enabled: true, max_duration_hours: 8 },
-    platforms: { boss: { cities: ['北京', '上海'], city_yield_policy: { enabled: true, warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5 } } },
+    platforms: { boss: { cities: ['北京', '上海'] } },
   })
   expect(close).toHaveBeenCalled()
 })
