@@ -1,4 +1,4 @@
-"""简历猎手 · 安装 / 卸载口径（v41，1.1.27）。
+"""简历猎手 · 安装 / 卸载口径（v42，1.1.28）。
 
 这一模块是安装程序与卸载程序的**唯一口径来源**：Inno Setup 脚本
 （installer/jianli-lieshou.iss）里的规则必须与这里逐项一致，对应关系
@@ -60,8 +60,8 @@ from pathlib import Path
 
 APP_NAME = "简历猎手"
 APP_EXE_NAME = "简历猎手.exe"
-APP_VERSION = "1.1.27"
-INSTALL_SUBDIR = "jianpinglieshou"
+APP_VERSION = "1.1.28"
+INSTALL_SUBDIR = "简历猎手"
 DESKTOP_SHORTCUT_NAME = "简历猎手.lnk"  # 与 updater._DESKTOP_SHORTCUT_NAME 同名
 # 安装时用户不勾选“创建桌面快捷方式”，安装程序写这个 marker；
 # 与 updater.DESKTOP_SHORTCUT_DECLINED_MARKER_FILENAME 同名。
@@ -134,7 +134,7 @@ _STAR_HINT_PREFIX = ".star_hint_"
 # ─── 路径计算 ────────────────────────────────────────────────────────────
 
 def default_install_dir(installer_dir: str | Path) -> Path:
-	"""默认安装目录 = 安装包所在目录 + jianpinglieshou。
+	"""默认安装目录 = 安装包所在目录 + 简历猎手。
 
 	installer_dir 是安装程序（安装包）所在目录，对应 Inno 的 {src}。
 	"""
@@ -212,8 +212,8 @@ def resolve_target_dir(user_choice: str | Path | None,
 		installer_dir: str | Path) -> Path:
 	"""算出最终安装目录。
 
-	- 用户没选（空/None）→ 默认安装目录（安装包所在目录 + jianpinglieshou）。
-	- 用户选了 → 以用户所选为准，不再强行追加一层 jianpinglieshou；
+	- 用户没选（空/None）→ 默认安装目录（安装包所在目录 + 简历猎手）。
+	- 用户选了 → 以用户所选为准，不再强行追加一层简历猎手；
 	  相对路径按安装包所在目录解释；不安全的路径直接报 ValueError，
 	  安装向导必须拦住、不让继续。
 	"""
@@ -415,7 +415,7 @@ def uninstall_stop_processes_script() -> str:
 	- 杀完探句柄：独占打开 {app}\\简历猎手.exe 与
 	  {app}\\data\\bosshunter.db（[IO.File]::Open ReadWrite + None，
 	  文件不存在算不占用），5 秒内没释放就再 POST 一次 /api/exit
-	  等 30 秒（覆盖优雅退出的最长路径）；
+	  等 60 秒（v42：30 秒不够，见下）；
 	- 还占着时走最后一招：按产品自己的 exe 名（简历猎手.exe，只
 	  有我方产品用这个名字）枚举 PID、按 PID 杀、再等 10 秒、再探
 	  5 秒——只在句柄探针已证明“我方文件被占着”、且优雅退出已试
@@ -424,7 +424,33 @@ def uninstall_stop_processes_script() -> str:
 	  stop-sweep: killed=N failed=N stuck=N probe-ok=True/False，
 	  有残留再加一行 stuck-procs: <PID; …>。
 	正常情况（应用没跑或很快退出）探针第一下就通过，整个扫尾
-	1–2 秒结束；只有真卡住时才走到后面的有界等待，最长约 80 秒。
+	1–2 秒结束；只有真卡住时才走到后面的有界等待，最长约 110 秒。
+
+	v42 为什么又改（v41 上线后真机仍报 data / bosshunter.db 被占用，
+	截图无法区分卸的是 v40（1.1.26）还是 v41（1.1.27），两版都要
+	考虑到；卸载日志用户还没发来，先做静态核查）：
+	- 调用链已核对，没问题：扫尾在 usUninstall 里、删文件之前跑，
+	  powershell 退出码记进卸载日志；/api/exit 是应用内优雅退出，
+	  先回包、后台线程 1.5 秒后才开始清理（web/server.py api_exit）。
+	- 优雅退出最长路径已核实：停任务最多 3 轮 × 5 秒 + 关 runtime /
+	  Chrome 各 10 秒 + 应用自己的安装目录扫尾（subprocess 超时
+	  30 秒），约 66 秒；v41 第二次 POST 后只等 30 秒（第一次
+	  POST 起总共约 35 秒），提权跑的主程序在 WMI 里看不见、只能
+	  靠优雅退出 + 探针时，探针可能比应用退出早到——改成等 60 秒
+	  （第一次 POST 起约 65 秒，最后一招后再探 5 秒，整条链最晚
+	  约 75 秒才下结论），覆盖常见最坏（约 40 秒）并留有余量。
+	- 提权进程的最后一招也可能 Access Denied：普通权限的卸载程序
+	  杀不掉管理员进程（Stop-Process 抛错只记 failed），v41 没记
+	  是哪些 PID 失败、两次 /api/exit 的结果也没记——下次再报占用
+	  时日志里看不出原因。v42 把关键节点都写进卸载日志：脚本开始
+	  （stop-sweep: start）、两次 api-exit 的 ok/failed、最后一招
+	  枚举到的 PID（byname:）、杀失败的 PID（failed-procs:）。
+	  以管理员身份重跑卸载程序这个后手先不做：要不要弹 UAC、提权
+	  后重跑的流程，等用户那份卸载日志来了、确认真是提权问题再定，
+	  不猜。另：XLIV 里“提权启动再卸载同样不再报被占用（WMI 盲区
+	  由最后一招兜住）”说过了头——最后一招只能兜住 Stop-Process
+	  能杀掉的情况，提权进程它杀不掉，真正兜住提权的是 /api/exit
+	  + 探针等待，这里一并纠正。
 	"""
 	lines = [
 		"param([string]$installDir, [string]$profile, [string]$logPath, [int]$excludePid, [string]$exeName)",
@@ -464,29 +490,32 @@ def uninstall_stop_processes_script() -> str:
 		"  }",
 		"  return ((-not (Test-FileLocked $exePath)) -and (-not (Test-FileLocked $dbPath)))",
 		"}",
-		"try { Invoke-WebRequest -Uri 'http://127.0.0.1:8686/api/exit' -Method Post -TimeoutSec 3 | Out-Null } catch { }",
-		"$killed = 0; $failed = 0",
+		"Write-StopLog \"stop-sweep: start\"",
+		"try { Invoke-WebRequest -Uri 'http://127.0.0.1:8686/api/exit' -Method Post -TimeoutSec 3 | Out-Null; Write-StopLog \"api-exit: ok\" } catch { Write-StopLog \"api-exit: failed\" }",
+		"$killed = 0; $failed = 0; $failedIds = @()",
 		"for ($round = 1; $round -le 3; $round++) {",
 		"  $targets = @(Get-TargetPids)",
 		"  if ($targets.Count -eq 0) { break }",
-		"  foreach ($id in $targets) { try { Stop-Process -Id $id -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } }",
+		"  foreach ($id in $targets) { try { Stop-Process -Id $id -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1; $failedIds += $id } }",
 		"  $still = @(Wait-PidsGone $targets 10)",
 		"  if ($still.Count -eq 0) { break }",
 		"}",
 		"$probeOk = Wait-FilesFree 5",
 		"if (-not $probeOk) {",
-		"  try { Invoke-WebRequest -Uri 'http://127.0.0.1:8686/api/exit' -Method Post -TimeoutSec 3 | Out-Null } catch { }",
-		"  $probeOk = Wait-FilesFree 30",
+		"  try { Invoke-WebRequest -Uri 'http://127.0.0.1:8686/api/exit' -Method Post -TimeoutSec 3 | Out-Null; Write-StopLog \"api-exit: ok\" } catch { Write-StopLog \"api-exit: failed\" }",
+		"  $probeOk = Wait-FilesFree 60",
 		"}",
 		"if (-not $probeOk) {",
 		"  $byName = @(Get-CimInstance Win32_Process -Filter \"Name = '$exeName'\" | ForEach-Object { $_.ProcessId })",
 		"  $byName = @($byName | Where-Object { $_ -ne $excludePid })",
-		"  foreach ($id in $byName) { try { Stop-Process -Id $id -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } }",
+		"  if ($byName.Count -gt 0) { Write-StopLog (\"byname: \" + ($byName -join '; ')) }",
+		"  foreach ($id in $byName) { try { Stop-Process -Id $id -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1; $failedIds += $id } }",
 		"  if ($byName.Count -gt 0) { $null = Wait-PidsGone $byName 10; $probeOk = Wait-FilesFree 5 }",
 		"}",
 		"$stuck = @(Get-TargetPids)",
 		"Write-StopLog (\"stop-sweep: killed=$killed failed=$failed stuck=$($stuck.Count) probe-ok=$probeOk\")",
 		"if ($stuck.Count -gt 0) { Write-StopLog (\"stuck-procs: \" + ($stuck -join '; ')) }",
+		"if ($failedIds.Count -gt 0) { Write-StopLog (\"failed-procs: \" + ($failedIds -join '; ')) }",
 		"Write-Output \"killed=$killed failed=$failed stuck=$($stuck.Count) probe-ok=$probeOk\"",
 	]
 	return "\n".join(lines)
@@ -512,7 +541,7 @@ def format_leftover_notice(leftovers: list[str], log_path: str | Path) -> str:
 # ─── Windows 真机界限（Linux CI 测不了的部分） ──────────────────────────
 # 以下行为只在 Windows 真机上发生，本模块与单元测试覆盖不到，
 # 留给 lucky 在无影云电脑上实测（见改动清单 XLIV「未验证」）：
-# - Inno 安装向导：默认路径是不是 {src}\\jianpinglieshou、向导说明
+# - Inno 安装向导：默认路径是不是 {src}\\简历猎手、向导说明
 #   文案是否清晰无乱码、改目录后不再追加子文件夹、注册表卸载项与
 #   开始菜单/桌面快捷方式、装完启动；
 # - 卸载向导：先停进程再删文件、用户数据保留选项默认保留、残留上报；

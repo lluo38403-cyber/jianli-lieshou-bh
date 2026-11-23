@@ -1,4 +1,4 @@
-﻿; 简历猎手 · Inno Setup 6 安装 / 卸载脚本（v41，1.1.27）。
+﻿; 简历猎手 · Inno Setup 6 安装 / 卸载脚本（v42，1.1.28）。
 ;
 ; 口径唯一来源是 src/bosshunter/installer.py：默认路径、卸载清理清单、
 ; 安全谓词、停进程判定都必须与那个模块逐项一致，对应关系由
@@ -6,17 +6,17 @@
 ;
 ; 编译（Windows，CI 里由 build-exe.yml 跑）：
 ;   choco install innosetup -y
-;   iscc /DMyAppVersion=1.1.27 installer\jianli-lieshou.iss
+;   iscc /DMyAppVersion=1.1.28 installer\jianli-lieshou.iss
 ; 不传 /DMyAppVersion 时用下面 #define 的默认值（发版时记得与
 ; pyproject.toml 的 version 保持一致，verify.sh 不校验这一项，
 ; CI 里读 pyproject.toml 传值才是准的）。
-; 产物：dist-installer\简历猎手-安装程序-1.1.27.exe。
+; 产物：dist-installer\简历猎手-安装程序-1.1.28.exe。
 ; 编译前必须先跑 pyinstaller（dist\简历猎手\ 要有内容），[Files]
 ; 直接把 dist 产物原样打进安装包。
 ;
 ; 关键约定：
-; - DefaultDirName={src}\jianpinglieshou：默认装到安装包所在目录下的
-;   jianpinglieshou 子文件夹；用户在向导里改目录后按所选路径安装，
+; - DefaultDirName={src}\简历猎手：默认装到安装包所在目录下的
+;   简历猎手子文件夹；用户在向导里改目录后按所选路径安装，
 ;   不再强行追加一层子文件夹（installer.py resolve_target_dir 同款规则）。
 ; - PrivilegesRequired=lowest：不强制管理员权限，普通权限就能装到
 ;   自己选的目录；卸载注册表项因此写在 HKCU 下
@@ -39,7 +39,7 @@
 ;   InitializeUninstall 的注释），所以改问 SuppressibleMsgBox 对话框。
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.27"
+  #define MyAppVersion "1.1.28"
 #endif
 
 [Setup]
@@ -49,7 +49,7 @@ AppVerName=简历猎手 {#MyAppVersion}
 AppId=简历猎手
 AppPublisher=聚梦Muse AI
 AppPublisherURL=https://www.16688.com.cn/shop/S542647
-DefaultDirName={src}\jianpinglieshou
+DefaultDirName={src}\简历猎手
 DefaultGroupName=简历猎手
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -186,7 +186,7 @@ var
   DirNote: TNewStaticText;
 begin
   { 目录选择页下写用户指定的说明：默认装到安装包所在目录下的
-    jianpinglieshou 文件夹；改成别的目录就按所选路径安装。
+    简历猎手文件夹；改成别的目录就按所选路径安装。
     v41 修裁切（lucky 真机：第二行“路径安装。”上半截被截断）：
     旧版 DirNote 高度写死 36px、AutoSize 关着——说明 60 个字在
     DirEdit 宽度（约 332px）下要折两行，行高随系统 DPI 缩放
@@ -203,7 +203,7 @@ begin
   DirNote.Height := 48;
   DirNote.AutoSize := True;
   DirNote.WordWrap := True;
-  DirNote.Caption := '默认安装到安装包所在目录下的 jianpinglieshou 文件夹；若修改为其他目录，则按所选路径安装';
+  DirNote.Caption := '默认安装到安装包所在目录下的简历猎手文件夹；若修改为其他目录，则按所选路径安装';
 
   { 准备安装页下方放两个快捷方式勾选框（默认都勾选）：ReadyMemo
     几乎占满整页（Top 24 + Height 205，页高 237），下面只剩 8px
@@ -321,9 +321,11 @@ begin
   // 流程：先 POST /api/exit 走应用内优雅退出 → 最多 3 轮按路径证据
   // 杀进程，每轮杀完轮询等 PID 真正消失（最多 10 秒）→ 探句柄：
   // 独占打开 exe 与 bosshunter.db，5 秒没释放就再 POST 一次等
-  // 30 秒 → 还占着就按产品自己的 exe 名枚举 PID 再杀一轮 → 全程
-  // 写进卸载日志（以前扫尾的输出只打到 powershell stdout，Exec
-  // 不收，日志里只剩一个退出码，根本看不出扫尾干了什么）。
+  // 60 秒（v42：30 秒不够，优雅退出最长约 66 秒）→ 还占着就按
+  // 产品自己的 exe 名枚举 PID 再杀一轮 → 全程写进卸载日志（以前
+  // 扫尾的输出只打到 powershell stdout，Exec 不收，日志里只剩一个
+  // 退出码，根本看不出扫尾干了什么；v42 再补上关键节点：脚本开始、
+  // 两次 api-exit 结果、最后一招枚举到的 PID、杀失败的 PID）。
   // 判定红线不变：只认 ExecutablePath 前缀 / 命令行里的安装目录 /
   // 命令行里的浏览器配置目录；绝不按映像名 broad 杀 node / chrome；
   // 按名排除卸载程序两阶段 unins000.exe 与 _unins.tmp；循环 2 还
@@ -369,29 +371,32 @@ begin
     '  }' + #13#10 +
     '  return ((-not (Test-FileLocked $exePath)) -and (-not (Test-FileLocked $dbPath)))' + #13#10 +
     '}' + #13#10 +
-    'try { Invoke-WebRequest -Uri ''http://127.0.0.1:8686/api/exit'' -Method Post -TimeoutSec 3 | Out-Null } catch { }' + #13#10 +
-    '$killed = 0; $failed = 0' + #13#10 +
+    'Write-StopLog "stop-sweep: start"' + #13#10 +
+    'try { Invoke-WebRequest -Uri ''http://127.0.0.1:8686/api/exit'' -Method Post -TimeoutSec 3 | Out-Null; Write-StopLog "api-exit: ok" } catch { Write-StopLog "api-exit: failed" }' + #13#10 +
+    '$killed = 0; $failed = 0; $failedIds = @()' + #13#10 +
     'for ($round = 1; $round -le 3; $round++) {' + #13#10 +
     '  $targets = @(Get-TargetPids)' + #13#10 +
     '  if ($targets.Count -eq 0) { break }' + #13#10 +
-    '  foreach ($id in $targets) { try { Stop-Process -Id $id -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } }' + #13#10 +
+    '  foreach ($id in $targets) { try { Stop-Process -Id $id -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1; $failedIds += $id } }' + #13#10 +
     '  $still = @(Wait-PidsGone $targets 10)' + #13#10 +
     '  if ($still.Count -eq 0) { break }' + #13#10 +
     '}' + #13#10 +
     '$probeOk = Wait-FilesFree 5' + #13#10 +
     'if (-not $probeOk) {' + #13#10 +
-    '  try { Invoke-WebRequest -Uri ''http://127.0.0.1:8686/api/exit'' -Method Post -TimeoutSec 3 | Out-Null } catch { }' + #13#10 +
-    '  $probeOk = Wait-FilesFree 30' + #13#10 +
+    '  try { Invoke-WebRequest -Uri ''http://127.0.0.1:8686/api/exit'' -Method Post -TimeoutSec 3 | Out-Null; Write-StopLog "api-exit: ok" } catch { Write-StopLog "api-exit: failed" }' + #13#10 +
+    '  $probeOk = Wait-FilesFree 60' + #13#10 +
     '}' + #13#10 +
     'if (-not $probeOk) {' + #13#10 +
     '  $byName = @(Get-CimInstance Win32_Process -Filter "Name = ''$exeName''" | ForEach-Object { $_.ProcessId })' + #13#10 +
     '  $byName = @($byName | Where-Object { $_ -ne $excludePid })' + #13#10 +
-    '  foreach ($id in $byName) { try { Stop-Process -Id $id -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1 } }' + #13#10 +
+    '  if ($byName.Count -gt 0) { Write-StopLog ("byname: " + ($byName -join ''; '')) }' + #13#10 +
+    '  foreach ($id in $byName) { try { Stop-Process -Id $id -Force -ErrorAction Stop; $killed += 1 } catch { $failed += 1; $failedIds += $id } }' + #13#10 +
     '  if ($byName.Count -gt 0) { $null = Wait-PidsGone $byName 10; $probeOk = Wait-FilesFree 5 }' + #13#10 +
     '}' + #13#10 +
     '$stuck = @(Get-TargetPids)' + #13#10 +
     'Write-StopLog ("stop-sweep: killed=$killed failed=$failed stuck=$($stuck.Count) probe-ok=$probeOk")' + #13#10 +
     'if ($stuck.Count -gt 0) { Write-StopLog ("stuck-procs: " + ($stuck -join ''; '')) }' + #13#10 +
+    'if ($failedIds.Count -gt 0) { Write-StopLog ("failed-procs: " + ($failedIds -join ''; '')) }' + #13#10 +
     'Write-Output "killed=$killed failed=$failed stuck=$($stuck.Count) probe-ok=$probeOk"';
   ScriptPath := ExpandConstant('{tmp}\jl-stop-processes.ps1');
   if not SaveStringToFile(ScriptPath, Script, False) then

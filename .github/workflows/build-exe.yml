@@ -5,7 +5,7 @@
 # 同一次构建还用 Inno Setup 编译安装程序（installer/jianli-lieshou.iss），
 # 第二个 artifact 叫「简历猎手-安装程序-windows」，里面是
 # 简历猎手-安装程序-<版本号>.exe（默认装到安装包所在目录下的
-# jianpinglieshou 文件夹）。
+# 简历猎手文件夹）。
 # 打完之后自动跑 Windows 冒烟测试（smoke job）：用构建产物本身启动面板验一遍，
 # 再对安装程序跑一遍静默安装 → 核对 → 静默卸载（scripts/ci/smoke-installer.ps1）。
 name: 打 Windows exe

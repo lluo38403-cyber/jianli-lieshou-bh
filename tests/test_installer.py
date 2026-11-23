@@ -1,4 +1,4 @@
-"""简历猎手 v41（1.1.27）· 安装 / 卸载口径测试。
+"""简历猎手 v42（1.1.28）· 安装 / 卸载口径测试。
 
 只测 src/bosshunter/installer.py 里的纯函数：默认路径、用户改目录、
 安全谓词、卸载清理清单、停进程脚本、残留上报。Windows 真机行为
@@ -13,11 +13,11 @@ from bosshunter import installer
 
 
 class DefaultInstallDirTests(unittest.TestCase):
-    def test_default_is_installer_dir_plus_jianpinglieshou(self):
+    def test_default_is_installer_dir_plus_jianli_lieshou(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(
                 installer.default_install_dir(tmp),
-                Path(tmp) / "jianpinglieshou",
+                Path(tmp) / "简历猎手",
             )
 
     def test_default_rejects_empty_installer_dir(self):
@@ -32,11 +32,11 @@ class ResolveTargetDirTests(unittest.TestCase):
             for blank in (None, "", "   "):
                 self.assertEqual(
                     installer.resolve_target_dir(blank, tmp),
-                    Path(tmp) / "jianpinglieshou",
+                    Path(tmp) / "简历猎手",
                 )
 
     def test_user_choice_is_used_as_is_without_forced_subdir(self):
-        # 用户亲手改目录：以所选为准，不再强行追加一层 jianpinglieshou。
+        # 用户亲手改目录：以所选为准，不再强行追加一层 简历猎手。
         with tempfile.TemporaryDirectory() as tmp:
             chosen = Path(tmp) / "my-place"
             self.assertEqual(
@@ -48,7 +48,7 @@ class ResolveTargetDirTests(unittest.TestCase):
 
     def test_user_choice_inside_installer_dir_keeps_no_extra_layer(self):
         with tempfile.TemporaryDirectory() as tmp:
-            chosen = Path(tmp) / "jianpinglieshou"
+            chosen = Path(tmp) / "简历猎手"
             self.assertEqual(
                 installer.resolve_target_dir(str(chosen), tmp), chosen
             )
@@ -98,17 +98,17 @@ class SafetyPredicateTests(unittest.TestCase):
         )
         self.assertIsNone(
             installer.unsafe_reason(
-                str(home / "jianpinglieshou"), home=home, tempdir=tempdir
+                str(home / "简历猎手"), home=home, tempdir=tempdir
             )
         )
 
     def test_accepts_normal_dirs_including_program_files(self):
         for good in (
-            r"C:\Users\lucky\Downloads\jianpinglieshou",
-            r"D:\jianpinglieshou",
-            r"C:\Program Files\jianpinglieshou",
-            "/home/lucky/jianpinglieshou",
-            "/opt/jianpinglieshou",
+            r"C:\Users\lucky\Downloads\简历猎手",
+            r"D:\简历猎手",
+            r"C:\Program Files\简历猎手",
+            "/home/lucky/简历猎手",
+            "/opt/简历猎手",
         ):
             self.assertIsNone(
                 installer.unsafe_reason(good), f"{good!r} 应该被接受"
@@ -133,7 +133,7 @@ class SafetyPredicateTests(unittest.TestCase):
 
 class UninstallCleanupTests(unittest.TestCase):
     def _layout(self, tmp):
-        install = Path(tmp) / "jianpinglieshou"
+        install = Path(tmp) / "简历猎手"
         home = Path(tmp) / "home"
         tempdir = Path(tmp) / "temp"
         for d in (install, home, tempdir):
@@ -284,7 +284,7 @@ class UninstallCleanupTests(unittest.TestCase):
 
     def test_install_dir_removable_when_no_user_data_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
-            install = Path(tmp) / "jianpinglieshou"
+            install = Path(tmp) / "简历猎手"
             home = Path(tmp) / "home"
             tempdir = Path(tmp) / "temp"
             for d in (install, home, tempdir):
@@ -325,14 +325,14 @@ class UninstallCleanupTests(unittest.TestCase):
         # 不运行 exe、没有任何用户数据——卸载后 data/ 空了就删、安装
         # 目录整体可删，不留空目录。
         with tempfile.TemporaryDirectory() as tmp:
-            install = Path(tmp) / "jianpinglieshou"
+            install = Path(tmp) / "简历猎手"
             home = Path(tmp) / "home"
             tempdir = Path(tmp) / "temp"
             for d in (install, home, tempdir):
                 d.mkdir(parents=True)
             (install / "data").mkdir()
             (install / "data" / "desktop_shortcut_created").write_text(
-                "1.1.27", encoding="utf-8"
+                "1.1.28", encoding="utf-8"
             )
             plan = installer.uninstall_cleanup_paths(install, home, tempdir)
             self.assertEqual(
@@ -346,7 +346,7 @@ class UninstallCleanupTests(unittest.TestCase):
 
     def test_temp_scan_never_touches_other_dirs(self):
         with tempfile.TemporaryDirectory() as tmp:
-            install = Path(tmp) / "jianpinglieshou"
+            install = Path(tmp) / "简历猎手"
             home = Path(tmp) / "home"
             tempdir = Path(tmp) / "temp"
             for d in (install, home, tempdir):
@@ -445,7 +445,7 @@ class StopProcessesScriptTests(unittest.TestCase):
         # v41：最多 3 轮，每轮杀完轮询等 PID 真正消失（最多 10 秒，
         # 每 500ms 查一次），不再是 v40 的“杀完睡固定 2 秒就当死了”
         # ——v40 就是在这里漏的：Stop-Process -Force 只发终止请求就
-        # 返回，主 exe 退出慢（/api/exit 优雅清理要 2–35 秒）时扫尾
+        # 返回，主 exe 退出慢（/api/exit 优雅清理最长约 66 秒）时扫尾
         # 已经扫完、删除已经开始，db 句柄还占着。
         script = installer.uninstall_stop_processes_script()
         self.assertIn("for ($round = 1; $round -le 3; $round++)", script)
@@ -460,15 +460,29 @@ class StopProcessesScriptTests(unittest.TestCase):
 
     def test_lock_probe_before_delete(self):
         # v41：杀完先探句柄——独占打开 exe 与 bosshunter.db，5 秒没
-        # 释放就再 POST 一次 /api/exit 等 30 秒；还占着才走最后一招。
+        # 释放就再 POST 一次 /api/exit 等 60 秒（v42：30 秒不够，
+        # 优雅退出最长约 66 秒）；还占着才走最后一招。
         # 探针必须用 ReadWrite：只读打开对运行中的 exe 也成功，
         # 探不出锁（v32 教训）。
         script = installer.uninstall_stop_processes_script()
         self.assertIn("Test-FileLocked", script)
         self.assertIn("'ReadWrite'", script)
         self.assertIn("Wait-FilesFree 5", script)
-        self.assertIn("Wait-FilesFree 30", script)
+        self.assertIn("Wait-FilesFree 60", script)
         self.assertIn("probe-ok=", script)
+
+    def test_sweep_logs_key_nodes(self):
+        # v42：扫尾每一步的结果都要写进卸载日志——脚本开始、两次
+        # /api/exit 的结果、最后一招枚举到的 PID、杀失败的 PID。
+        # 下次再报“文件被占用”时，日志里能分清“脚本没跑”“优雅退出
+        # 没回”“提权杀不动”三种情况，而不是只剩一个退出码。
+        script = installer.uninstall_stop_processes_script()
+        self.assertIn("stop-sweep: start", script)
+        self.assertIn("api-exit: ok", script)
+        self.assertIn("api-exit: failed", script)
+        self.assertIn("byname:", script)
+        self.assertIn("failed-procs:", script)
+        self.assertIn("$failedIds = @()", script)
 
     def test_last_resort_kills_by_pid_after_name_enumeration(self):
         # v41 最后一招：句柄探针已证明我方文件被占着、优雅退出已试过
@@ -518,7 +532,7 @@ class LeftoverNoticeTests(unittest.TestCase):
 
     def test_leftovers_are_listed_honestly(self):
         notice = installer.format_leftover_notice(
-            ["C:\\app\\jianpinglieshou\\简历猎手.exe"],
+            ["C:\\app\\简历猎手\\简历猎手.exe"],
             "C:\\Users\\x\\AppData\\Local\\Temp\\uninstall.log",
         )
         self.assertIn("简历猎手.exe", notice)

@@ -240,7 +240,7 @@ def main() -> int:
         f"默认安装目录是 {{src}}\\{installer.INSTALL_SUBDIR}",
     )
     check(
-        f"默认安装到安装包所在目录下的 {installer.INSTALL_SUBDIR} 文件夹；"
+        f"默认安装到安装包所在目录下的{installer.INSTALL_SUBDIR}文件夹；"
         "若修改为其他目录，则按所选路径安装" in iss,
         "向导说明文案是用户指定的句子（默认安装到安装包所在目录下…）",
     )
@@ -465,8 +465,16 @@ def main() -> int:
           "停进程最多 3 轮，每轮杀完轮询等 PID 真正消失（Wait-PidsGone 10 秒）")
     check("Test-FileLocked" in code and "Wait-FilesFree" in code
           and "'ReadWrite'" in code and "Wait-FilesFree 5" in code
-          and "Wait-FilesFree 30" in code,
-          "停进程等句柄释放：独占打开 exe 与 db 探针（ReadWrite），5 秒不行再等 30 秒")
+          and "Wait-FilesFree 60" in code,
+          "停进程等句柄释放：独占打开 exe 与 db 探针（ReadWrite），5 秒不行再等 60 秒")
+    check("stop-sweep: start" in code,
+          "扫尾开始记一行（脚本没跑与跑了没扫到可区分）")
+    check("api-exit: ok" in code and "api-exit: failed" in code,
+          "两次 /api/exit POST 的结果都记进卸载日志")
+    check("byname:" in code,
+          "最后一招枚举到的 PID 记进卸载日志")
+    check("failed-procs:" in code,
+          "杀失败的 PID 记进卸载日志（提权 Access Denied 可见）")
     check("Win32_Process -Filter " in code and "Name = " in code
           and "Stop-Process -Id $id" in code,
           "最后一招按产品自己的 exe 名枚举 PID 再杀（按 PID 杀，不 broad 杀映像名）")

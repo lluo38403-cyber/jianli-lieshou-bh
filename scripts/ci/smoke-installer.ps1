@@ -27,7 +27,7 @@ function Normalize-Path([string]$Path) { return $Path.TrimEnd('\') }
 
 $tempDir = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
 $workDir = if ($WorkDir) { $WorkDir } else { Join-Path $tempDir 'smoke-installer' }
-$installDir = Join-Path $workDir 'jianpinglieshou'
+$installDir = Join-Path $workDir '简历猎手'
 $exe = Join-Path $installDir '简历猎手.exe'
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\简历猎手_is1'
 $desktopLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) '简历猎手.lnk'
