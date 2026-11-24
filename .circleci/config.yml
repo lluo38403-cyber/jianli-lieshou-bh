@@ -45,9 +45,8 @@
 #   段时报错退出码 2；修法是“安装 Inno Setup”后加一步补文件：先查，
 #   没有就从官方仓库 jrsoftware/issrc 取官方语言文件并校验，下载失败
 #   才改用官方安装包（GitHub Releases 的 innosetup-6.7.4.exe）重装。
-#   注意 GitHub 那边 build-exe.yml 用的也是 choco 装 Inno（同款包），
-#   Actions 额度恢复后同样会缺这个文件——但不改 GH workflow 文件，
-#   只记在这里，等 Actions 恢复时再处理。
+#   注意 GitHub 那边 build-exe.yml 已补上同样的步骤（2026-11-24 仓库改公开
+#   时同步加的），Actions 那边不会再缺这个文件。
 #
 # 额度估算：windows.medium 40 credits/分钟；build 约 5–10 分钟、
 #   smoke 约 5–10 分钟，一次全流程约 400–800 credits；
