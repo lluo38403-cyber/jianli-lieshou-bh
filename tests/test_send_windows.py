@@ -245,5 +245,110 @@ class BatchRestTests(unittest.TestCase):
             self.assertEqual(sleeps, [])
 
 
+class RoundRestTests(unittest.TestCase):
+    """投递轮休（v48）：每投完一轮（默认 20 个）歇一次，时长在配置范围内随机。
+
+    轮休叠加在 v47 批次休息之上：轮休先判，歇完批计数清零、下一批重抽，
+    不再叠加一次批次休息；未满一轮不歇；最后一轮后面没岗位了也不歇。
+    """
+
+    def _ready_db(self, tmp, count):
+        db_path = Path(tmp) / "jobs.db"
+        db = get_db(db_path)
+        for number in range(count):
+            job_id = str(number)
+            insert_job(db, {"id": job_id, "title": "Test", "company": "Test", "url": "https://www.zhipin.com/test"})
+            update_job_status(db, job_id, "ready")
+            update_job_greeting(db, job_id, "Test greeting")
+        db.close()
+        return db_path
+
+    def _run(self, db_path, config, sleeps):
+        with patch.object(sender.RequestThrottle, "wait", return_value=False), \
+                patch.object(sender, "_send_greeting_once", return_value=({"success": True}, None)), \
+                patch.object(sender, "sample_batch_size", return_value=3), \
+                patch.object(sender, "_sleep_or_stop", side_effect=lambda seconds, _e: sleeps.append(seconds) or False):
+            return sender.send_greetings(config, db_path=db_path)
+
+    def test_full_round_rests_once_per_round(self):
+        """25 个岗位、一轮 5 个、阶段休息关了：只歇 4 次（5/10/15/20 个时），每次 5–10 分钟。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = self._ready_db(tmp, 25)
+            logs: list[str] = []
+            sleeps: list[float] = []
+            config = {
+                "throttle": {
+                    "risk_tier": "standard", "stage_rest": False,
+                    "delivery_round_size": 5,
+                    "delivery_round_rest_min_minutes": 5,
+                    "delivery_round_rest_max_minutes": 10,
+                },
+                "_workbench_log": logs.append,
+            }
+            self.assertEqual(self._run(db_path, config, sleeps), 25)
+            self.assertEqual(len(sleeps), 4)
+            for rest_s in sleeps:
+                self.assertGreaterEqual(rest_s, 300.0)
+                self.assertLessEqual(rest_s, 600.0)
+            self.assertEqual(sum("这轮投了 5 个" in message for message in logs), 4)
+
+    def test_incomplete_round_does_not_rest(self):
+        """4 个岗位、一轮 5 个：没满一轮，一次也不歇。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = self._ready_db(tmp, 4)
+            sleeps: list[float] = []
+            config = {
+                "throttle": {
+                    "risk_tier": "standard", "stage_rest": False,
+                    "delivery_round_size": 5,
+                    "delivery_round_rest_min_minutes": 5,
+                    "delivery_round_rest_max_minutes": 10,
+                },
+            }
+            self.assertEqual(self._run(db_path, config, sleeps), 4)
+            self.assertEqual(sleeps, [])
+
+    def test_round_rest_duration_is_within_configured_range(self):
+        """歇的时长落在配置范围：最少=最多=7 分钟时，每次正好 420 秒。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = self._ready_db(tmp, 12)
+            sleeps: list[float] = []
+            config = {
+                "throttle": {
+                    "risk_tier": "standard", "stage_rest": False,
+                    "delivery_round_size": 5,
+                    "delivery_round_rest_min_minutes": 7,
+                    "delivery_round_rest_max_minutes": 7,
+                },
+            }
+            self.assertEqual(self._run(db_path, config, sleeps), 12)
+            self.assertEqual(sleeps, [420.0, 420.0])
+
+    def test_round_rest_does_not_stack_with_batch_rest(self):
+        """10 个岗位、一轮 5 个、每批 3 个：轮休处只歇轮休那一次，不叠加批次休息。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = self._ready_db(tmp, 10)
+            logs: list[str] = []
+            sleeps: list[float] = []
+            config = {
+                "throttle": {
+                    "risk_tier": "standard", "stage_rest": True,
+                    "delivery_round_size": 5,
+                    "delivery_round_rest_min_minutes": 5,
+                    "delivery_round_rest_max_minutes": 10,
+                },
+                "_workbench_log": logs.append,
+            }
+            self.assertEqual(self._run(db_path, config, sleeps), 10)
+            # 3 个时批次休息、5 个时轮休、8 个时批次休息；第 10 个是最后
+            # 一个，后面没岗位了，不再歇。
+            self.assertEqual(len(sleeps), 3)
+            round_rests = [rest for rest in sleeps if 300.0 <= rest <= 600.0]
+            batch_rests = [rest for rest in sleeps if 60.0 <= rest <= 180.0]
+            self.assertEqual(len(round_rests), 1)
+            self.assertEqual(len(batch_rests), 2)
+            self.assertTrue(any("这轮投了 5 个" in message for message in logs))
+
+
 if __name__ == "__main__":
     unittest.main()

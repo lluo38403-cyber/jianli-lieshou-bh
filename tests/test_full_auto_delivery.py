@@ -1,6 +1,6 @@
 """全自动投递回归测试：无浏览器（浏览器调用全部 stub）、无真实外发。
 
-覆盖：无 AI Key 时规则评分兜底、四平台分发、静默模式、自动确认、
+覆盖：无 AI Key 时规则评分兜底、四平台分发、自动确认、
 每日 120 上限、匹配度阈值 60、预检不强制 AI。
 """
 
@@ -178,11 +178,12 @@ class DispatchTests(unittest.TestCase):
         greet.assert_called_once_with(job, "您好", {})
         deliver.assert_not_called()
 
-    def test_boss_silent_mode_sends_no_custom_greeting(self):
+    def test_boss_greeting_passes_through_unchanged(self):
+        # v48：安静投递已删——BOSS 分发不再把招呼语清空，原样发出去。
         job = dict(BASE_JOB, source_platform="boss")
         with patch.object(sender, "_send_greeting_once", return_value=({"success": True}, None)) as greet:
-            sender._dispatch_send(job, "您好，我是求职者", {"silent_mode": True})
-        greet.assert_called_once_with(job, "", {"silent_mode": True})
+            sender._dispatch_send(job, "您好，我是求职者", {})
+        greet.assert_called_once_with(job, "您好，我是求职者", {})
 
     def test_other_platforms_go_to_detail_page_delivery(self):
         for platform in ("zhilian", "51job", "liepin"):

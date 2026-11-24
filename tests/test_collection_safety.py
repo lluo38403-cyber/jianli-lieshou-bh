@@ -27,8 +27,10 @@ class CollectionSafetyTests(unittest.TestCase):
         self.assertEqual(collection["daily_search_page_limit"], 60)
         self.assertEqual(collection["daily_detail_page_limit"], 900)
         self.assertEqual(DEFAULTS["safety"]["daily_platform_page_limit"], 1100)
-        self.assertEqual(collection["risk_pause_min_minutes"], 5)
-        self.assertEqual(collection["risk_pause_max_minutes"], 10)
+        # v48：出问题先歇几分钟与连续失败停轮次数都不再是设置项。
+        self.assertNotIn("risk_pause_min_minutes", collection)
+        self.assertNotIn("risk_pause_max_minutes", collection)
+        self.assertNotIn("max_consecutive_page_failures", collection)
         self.assertEqual(collection["collection_delay_multiplier"], 1.5)
         self.assertNotIn("max_new_jobs_per_cycle", collection)
         self.assertNotIn("max_search_pages_per_cycle", collection)
@@ -158,6 +160,8 @@ platforms:
             db.close()
 
     def test_collection_risk_stops_and_records_safe_reason(self):
+        # v48：风险只记事件、本轮停，不再锁几分钟（“出问题先歇几分钟”已删）；
+        # 熔断器（连续失败停到当天结束）是另一套机制，不动。
         db = get_db(Path(":memory:"))
         progress = MagicMock()
         progress.add_task.return_value = "task"
@@ -181,11 +185,7 @@ platforms:
 
         self.assertEqual(count, 0)
         self.assertEqual(config["_workbench_collect_report"]["stop_reason"], "captcha")
-        guard_cls.return_value.lock.assert_called_once()
-        lock_call = guard_cls.return_value.lock.call_args
-        self.assertEqual(lock_call.args, ("captcha",))
-        self.assertGreaterEqual(lock_call.kwargs["minutes"], 5)
-        self.assertLessEqual(lock_call.kwargs["minutes"], 10)
+        guard_cls.return_value.lock.assert_not_called()
 
     def test_transient_collection_risk_is_ignored_without_locking(self):
         db = get_db(Path(":memory:"))
@@ -235,7 +235,6 @@ platforms:
         config = {
             "profile": {"target_cities": ["北京"]},
             "search": {"max_pages": 3},
-            "collection": {"max_consecutive_page_failures": 3},
         }
 
         with patch("bosshunter.scraper.jobs.get_db", return_value=db), \

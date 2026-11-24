@@ -642,14 +642,6 @@ class BossEdgeCaseTests(TestCase):
         self.assertFalse(result)
         self.assertEqual(slept, [0.5])
 
-    def test_positive_int_invalid_returns_default(self):
-        from bosshunter.collection.platforms.boss import _positive_int
-        self.assertEqual(_positive_int("abc", 60), 60)
-        self.assertEqual(_positive_int(None, 150), 150)
-        self.assertEqual(_positive_int(0, 60), 1)
-        self.assertEqual(_positive_int(-5, 60), 1)
-        self.assertEqual(_positive_int(10, 60), 10)
-
     def test_bounded_float_invalid_returns_default(self):
         from bosshunter.collection.platforms.boss import _bounded_float
         self.assertEqual(_bounded_float("abc", 1.5, 1.0, 5.0), 1.5)
@@ -684,9 +676,10 @@ class BossEdgeCaseTests(TestCase):
             browser=self._make_failing_browser(),
             throttle_factory=lambda **_kw: MagicMock(),
             randint=lambda _a, _b: 5,
-            config={"collection": {"max_consecutive_page_failures": 1}},
+            # v48：停轮次数不再是设置项、固定 3 次；3 页都打不开才停。
+            config={"collection": {}},
         ).collect(
-            PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=1),
+            PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=3),
             hooks,
         )
         self.assertEqual(result.status, "completed_with_shortage")
@@ -723,9 +716,10 @@ class BossEdgeCaseTests(TestCase):
             browser=browser,
             throttle_factory=lambda **_kw: MagicMock(),
             randint=lambda _a, _b: 5,
-            config={"collection": {"max_consecutive_page_failures": 2}},
+            # v48：停轮次数固定 3 次；3 页解析都失败才停（原来是配置 2 次）。
+            config={"collection": {}},
         ).collect(
-            PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=2),
+            PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=3),
             hooks,
         )
         self.assertEqual(result.status, "completed_with_shortage")

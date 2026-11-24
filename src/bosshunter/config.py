@@ -182,9 +182,6 @@ DEFAULTS: dict[str, Any] = {
         "auto_score_default": False,
         "daily_search_page_limit": 60,
         "daily_detail_page_limit": 900,
-        "max_consecutive_page_failures": 3,
-        "risk_pause_min_minutes": 5,
-        "risk_pause_max_minutes": 10,
         "collection_delay_multiplier": 1.5,
         "delivery_cooldown_min_minutes": 5,
         "delivery_cooldown_max_minutes": 15,
@@ -234,7 +231,8 @@ DEFAULTS: dict[str, Any] = {
     },
     "scoring": {
         "threshold": 60,
-        "max_candidates": 20,
+        # 符合评分标准的直接投递（v48）：打分完成后直接投递分数 >= 阈值的岗位。
+        "auto_deliver_ready": False,
     },
     "throttle": {
         "daily_limit": 120,
@@ -268,7 +266,11 @@ DEFAULTS: dict[str, Any] = {
         "captcha_wait_timeout_minutes": 120,
         # 熔断：一个平台连续失败这么多次，当天挂起。
         "breaker_max_consecutive_failures": 3,
-        "silent_mode": False,
+        # 投递轮休（v48）：每投完一轮（delivery_round_size 个）就歇一次，
+        # 时长在 delivery_round_rest_min/max_minutes 之间随机。
+        "delivery_round_size": 20,
+        "delivery_round_rest_min_minutes": 5,
+        "delivery_round_rest_max_minutes": 10,
     },
     "ai": {
         "provider": "anthropic",
@@ -493,18 +495,17 @@ def save_config(config: dict[str, Any], config_path: Path | None = None) -> None
 _CONFIG_NUMBER_RULES: tuple[tuple[str, str, float, float, bool], ...] = (
     ("search.max_pages", "最多翻几页", 1, 10, True),
     ("platforms.*.search.max_pages", "最多翻几页", 1, 10, True),
-    ("scoring.max_candidates", "一次最多看多少个", 1, 100, True),
     ("scoring.threshold", "多少分以上才投", 0, 100, True),
     ("collection.daily_search_page_limit", "每天最多翻多少页", 1, 200, True),
     ("collection.daily_detail_page_limit", "每天最多打开多少个岗位", 1, 1000, True),
-    ("collection.max_consecutive_page_failures", "BOSS 页面连续打不开几次就停", 1, 10, True),
     ("collection.collection_delay_multiplier", "动作快慢", 1, 5, False),
-    ("collection.risk_pause_min_minutes", "出问题先歇几分钟（最少）", 1, 60, True),
-    ("collection.risk_pause_max_minutes", "出问题先歇几分钟（最多）", 1, 60, True),
     ("collection.delivery_cooldown_min_minutes", "找完先歇几分钟再投（最少）", 0, 240, True),
     ("collection.delivery_cooldown_max_minutes", "找完先歇几分钟再投（最多）", 0, 240, True),
     ("safety.daily_platform_page_limit", "每天最多打开多少个页面", 1, 2000, True),
     ("throttle.daily_cap", "每日投递上限", 1, 500, True),
+    ("throttle.delivery_round_size", "一轮投递几个岗位", 1, 100, True),
+    ("throttle.delivery_round_rest_min_minutes", "投完一轮之后休息几分钟（最少）", 1, 60, True),
+    ("throttle.delivery_round_rest_max_minutes", "投完一轮之后休息几分钟（最多）", 1, 60, True),
     ("monitor.interval", "隔几分钟看一次", 1, 120, True),
     ("monitor.initial_cooldown_minutes", "投完先歇几分钟再看回复", 0, 120, True),
     ("monitor.max_conversations_per_cycle", "一次最多处理几段对话", 1, 20, True),
@@ -519,8 +520,8 @@ _CONFIG_NUMBER_RULES: tuple[tuple[str, str, float, float, bool], ...] = (
 # 薪资 max=0 表示不限：与 api_config_post 既有口径一致，max>0 时才比大小。
 _CONFIG_NUMBER_RANGE_PAIRS: tuple[tuple[str, str, str, bool], ...] = (
     ("profile.salary_min", "profile.salary_max", "我想要的工资", True),
-    ("collection.risk_pause_min_minutes", "collection.risk_pause_max_minutes", "出问题先歇几分钟", False),
     ("collection.delivery_cooldown_min_minutes", "collection.delivery_cooldown_max_minutes", "找完先歇几分钟再投", False),
+    ("throttle.delivery_round_rest_min_minutes", "throttle.delivery_round_rest_max_minutes", "投完一轮之后休息几分钟", False),
 )
 
 

@@ -2,13 +2,14 @@ import { Link } from 'react-router-dom'
 import { OutsourcingBadge } from '@/components/jobs/OutsourcingBadge'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboard, type CollectionProgress, type DeliveryJob, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
+import { useConfig } from '@/hooks/useConfig'
 import { useUpdateContext } from '@/hooks/useUpdate'
 import { UpdateBanner } from '@/components/dashboard/UpdateBanner'
 import { UpdateModal } from '@/components/dashboard/UpdateModal'
 import { CHECK_UPDATE_EVENT } from '@/lib/updateEvents'
 import { useAuth } from '@/hooks/useAuth'
 import { AuthStatusBar } from '@/components/dashboard/AuthStatusBar'
-import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
+import { useJobSearch, buildJobSearchParams, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
 import { Button } from '@/components/ui/button'
 import { ModalPortal } from '@/components/ui/modal-portal'
 import { START_ONBOARDING_EVENT } from '@/components/onboarding/OnboardingTour'
@@ -2299,6 +2300,10 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const [filters, setFilters] = useState<JobFilters>({ ...EMPTY_JOB_FILTERS })
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [notice, setNotice] = useState('')
+  // “选中全部岗位”那次拿到的全量 ID：只用来判断是不是还处在全选态
+  // （全选后单改一两个勾选，全选态就没了，按钮变回“选中全部岗位”）。
+  const [selectAllIds, setSelectAllIds] = useState<string[] | null>(null)
+  const [selectingAll, setSelectingAll] = useState(false)
   const [blockedCompanies, setBlockedCompanies] = useState<string[]>([])
   const [blockingJobId, setBlockingJobId] = useState<string | null>(null)
   const blockingCompanyRef = useRef(false)
@@ -2313,6 +2318,9 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const [permanentDeleteIds, setPermanentDeleteIds] = useState<string[]>([])
   const [permanentDeleteAcknowledged, setPermanentDeleteAcknowledged] = useState(false)
   const { items, total, allTotal, cityOptions, loading, error, lastRefreshedAt: jobsRefreshedAt, refresh: refreshJobs } = useJobSearch(filters, page, pageSize, sortBy, sortOrder)
+  const { config } = useConfig()
+  // 分数发光的门槛就是“多少分以上才投”：配置里改了阈值，发光跟着变。
+  const scoreThreshold = typeof config?.scoring?.threshold === 'number' ? config.scoring.threshold : 60
   const { workbench: deliveryWorkbench, error: progressError, refresh: refreshWorkbench } = useDashboard('workbench')
   const deliveryTask = deliveryWorkbench.task?.mode === 'deliver'
     ? deliveryWorkbench.task
@@ -2335,6 +2343,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
     const handleConfigSaved = () => {
       loadBlockedCompanies()
       setSelectedIds([])
+      setSelectAllIds(null)
       setPage(0)
       refreshJobs()
     }
@@ -2347,6 +2356,8 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
 
   useEffect(() => {
     setPage(0)
+    // 筛选变了，之前那批全选 ID 就不再是“全部岗位”，全选态清掉。
+    setSelectAllIds(null)
   }, [filters.query, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.city, filters.education, filters.recruitmentType])
 
   const toggleSelected = (jobId: string) => {
@@ -2354,10 +2365,11 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   }
 
   const allPageSelected = items.length > 0 && items.every(job => selectedIds.includes(job.id))
-  const somePageSelected = items.length > 0 && items.some(job => selectedIds.includes(job.id))
 
-  // “这页全选” / “这页都不选”：一对互补按钮，只动当前页、当前筛选下显示的岗位；
-  // 和“取消选择”（清掉全部勾选）不是一回事，各管各的。
+  // v48：工具栏回到两个切换按钮——①“这页全选 / 这页都不选”是当前页
+  // 单按钮切换；②“选中全部岗位 / 取消选中全部岗位”是跨页全选（当前筛
+  // 选条件下的全部岗位）。本页切换只动本页的勾选，不碰全选态的记录；
+  // 全选态只认“上次全选那批 ID 是不是都还勾着”，单改一两个就掉出全选态。
   const selectCurrentPage = () => {
     const pageIds = items.map(job => job.id)
     setSelectedIds(previous => [...new Set([...previous, ...pageIds])])
@@ -2366,6 +2378,41 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const deselectCurrentPage = () => {
     const pageIds = new Set(items.map(job => job.id))
     setSelectedIds(previous => previous.filter(id => !pageIds.has(id)))
+  }
+
+  const toggleCurrentPage = () => {
+    if (allPageSelected) {
+      deselectCurrentPage()
+    } else {
+      selectCurrentPage()
+    }
+  }
+
+  const allSelected = selectAllIds !== null
+    && selectAllIds.length > 0
+    && selectAllIds.every(id => selectedIds.includes(id))
+
+  const selectAllJobs = async () => {
+    setSelectingAll(true)
+    try {
+      const params = buildJobSearchParams(filters, sortBy, sortOrder)
+      const res = await fetch(`/api/jobs/search/ids?${params.toString()}`, { cache: 'no-store' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || '全部岗位没拿到，请再点一次试试。')
+      const ids = (Array.isArray(data.ids) ? data.ids : []).map(String)
+      setSelectAllIds(ids)
+      setSelectedIds(ids)
+      setNotice(`已选 ${ids.length} 个岗位。`)
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : '全部岗位没拿到，请再点一次试试。')
+    } finally {
+      setSelectingAll(false)
+    }
+  }
+
+  const cancelSelectAll = () => {
+    setSelectAllIds(null)
+    setSelectedIds([])
   }
 
   const changeSort = (nextSortBy: JobSortKey) => {
@@ -2748,11 +2795,11 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
           .map(([value, label]) => ({ value, label }))}
       />
       <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
-        <Button variant="secondary" size="sm" disabled={!items.length || allPageSelected} onClick={selectCurrentPage}>
-          这页全选
+        <Button variant="secondary" size="sm" disabled={!items.length} onClick={toggleCurrentPage}>
+          {allPageSelected ? '这页都不选' : '这页全选'}
         </Button>
-        <Button variant="secondary" size="sm" disabled={!items.length || !somePageSelected} onClick={deselectCurrentPage}>
-          这页都不选
+        <Button variant="secondary" size="sm" disabled={!total || selectingAll} onClick={() => { allSelected ? cancelSelectAll() : void selectAllJobs() }}>
+          {selectingAll ? '正在选…' : allSelected ? '取消选中全部岗位' : '选中全部岗位'}
         </Button>
         <span className="rounded-full bg-secondary px-3 py-2 font-bold text-primary">已选 {selectedIds.length} 个</span>
         {selectedIds.length > 0 && <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>取消选择</Button>}
@@ -2814,6 +2861,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         sortBy={sortBy}
         sortOrder={sortOrder}
         onSortChange={changeSort}
+        threshold={scoreThreshold}
       />
       <ScoreJobsDialog
         open={showScoreDialog}

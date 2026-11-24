@@ -27,6 +27,8 @@ interface JobsTableProps {
   sortBy: JobSortKey
   sortOrder: JobSortOrder
   onSortChange: (sortBy: JobSortKey) => void
+  /** 打分发光的门槛：分数达到阈值就是“等着投”，要发光；默认 60。 */
+  threshold?: number
 }
 
 function safeJobUrl(job: Job): string | null {
@@ -85,7 +87,7 @@ function recruitmentShort(recruitmentType: string | undefined): string | null {
   return null
 }
 
-export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedIds, onToggleSelected, onSoftDelete, onMarkManuallySent, onStatusChange, onBlockCompany, blockedCompanies = [], blockingJobId = null, loading = false, sortBy, sortOrder, onSortChange }: JobsTableProps) {
+export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedIds, onToggleSelected, onSoftDelete, onMarkManuallySent, onStatusChange, onBlockCompany, blockedCompanies = [], blockingJobId = null, loading = false, sortBy, sortOrder, onSortChange, threshold = 60 }: JobsTableProps) {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [pageInput, setPageInput] = useState(String(page + 1))
   const totalPages = Math.ceil(total / pageSize)
@@ -104,9 +106,10 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
     onPageChange(Math.min(totalPages - 1, Math.max(0, requested - 1)))
   }
 
+  // 分数发光只看有没有达到阈值：达到就是“等着投”，55 分阈值 55 也发光；
+  // 80 分以上再亮一档（绿）。没达到阈值就是灰字。
   const getScoreColor = (score: number) => {
-    if (score >= 80) return 'text-success'
-    if (score >= 60) return 'text-primary'
+    if (score >= threshold) return score >= 80 ? 'text-success' : 'text-primary'
     return 'text-muted'
   }
 

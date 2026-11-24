@@ -523,5 +523,44 @@ class MonitorReplyDismissTests(unittest.TestCase):
         self.assertEqual(payload["ai_reply"], "")
 
 
+class MatchConversationToJobTests(unittest.TestCase):
+    def test_company_only_fallback_when_hr_name_differs_by_one_character(self):
+        # v48 图4 回归：林歌户外用品的 HR 回了消息，但库里存的 HR 名和
+        # BOSS 聊天列表里的名字差一个字，前面三轮匹配都对不上，回复漏报。
+        from bosshunter.executor.monitor import _match_conversation_to_job
+
+        jobs = [
+            {"id": "job-linge", "hr_name": "林歌招聘", "company": "潮州市林歌户外用品", "status": "sent"},
+            {"id": "job-other", "hr_name": "张经理", "company": "另一家公司", "status": "sent"},
+        ]
+        conv = {"hr_name": "林歌招", "company": "潮州市林歌户外用品"}
+        matched = _match_conversation_to_job(conv, jobs)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["id"], "job-linge")
+
+    def test_company_only_fallback_refuses_when_company_has_multiple_jobs(self):
+        # 同一家公司多个已投岗位时宁可漏报也不错认。
+        from bosshunter.executor.monitor import _match_conversation_to_job
+
+        jobs = [
+            {"id": "job-a", "hr_name": "王经理", "company": "潮州市林歌户外用品", "status": "sent"},
+            {"id": "job-b", "hr_name": "李经理", "company": "潮州市林歌户外用品", "status": "sent"},
+        ]
+        conv = {"hr_name": "不认识的人", "company": "潮州市林歌户外用品"}
+        self.assertIsNone(_match_conversation_to_job(conv, jobs))
+
+    def test_exact_match_still_wins(self):
+        from bosshunter.executor.monitor import _match_conversation_to_job
+
+        jobs = [
+            {"id": "job-a", "hr_name": "王经理", "company": "甲公司", "status": "sent"},
+            {"id": "job-b", "hr_name": "李经理", "company": "甲公司", "status": "sent"},
+        ]
+        conv = {"hr_name": "李经理", "company": "甲公司"}
+        matched = _match_conversation_to_job(conv, jobs)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["id"], "job-b")
+
+
 if __name__ == "__main__":
     unittest.main()

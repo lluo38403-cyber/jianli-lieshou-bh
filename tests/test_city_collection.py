@@ -62,7 +62,9 @@ class CityCollectionTests(TestCase):
             hooks = CollectorHooks(None, lambda _: True, lambda _: True, lambda _: None, lambda **_: None)
             result = collector(browser, conn).collect(PlatformCollectionRequest("boss", ["A"], ["北京", "上海"], {}, max_pages=2), hooks)
             self.assertEqual(result.reason_code, "captcha")
-            self.assertEqual(get_active_platform_safety_lock(conn)["reason"], "captcha")
+            # v48：“出问题先歇几分钟”已删——风险只记事件、本轮停，不再写
+            # 平台安全锁；下一座城市也不再开始（停轮本身还在）。
+            self.assertIsNone(get_active_platform_safety_lock(conn))
             self.assertFalse(any("101020100" in url for url in browser.opens))
 
     def test_job_and_city_ledger_roll_back_together(self):

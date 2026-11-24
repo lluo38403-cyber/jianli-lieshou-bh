@@ -994,15 +994,6 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
             if chat_ready.get("error") == "stopped":
                 return chat_ready, None
 
-    if not greeting and throttle_config.get("silent_mode") and chat_ready.get("success"):
-        # 静默模式：不发自定义招呼语，仅打开沟通会话建立联系。
-        close_tab(target_id)
-        return {
-            "success": True,
-            "silent_contact": True,
-            "history_detail": "静默模式：已打开沟通会话，未发送自定义招呼语",
-        }, None
-
     if not chat_ready.get("success"):
         if contact_action == "first_contact_submitted":
             if _verify_greeting_in_chat_list(job, greeting, stop_event):
@@ -1218,13 +1209,10 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
 def _dispatch_send(job: dict, greeting: str, throttle_config: dict) -> tuple[dict, str | None]:
     """按平台分发投递。
 
-    BOSS 直聘走聊天招呼语流（静默模式时不发自定义招呼语，仅打开沟通会话）；
-    智联 / 前程无忧 / 猎聘走详情页投递（不需要招呼语）。
+    BOSS 直聘走聊天招呼语流；智联 / 前程无忧 / 猎聘走详情页投递（不需要招呼语）。
     """
     platform = str(job.get("source_platform") or "boss").strip() or "boss"
     if platform == "boss":
-        if throttle_config.get("silent_mode"):
-            greeting = ""
         return _send_greeting_once(job, greeting, throttle_config)
     return deliver_job(job, throttle_config)
 
@@ -1365,6 +1353,21 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
     # 停顿、60–180 秒投递间隔、错峰等）都保留，批次休息是额外暂停。
     batch_target = sample_batch_size()
     batch_sent = 0
+    # v48 轮休：一轮投几个、歇多久（分钟），默认 20 个、歇 5–10 分钟；
+    # 歇的时长在配置范围内随机。轮休叠加在批次节奏之上，不替代它。
+    try:
+        round_size = max(int(throttle_config.get("delivery_round_size", 20)), 1)
+    except (TypeError, ValueError):
+        round_size = 20
+    try:
+        round_rest_min = max(int(throttle_config.get("delivery_round_rest_min_minutes", 5)), 1)
+    except (TypeError, ValueError):
+        round_rest_min = 5
+    try:
+        round_rest_max = max(int(throttle_config.get("delivery_round_rest_max_minutes", 10)), round_rest_min)
+    except (TypeError, ValueError):
+        round_rest_max = 10
+    round_sent = 0
     workbench_log = config.get("_workbench_log")
 
     # 错峰：投递队列按平台分组（采集顺序），组与组之间插一段随机停顿，
@@ -1458,7 +1461,7 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     console.print(f"[yellow]    ! {platform_display_name(platform)}今日已挂起（连续失败触发熔断），跳过[/yellow]")
                     progress.update(task, advance=1)
                     continue
-                if not greeting and platform == "boss" and not throttle_config.get("silent_mode"):
+                if not greeting and platform == "boss":
                     update_job_status(db, job["id"], "error")
                     update_job_last_error(db, job["id"], "该岗位没有已生成的招呼语，无法发送", "no_greeting")
                     send_report["attempted_count"] += 1
@@ -1499,6 +1502,7 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     add_history(db, job["id"], "sent", greeting[:50])
                     sent_count += 1
                     batch_sent += 1
+                    round_sent += 1
                     send_report["sent_count"] = sent_count
                     backoff.record_success()
                     breaker.record_success(platform)
@@ -1562,10 +1566,33 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                             send_report["stop_reason"] = "stopped"
                             break
 
+                # 轮休（v48）：一轮投满、后面还有岗位时歇一次，时长在配置
+                # 范围内随机。轮休先判：歇完批计数也清零、下一批重新抽，
+                # 轮休已经歇够了，不再叠加一次批次休息。
+                if (
+                    result_data.get("success")
+                    and should_stage_rest(
+                        round_sent, round_size, index + 1 < len(ordered_jobs)
+                    )
+                ):
+                    rest_s = sample_rest_delay(round_rest_min * 60, round_rest_max * 60)
+                    rest_text = f"{rest_s / 60:g} 分钟" if rest_s >= 60 else f"{int(rest_s)} 秒"
+                    if callable(workbench_log):
+                        workbench_log(
+                            f"这轮投了 {round_sent} 个，先歇 {rest_text}再继续"
+                        )
+                    progress.update(task, description="歇一会再继续...")
+                    if _sleep_or_stop(rest_s, stop_event):
+                        console.print("[yellow]已请求停止，结束发送[/yellow]")
+                        send_report["stop_reason"] = "stopped"
+                        break
+                    round_sent = 0
+                    batch_target = sample_batch_size()
+                    batch_sent = 0
                 # 批次休息（v22 风控保护，v47 改成按批）：这批投满随机抽的
                 # 3–5 个、后面还有岗位时歇一次；开关关了就不歇。第一批直接
                 # 开始投，等待只发生在批次之间。停下请求优先，随时能停。
-                if (
+                elif (
                     result_data.get("success")
                     and risk_profile["stage_rest"]
                     and should_stage_rest(

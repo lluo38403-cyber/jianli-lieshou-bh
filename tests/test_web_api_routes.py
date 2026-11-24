@@ -1058,6 +1058,60 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["limit"], 15)
         self.assertEqual(payload["offset"], 0)
 
+    def test_job_search_ids_returns_all_matching_ids_without_pagination(self):
+        # v48：找工作页“选中全部岗位”只拿 ID，不分页、不序列化整行；
+        # 筛选口径必须和列表接口一致（同一组筛选只回 matching）。
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                matching = _job("matching")
+                matching.update({"title": "实施顾问", "salary": "5-8K", "jd": "负责 SQL 系统实施"})
+                insert_job(db, matching)
+                update_job_score(db, "matching", 82, "数据库技能匹配")
+                update_job_status(db, "matching", "ready")
+
+                wrong_status = _job("wrong-status")
+                wrong_status.update({"title": "实施工程师", "salary": "8-13K", "jd": "需要 SQL"})
+                insert_job(db, wrong_status)
+                update_job_score(db, "wrong-status", 85, "数据库技能匹配")
+                update_job_status(db, "wrong-status", "filtered")
+
+                low_score = _job("low-score")
+                low_score.update({"salary": "10-15K", "jd": "需要 SQL"})
+                insert_job(db, low_score)
+                update_job_score(db, "low-score", 60, "数据库技能匹配")
+                update_job_status(db, "low-score", "ready")
+
+                unrelated = _job("unrelated")
+                unrelated.update({"salary": "10-15K", "jd": "负责客户培训"})
+                insert_job(db, unrelated)
+                update_job_score(db, "unrelated", 88, "沟通能力匹配")
+                update_job_status(db, "unrelated", "ready")
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, headers, body = self._request(
+                "/api/jobs/search/ids?q=SQL&min_score=71&salary_min=7&salary_max=13&status=ready"
+            )
+            payload = json.loads(body)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertIn("application/json", headers["Content-Type"])
+            self.assertEqual(payload["ids"], ["matching"])
+            self.assertEqual(payload["total"], 1)
+
+            # 不带筛选：四个岗位都在未投出分池里，全回来。
+            status, _, body = self._request("/api/jobs/search/ids")
+            payload = json.loads(body)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(sorted(payload["ids"]), ["low-score", "matching", "unrelated", "wrong-status"])
+            self.assertEqual(payload["total"], 4)
+
+            # 非法参数和列表接口一样报 400。
+            status, _, body = self._request("/api/jobs/search/ids?sort_by=nope")
+            self.assertTrue(status.startswith("400"), body)
+
     def test_job_search_excludes_applied_jobs_by_default(self):
         # 已投出判定：sent / replied / resume_sent / needs_resume /
         # follow_up_sent（db.APPLIED_STATUSES）。默认搜索（找工作页）

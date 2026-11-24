@@ -25,13 +25,17 @@ it('has no send-window controls and saves without windows', async () => {
   expect(screen.queryByRole('button', { name: '添加时间段' })).toBeNull()
   expect(screen.queryByLabelText('时间段 1 开始时间')).toBeNull()
   expect(screen.getByText(/什么时候都能投，不用挑时间/)).toBeTruthy()
-  const silent = screen.getByRole('switch', { name: '静默模式' })
-  expect(silent.getAttribute('aria-checked')).toBe('false')
-  fireEvent.click(silent)
+  // v48：安静投递开关已删，页面上不再有它；改用“发送前模拟浏览”开关
+  // 做开关保存的冒烟：默认开，点一下变关，保存后落库。
+  expect(screen.queryByText('安静投递（不发打招呼）')).toBeNull()
+  expect(screen.queryByRole('switch', { name: '静默模式' })).toBeNull()
+  const browse = screen.getByRole('switch', { name: '发送前模拟浏览' })
+  expect(browse.getAttribute('aria-checked')).toBe('true')
+  fireEvent.click(browse)
   fireEvent.click(screen.getByRole('button', { name: '保存' }))
   await screen.findByText('设置已经保存了')
   expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
-  expect(saved.throttle.silent_mode).toBe(true)
+  expect(saved.throttle.browse_before_greet).toBe(false)
 })
 
 it('unknown salary filtering stands alone without an internship switch', async () => {
@@ -406,7 +410,7 @@ it('shows salary in k with 4k/7k placeholders and explains the ceiling ratio in 
 })
 
 it('已存的坏数字不被默认值掩盖：失焦就地报错并恢复，保存也被拦住（H-6）', async () => {
-  let saved: Record<string, any> = { scoring: { max_candidates: 0 } }
+  let saved: Record<string, any> = { collection: { daily_search_page_limit: 0 } }
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     let body: unknown = {}
@@ -420,25 +424,25 @@ it('已存的坏数字不被默认值掩盖：失焦就地报错并恢复，保�
   vi.stubGlobal('fetch', fetchMock)
   render(<UpdateProvider><ConfigPage /></UpdateProvider>)
   await screen.findByText('多少分才投')
-  // 已存的 0 露出来，不显示成默认值 20。
+  // 已存的 0 露出来，不显示成默认值 60。
   const input = screen.getByDisplayValue('0') as HTMLInputElement
   expect(input.value).toBe('0')
   // 清空再失焦：就地报“不能为空”，并恢复成原来的 0。
   fireEvent.change(input, { target: { value: '' } })
   fireEvent.blur(input)
-  expect(screen.getByText('一次最多看多少个不能为空，请填写数字')).toBeTruthy()
+  expect(screen.getByText('每天最多翻多少页不能为空，请填写数字')).toBeTruthy()
   expect((screen.getByDisplayValue('0') as HTMLInputElement).value).toBe('0')
   // 改成范围外再失焦：就地报范围，同样恢复。
   fireEvent.change(input, { target: { value: '999' } })
   fireEvent.blur(input)
-  expect(screen.getByText('一次最多看多少个应在 1–100 之间')).toBeTruthy()
+  expect(screen.getByText('每天最多翻多少页应在 1–200 之间')).toBeTruthy()
   // 脏了之后点保存：坏数字拦在保存前，不发 POST。
   fireEvent.click(screen.getByRole('switch', { name: '随机操作间隔' }))
   fireEvent.click(screen.getByRole('button', { name: '保存' }))
   // 保存失败的提示与框下就地报错是同一句话，共两处。
-  await waitFor(() => expect(screen.getAllByText('一次最多看多少个应在 1–100 之间')).toHaveLength(2))
+  await waitFor(() => expect(screen.getAllByText('每天最多翻多少页应在 1–200 之间')).toHaveLength(2))
   expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
-  expect(saved.scoring.max_candidates).toBe(0)
+  expect(saved.collection.daily_search_page_limit).toBe(0)
 })
 
 it('shows both recruitment types selected when the config says so', async () => {
@@ -453,4 +457,45 @@ it('shows both recruitment types selected when the config says so', async () => 
   await screen.findByText('我的简历和我')
   const select = screen.getByDisplayValue('校招、社招均可') as HTMLSelectElement
   expect(select.value).toBe('both')
+})
+
+it('跟进总开关关了：子项变灰、显示为关、改不了；开了才能改（v48 图8）', async () => {
+  // lucky 存的值：总开关关，子项 30 小时、周末不打扰开着。
+  let saved: Record<string, any> = { follow_up: { enabled: false, interval_hours: 30, skip_weekends: true } }
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    let body: unknown = {}
+    if (url === '/api/config') {
+      if (init?.method === 'POST') { saved = JSON.parse(String(init.body)); body = { success: true } }
+      else body = saved
+    }
+    if (url.startsWith('/api/cities')) body = { cities: [] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<UpdateProvider><ConfigPage /></UpdateProvider>)
+  await screen.findByText('没回消息怎么办')
+  const master = screen.getByRole('switch', { name: 'HR 不回就自动问一次' })
+  expect(master.getAttribute('aria-checked')).toBe('false')
+  // 子项显示为关、改不了：周末开关显示关且禁用，小时数输入框禁用。
+  const weekend = screen.getByRole('switch', { name: '周末节假日不打扰' })
+  expect(weekend.getAttribute('aria-checked')).toBe('false')
+  expect((weekend as HTMLButtonElement).disabled).toBe(true)
+  const fieldLabel = screen.getByText('过几小时没回就问一次')
+  const fieldBox = fieldLabel.closest('div')?.parentElement as HTMLElement
+  const hoursInput = within(fieldBox).getByRole('spinbutton') as HTMLInputElement
+  expect(hoursInput.disabled).toBe(true)
+  expect(hoursInput.value).toBe('30')
+  // 打开总开关：子项恢复可改，周末开关回到存着的开。
+  fireEvent.click(master)
+  expect(master.getAttribute('aria-checked')).toBe('true')
+  expect(weekend.getAttribute('aria-checked')).toBe('true')
+  expect((weekend as HTMLButtonElement).disabled).toBe(false)
+  expect(hoursInput.disabled).toBe(false)
+  fireEvent.click(weekend)
+  expect(weekend.getAttribute('aria-checked')).toBe('false')
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  await screen.findByText('设置已经保存了')
+  expect(saved.follow_up.enabled).toBe(true)
+  expect(saved.follow_up.skip_weekends).toBe(false)
+  expect(saved.follow_up.interval_hours).toBe(30)
 })

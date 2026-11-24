@@ -90,7 +90,7 @@ describe('useConfig', () => {
     await waitFor(() => expect(result.current.config).toEqual(CONFIG))
     // 清空数字框曾把 0 写进配置：保存时必须拦住，而不是发给后端。
     act(() => {
-      result.current.updateConfig('scoring.max_candidates', 0)
+      result.current.updateConfig('collection.daily_search_page_limit', 0)
     })
     let saved = true
     await act(async () => {
@@ -99,7 +99,7 @@ describe('useConfig', () => {
     expect(saved).toBe(false)
     expect(postCalls).toHaveLength(0)
     expect(result.current.message?.type).toBe('error')
-    expect(result.current.message?.text).toContain('一次最多看多少个')
+    expect(result.current.message?.text).toContain('每天最多翻多少页')
   })
 
   it('合法数字照常保存（H-6 回归）', async () => {
@@ -118,7 +118,7 @@ describe('useConfig', () => {
     const { result } = renderHook(() => useConfig())
     await waitFor(() => expect(result.current.config).toEqual(CONFIG))
     act(() => {
-      result.current.updateConfig('scoring.max_candidates', 25)
+      result.current.updateConfig('collection.daily_search_page_limit', 25)
     })
     let saved = false
     await act(async () => {

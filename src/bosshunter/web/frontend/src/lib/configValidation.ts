@@ -29,18 +29,17 @@ type NumberRule = {
 const RULES: NumberRule[] = [
   { path: 'search.max_pages', label: '最多翻几页', min: 1, max: 10, integer: true },
   { path: 'platforms.*.search.max_pages', label: '最多翻几页', min: 1, max: 10, integer: true },
-  { path: 'scoring.max_candidates', label: '一次最多看多少个', min: 1, max: 100, integer: true },
   { path: 'scoring.threshold', label: '多少分以上才投', min: 0, max: 100, integer: true },
   { path: 'collection.daily_search_page_limit', label: '每天最多翻多少页', min: 1, max: 200, integer: true },
   { path: 'collection.daily_detail_page_limit', label: '每天最多打开多少个岗位', min: 1, max: 1000, integer: true },
-  { path: 'collection.max_consecutive_page_failures', label: 'BOSS 页面连续打不开几次就停', min: 1, max: 10, integer: true },
   { path: 'collection.collection_delay_multiplier', label: '动作快慢', min: 1, max: 5 },
-  { path: 'collection.risk_pause_min_minutes', label: '出问题先歇几分钟（最少）', min: 1, max: 60, integer: true },
-  { path: 'collection.risk_pause_max_minutes', label: '出问题先歇几分钟（最多）', min: 1, max: 60, integer: true },
   { path: 'collection.delivery_cooldown_min_minutes', label: '找完先歇几分钟再投（最少）', min: 0, max: 240, integer: true },
   { path: 'collection.delivery_cooldown_max_minutes', label: '找完先歇几分钟再投（最多）', min: 0, max: 240, integer: true },
   { path: 'safety.daily_platform_page_limit', label: '每天最多打开多少个页面', min: 1, max: 2000, integer: true },
   { path: 'throttle.daily_cap', label: '每日投递上限', min: 1, max: 500, integer: true },
+  { path: 'throttle.delivery_round_size', label: '一轮投递几个岗位', min: 1, max: 100, integer: true },
+  { path: 'throttle.delivery_round_rest_min_minutes', label: '投完一轮之后休息几分钟（最少）', min: 1, max: 60, integer: true },
+  { path: 'throttle.delivery_round_rest_max_minutes', label: '投完一轮之后休息几分钟（最多）', min: 1, max: 60, integer: true },
   { path: 'monitor.interval', label: '隔几分钟看一次', min: 1, max: 120, integer: true },
   { path: 'monitor.initial_cooldown_minutes', label: '投完先歇几分钟再看回复', min: 0, max: 120, integer: true },
   { path: 'monitor.max_conversations_per_cycle', label: '一次最多处理几段对话', min: 1, max: 20, integer: true },
@@ -56,8 +55,8 @@ const RULES: NumberRule[] = [
 /** min<=max 成对校验的区间。薪资 max=0 表示不限：与后端既有口径一致，max>0 时才比大小。 */
 const RANGE_PAIRS: Array<{ minPath: string; maxPath: string; label: string; onlyWhenMaxPositive?: boolean }> = [
   { minPath: 'profile.salary_min', maxPath: 'profile.salary_max', label: '我想要的工资', onlyWhenMaxPositive: true },
-  { minPath: 'collection.risk_pause_min_minutes', maxPath: 'collection.risk_pause_max_minutes', label: '出问题先歇几分钟' },
   { minPath: 'collection.delivery_cooldown_min_minutes', maxPath: 'collection.delivery_cooldown_max_minutes', label: '找完先歇几分钟再投' },
+  { minPath: 'throttle.delivery_round_rest_min_minutes', maxPath: 'throttle.delivery_round_rest_max_minutes', label: '投完一轮之后休息几分钟' },
 ]
 
 export function getConfigValue(config: unknown, path: string): unknown {

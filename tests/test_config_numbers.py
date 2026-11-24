@@ -22,19 +22,21 @@ def test_valid_config_passes():
                 "zhilian": {"search": {"max_pages": 1}},
             },
             "search": {"max_pages": 3},
-            "scoring": {"max_candidates": 20, "threshold": 60},
+            "scoring": {"threshold": 60},
             "collection": {
                 "daily_search_page_limit": 60,
                 "daily_detail_page_limit": 900,
-                "max_consecutive_page_failures": 3,
                 "collection_delay_multiplier": 1.5,
-                "risk_pause_min_minutes": 5,
-                "risk_pause_max_minutes": 10,
                 "delivery_cooldown_min_minutes": 5,
                 "delivery_cooldown_max_minutes": 15,
             },
             "safety": {"daily_platform_page_limit": 1100},
-            "throttle": {"daily_cap": 120},
+            "throttle": {
+                "daily_cap": 120,
+                "delivery_round_size": 20,
+                "delivery_round_rest_min_minutes": 5,
+                "delivery_round_rest_max_minutes": 10,
+            },
             "monitor": {
                 "interval": 30,
                 "initial_cooldown_minutes": 10,
@@ -56,13 +58,13 @@ def test_zero_from_cleared_input_is_rejected():
 
 def test_null_from_nan_is_rejected():
     # 输入 e/- 得 NaN，JSON.stringify 后变成 null 存入。
-    with pytest.raises(ValueError, match="一次最多看多少个请填写数字"):
-        validate_config_numbers({"scoring": {"max_candidates": None}})
+    with pytest.raises(ValueError, match="每天最多翻多少页请填写数字"):
+        validate_config_numbers({"collection": {"daily_search_page_limit": None}})
 
 
 def test_non_integer_is_rejected():
     with pytest.raises(ValueError, match="请填写整数"):
-        validate_config_numbers({"scoring": {"max_candidates": 2.5}})
+        validate_config_numbers({"scoring": {"threshold": 2.5}})
 
 
 def test_bool_is_not_a_number():
@@ -73,9 +75,9 @@ def test_bool_is_not_a_number():
 def test_min_greater_than_max_is_rejected():
     with pytest.raises(ValueError, match="我想要的工资：最少不能比最多大"):
         validate_config_numbers({"profile": {"salary_min": 10, "salary_max": 5}})
-    with pytest.raises(ValueError, match="出问题先歇几分钟：最少不能比最多大"):
+    with pytest.raises(ValueError, match="投完一轮之后休息几分钟：最少不能比最多大"):
         validate_config_numbers(
-            {"collection": {"risk_pause_min_minutes": 20, "risk_pause_max_minutes": 5}}
+            {"throttle": {"delivery_round_rest_min_minutes": 20, "delivery_round_rest_max_minutes": 5}}
         )
     with pytest.raises(ValueError, match="找完先歇几分钟再投：最少不能比最多大"):
         validate_config_numbers(

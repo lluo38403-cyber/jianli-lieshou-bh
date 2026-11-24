@@ -1454,6 +1454,24 @@ def _match_conversation_to_job(conv: dict, jobs: list[dict]) -> dict | None:
         ):
             return job
 
+    # Last resort: HR 名字对不上（昵称/真名差一个字、带状态后缀），但公司
+    # 对得上。只在公司唯一时认领——同一家公司有多个已投岗位时宁可漏报
+    # 也不错认，否则会把 A 岗位的回复记到 B 岗位上。
+    # （v48 图4：林歌户外用品的 HR 回了消息，但库里存的 HR 名和聊天列表
+    # 里的名字差一个字，前面三轮都对不上，回复一直没写进库。）
+    company_matches = [
+        job
+        for job in jobs
+        if (job.get("company") or "").strip()
+        and (
+            conv_company == (job.get("company") or "").strip()
+            or conv_company in (job.get("company") or "").strip()
+            or (job.get("company") or "").strip() in conv_company
+        )
+    ]
+    if len(company_matches) == 1:
+        return company_matches[0]
+
     return None
 
 

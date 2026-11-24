@@ -352,13 +352,6 @@ def _wait_or_stop(stop_event, seconds: float, sleep: Callable[[float], None] = t
     return False
 
 
-def _positive_int(value: object, default: int) -> int:
-    try:
-        return max(int(value), 1)
-    except (TypeError, ValueError):
-        return default
-
-
 def _bounded_float(value: object, default: float, minimum: float, maximum: float) -> float:
     try:
         return min(max(float(value), minimum), maximum)
@@ -433,12 +426,8 @@ class BossCollector:
         )
         guard = PlatformAccessGuard(self.safety_conn, self.config, "collection", "boss") if self.safety_conn is not None else None
         search_limit, detail_limit = collection_access_limits(self.config)
-        failure_limit = _positive_int(collection_cfg.get("max_consecutive_page_failures", 3), 3)
-        risk_pause_min = _positive_int(collection_cfg.get("risk_pause_min_minutes", 5), 5)
-        risk_pause_max = max(
-            risk_pause_min,
-            _positive_int(collection_cfg.get("risk_pause_max_minutes", 10), 10),
-        )
+        # v48：连续页面失败的停轮次数不再是设置项，行为不变、固定 3 次就停。
+        failure_limit = 3
         # List cards can omit the type; defer only that check until the detail JD.
         list_config = {**self.config, "platforms": {
             **self.config.get("platforms", {}), "boss": {
@@ -469,7 +458,6 @@ class BossCollector:
                 "rate_limit": "BOSS 采集检测到频率限制",
                 "login_required": "BOSS 登录状态已失效",
             }
-            pause_minutes = self.randint(risk_pause_min, risk_pause_max)
             label = labels.get(kind, "BOSS 采集检测到风险")
             evidence_note = f"；证据 {evidence}" if evidence else ""
             if detail:
@@ -478,15 +466,15 @@ class BossCollector:
                 add_risk_event(
                     self.safety_conn,
                     f"collection_{kind}",
-                    f"{label}{evidence_note}；冷却 {pause_minutes} 分钟",
+                    f"{label}{evidence_note}",
                 )
-            if guard is not None:
-                guard.lock(kind, minutes=pause_minutes)
+            # v48：删掉“出问题先歇几分钟”的冷却锁——风险只记事件、本轮停，
+            # 不再锁几分钟；连续失败停到当天结束的熔断器是另一套机制，不动。
             return make_result(
                 self.platform,
                 "blocked",
                 kind,
-                f"{label}{evidence_note}；本轮已停止，冷却 {pause_minutes} 分钟后可重新开始",
+                f"{label}{evidence_note}；本轮已停止",
             )
 
         def inspect_risk(target_id: str) -> dict[str, str] | None:

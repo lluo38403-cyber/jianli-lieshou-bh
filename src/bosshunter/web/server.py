@@ -762,6 +762,36 @@ def _execute_rescore(task: WorkbenchTask, config: dict) -> None:
 	score_jobs(score_config, rescore_filtered=True)
 
 
+def _auto_deliver_after_scoring(task: WorkbenchTask, config: dict, job_ids: list[str]) -> None:
+	"""v48：打分完成且“符合评分标准的直接投递”开着时，直接投递本轮达标岗位。
+
+	只投本轮打过分、现在状态是 ready（分数 >= 阈值）的岗位，不碰别的
+	积压；投递走现有的 _execute_deliver，每日上限、平台登录、熔断这些
+	守卫一个不少。开关关着或本轮没有达标岗位时什么都不做。
+	"""
+	if not config.get("scoring", {}).get("auto_deliver_ready"):
+		return
+	db = _get_web_db()
+	try:
+		ready_ids = []
+		for job_id in job_ids:
+			row = db.execute(
+				"SELECT status FROM jobs WHERE id = ? AND deleted_at IS NULL",
+				(str(job_id),),
+			).fetchone()
+			if row and row[0] == "ready":
+				ready_ids.append(str(job_id))
+	finally:
+		db.close()
+	if not ready_ids:
+		_log(task, "打分完成，本轮没有符合评分标准的岗位，不自动投递")
+		return
+	_log(task, f"打分完成，符合标准的 {len(ready_ids)} 个直接投递")
+	deliver_config = _task_config()
+	deliver_config["_workbench_job_ids"] = ready_ids
+	_execute_deliver(task, deliver_config)
+
+
 def _execute_score(task: WorkbenchTask, config: dict) -> None:
 	from bosshunter.ai.scorer import score_jobs
 
@@ -807,6 +837,9 @@ def _execute_score(task: WorkbenchTask, config: dict) -> None:
 	except Exception as exc:
 		update_scoring_run(db_path, run_id, status="failed", error=str(exc)[:1000])
 		raise
+	if task.stop_requested.is_set():
+		return
+	_auto_deliver_after_scoring(task, config, list(options.get("job_ids", [])))
 
 
 def _queue_monitor_delivery(
@@ -2061,44 +2094,62 @@ _HR_ACTIVE_RANK_SQL = f"""CASE
 		ELSE NULL END"""
 
 
-@app.route("/api/jobs/search")
-def api_job_search():
-	try:
-		minimum_score = _optional_float_param("min_score", maximum=100)
-		salary_min = _optional_float_param("salary_min")
-		salary_max = _optional_float_param("salary_max")
-		limit = _integer_param("limit", 15, minimum=1, maximum=100)
-		offset = _integer_param("offset", 0, minimum=0)
-		if salary_min is not None and salary_max is not None and salary_min > salary_max:
-			raise ValueError("最低薪资不能高于最高薪资")
-		created_within = request.params.get("created_within", "").strip()
-		if created_within and created_within not in {"today", "3d", "7d"}:
-			raise ValueError("created_within 参数无效")
-		recruitment_types = _query_values("recruitment_type")
-		if any(value not in {"campus", "experienced", "unknown"} for value in recruitment_types):
-			raise ValueError("recruitment_type 参数无效")
-		education_filters = _query_values("education")
-		if any(value not in {"博士", "硕士", "本科", "大专", "不限", "其他", "unknown"} for value in education_filters):
-			raise ValueError("education 参数无效")
-		sort_by = request.params.get("sort_by", "created_at").strip()
-		if sort_by not in {"salary", "education", "score", "status", "hr_active", "created_at", "updated_at"}:
-			raise ValueError("sort_by 参数无效")
-		sort_order = request.params.get("sort_order", "desc").strip().lower()
-		if sort_order not in {"asc", "desc"}:
-			raise ValueError("sort_order 参数无效")
-		# 已投出分池：默认（找工作页）排除已投出岗位；applied_only=1
-		# （投递跟进页）只返回已投出岗位。显式 status 筛选与分池条件
-		# 是 AND 关系，所以找工作页即使传 status=sent 也拿不到已投出岗位。
-		applied_only = request.params.get("applied_only", "").strip().lower() in ("1", "true", "yes")
-	except ValueError as exc:
-		return _json_response({"error": str(exc)}, 400)
+def _parse_job_search_params() -> dict:
+	"""解析找工作列表的筛选参数；非法值抛 ValueError（调用方转 400）。"""
+	minimum_score = _optional_float_param("min_score", maximum=100)
+	salary_min = _optional_float_param("salary_min")
+	salary_max = _optional_float_param("salary_max")
+	limit = _integer_param("limit", 15, minimum=1, maximum=100)
+	offset = _integer_param("offset", 0, minimum=0)
+	if salary_min is not None and salary_max is not None and salary_min > salary_max:
+		raise ValueError("最低薪资不能高于最高薪资")
+	created_within = request.params.get("created_within", "").strip()
+	if created_within and created_within not in {"today", "3d", "7d"}:
+		raise ValueError("created_within 参数无效")
+	recruitment_types = _query_values("recruitment_type")
+	if any(value not in {"campus", "experienced", "unknown"} for value in recruitment_types):
+		raise ValueError("recruitment_type 参数无效")
+	education_filters = _query_values("education")
+	if any(value not in {"博士", "硕士", "本科", "大专", "不限", "其他", "unknown"} for value in education_filters):
+		raise ValueError("education 参数无效")
+	sort_by = request.params.get("sort_by", "created_at").strip()
+	if sort_by not in {"salary", "education", "score", "status", "hr_active", "created_at", "updated_at"}:
+		raise ValueError("sort_by 参数无效")
+	sort_order = request.params.get("sort_order", "desc").strip().lower()
+	if sort_order not in {"asc", "desc"}:
+		raise ValueError("sort_order 参数无效")
+	# 已投出分池：默认（找工作页）排除已投出岗位；applied_only=1
+	# （投递跟进页）只返回已投出岗位。显式 status 筛选与分池条件
+	# 是 AND 关系，所以找工作页即使传 status=sent 也拿不到已投出岗位。
+	applied_only = request.params.get("applied_only", "").strip().lower() in ("1", "true", "yes")
+	return {
+		"minimum_score": minimum_score,
+		"salary_min": salary_min,
+		"salary_max": salary_max,
+		"limit": limit,
+		"offset": offset,
+		"created_within": created_within,
+		"recruitment_types": recruitment_types,
+		"education_filters": education_filters,
+		"sort_by": sort_by,
+		"sort_order": sort_order,
+		"applied_only": applied_only,
+	}
 
+
+def _matching_job_rows(db, search_params: dict, blocked_companies: list) -> list[dict]:
+	"""按同一套筛选条件取全部匹配岗位（不分页、不序列化）。
+
+	列表接口与“选中全部岗位”的 ID 接口共用：SQL 条件、屏蔽公司、
+	薪资区间过滤都在这里，改一处两边一起变，不会各筛各的。
+	非法 source_platform 抛 ValueError（调用方转 400）。
+	"""
 	query = "SELECT * FROM jobs"
 	conditions = ["deleted_at IS NULL"]
 	params: list = []
 	applied_values = sorted(APPLIED_STATUSES)
 	applied_placeholders = ",".join("?" for _ in applied_values)
-	conditions.append(f"status {'IN' if applied_only else 'NOT IN'} ({applied_placeholders})")
+	conditions.append(f"status {'IN' if search_params['applied_only'] else 'NOT IN'} ({applied_placeholders})")
 	params.extend(applied_values)
 	keyword = (request.query.getunicode("q") or "").strip()
 	status_filters = _query_values("status")
@@ -2106,6 +2157,7 @@ def api_job_search():
 		conditions.append("(title LIKE ? OR company LIKE ? OR jd LIKE ? OR score_reason LIKE ?)")
 		keyword_param = f"%{keyword}%"
 		params.extend([keyword_param] * 4)
+	minimum_score = search_params["minimum_score"]
 	if minimum_score is not None:
 		conditions.append("score >= ?")
 		params.append(minimum_score)
@@ -2119,7 +2171,7 @@ def api_job_search():
 	source_platforms = _query_values("source_platform")
 	if source_platforms:
 		if any(value not in {"boss", "zhilian", "51job", "liepin"} for value in source_platforms):
-			return _json_response({"error": "source_platform 参数无效"}, 400)
+			raise ValueError("source_platform 参数无效")
 		placeholders = ",".join("?" for _ in source_platforms)
 		conditions.append(f"COALESCE(source_platform, 'boss') IN ({placeholders})")
 		params.extend(source_platforms)
@@ -2128,10 +2180,12 @@ def api_job_search():
 		city_clause, city_params = city_match_clause(city_filters)
 		conditions.append(city_clause)
 		params.extend(city_params)
+	recruitment_types = search_params["recruitment_types"]
 	if recruitment_types:
 		placeholders = ",".join("?" for _ in recruitment_types)
 		conditions.append(f"COALESCE(recruitment_type, 'unknown') IN ({placeholders})")
 		params.extend(recruitment_types)
+	education_filters = search_params["education_filters"]
 	if education_filters:
 		education_conditions = []
 		for value in education_filters:
@@ -2141,6 +2195,7 @@ def api_job_search():
 				education_conditions.append("education LIKE ?")
 				params.append(f"%{value}%")
 		conditions.append(f"({' OR '.join(education_conditions)})")
+	created_within = search_params["created_within"]
 	if created_within == "today":
 		conditions.append("created_at >= datetime('now', 'localtime', 'start of day', 'utc')")
 	elif created_within == "3d":
@@ -2160,11 +2215,41 @@ def api_job_search():
 		# 已投出岗位就是按投递/回复/跟进的最近动作排；老数据没有就退回 created_at。
 		"updated_at": "COALESCE(updated_at, created_at)",
 	}
+	sort_by = search_params["sort_by"]
+	sort_order = search_params["sort_order"]
 	if sort_by == "hr_active":
 		# HR 活跃度：未知（NULL）排最后，升序降序都最后；已知的按新近程度排。
 		query += f" ORDER BY ({sort_expressions['hr_active']} IS NULL), {sort_expressions['hr_active']} {sort_order.upper()}, created_at DESC, score DESC"
 	else:
 		query += f" ORDER BY {sort_expressions[sort_by]} {sort_order.upper()}, created_at DESC, score DESC"
+
+	rows = [dict(row) for row in db.execute(query, params).fetchall()]
+	if blocked_companies:
+		rows = [row for row in rows if matching_blocked_company(row.get("company", ""), blocked_companies) is None]
+	salary_min = search_params["salary_min"]
+	salary_max = search_params["salary_max"]
+	if salary_min is not None or salary_max is not None:
+		filtered_rows = []
+		for row in rows:
+			salary_range = parse_monthly_salary_k(row.get("salary", ""))
+			if salary_range is None:
+				continue
+			job_min, job_max = salary_range
+			if salary_min is not None and job_max < salary_min:
+				continue
+			if salary_max is not None and job_min > salary_max:
+				continue
+			filtered_rows.append(row)
+		rows = filtered_rows
+	return rows
+
+
+@app.route("/api/jobs/search")
+def api_job_search():
+	try:
+		search_params = _parse_job_search_params()
+	except ValueError as exc:
+		return _json_response({"error": str(exc)}, 400)
 
 	config = load_config(CONFIG_PATH)
 	blocked_companies = config.get("profile", {}).get("blocked_companies", [])
@@ -2178,6 +2263,9 @@ def api_job_search():
 		})
 		# all_total 与 items 走同一分池：找工作页的“一共”不含已投出岗位，
 		# 投递跟进页的“一共”只含已投出岗位；屏蔽公司逻辑原样保留。
+		applied_values = sorted(APPLIED_STATUSES)
+		applied_placeholders = ",".join("?" for _ in applied_values)
+		applied_only = search_params["applied_only"]
 		applied_clause = f"status {'IN' if applied_only else 'NOT IN'} ({applied_placeholders})"
 		if blocked_companies:
 			all_total = sum(
@@ -2192,23 +2280,13 @@ def api_job_search():
 				f"SELECT COUNT(*) FROM jobs WHERE deleted_at IS NULL AND {applied_clause}",
 				applied_values,
 			).fetchone()[0]
-		rows = [dict(row) for row in db.execute(query, params).fetchall()]
-		if blocked_companies:
-			rows = [row for row in rows if matching_blocked_company(row.get("company", ""), blocked_companies) is None]
-		if salary_min is not None or salary_max is not None:
-			filtered_rows = []
-			for row in rows:
-				salary_range = parse_monthly_salary_k(row.get("salary", ""))
-				if salary_range is None:
-					continue
-				job_min, job_max = salary_range
-				if salary_min is not None and job_max < salary_min:
-					continue
-				if salary_max is not None and job_min > salary_max:
-					continue
-				filtered_rows.append(row)
-			rows = filtered_rows
+		try:
+			rows = _matching_job_rows(db, search_params, blocked_companies)
+		except ValueError as exc:
+			return _json_response({"error": str(exc)}, 400)
 		total = len(rows)
+		offset = search_params["offset"]
+		limit = search_params["limit"]
 		return _json_response({
 			"items": [_serialize_job(row, config=config) for row in rows[offset:offset + limit]],
 			"total": total,
@@ -2217,6 +2295,30 @@ def api_job_search():
 			"limit": limit,
 			"offset": offset,
 		})
+	finally:
+		db.close()
+
+
+@app.route("/api/jobs/search/ids")
+def api_job_search_ids():
+	"""只返回当前筛选条件下的全部岗位 ID（给找工作页“选中全部岗位”用）。
+
+	不分页、不序列化整行：列表有几千个岗位时也只回一串 ID，
+	筛选口径与列表接口共用 _matching_job_rows，不会各筛各的。
+	"""
+	try:
+		search_params = _parse_job_search_params()
+	except ValueError as exc:
+		return _json_response({"error": str(exc)}, 400)
+	config = load_config(CONFIG_PATH)
+	blocked_companies = config.get("profile", {}).get("blocked_companies", [])
+	db = _get_web_db()
+	try:
+		try:
+			rows = _matching_job_rows(db, search_params, blocked_companies)
+		except ValueError as exc:
+			return _json_response({"error": str(exc)}, 400)
+		return _json_response({"ids": [str(row["id"]) for row in rows], "total": len(rows)})
 	finally:
 		db.close()
 

@@ -58,7 +58,7 @@
       "icon": "Star",
       "fields": [
         {"key": "threshold", "label": "通过阈值", "type": "slider", "min": 0, "max": 100, "default": 71, "description": "低于此分自动过滤"},
-        {"key": "max_candidates", "label": "每轮最大候选数", "type": "number", "min": 1, "max": 100, "default": 20}
+        {"key": "auto_deliver_ready", "label": "符合评分标准的直接投递", "type": "switch", "default": false, "description": "开启后，打分完成后直接投递分数达到阈值的岗位"}
       ]
     },
     {
@@ -68,9 +68,6 @@
       "fields": [
         {"key": "daily_search_page_limit", "label": "BOSS 单日搜索页上限", "type": "number", "min": 1, "max": 200, "default": 60},
         {"key": "daily_detail_page_limit", "label": "BOSS 单日详情页尝试上限", "type": "number", "min": 1, "max": 1000, "default": 900},
-        {"key": "max_consecutive_page_failures", "label": "BOSS 连续页面失败停止阈值", "type": "number", "min": 1, "max": 10, "default": 3},
-        {"key": "risk_pause_min_minutes", "label": "BOSS 风险暂停最少分钟", "type": "number", "min": 1, "max": 60, "default": 5},
-        {"key": "risk_pause_max_minutes", "label": "BOSS 风险暂停最多分钟", "type": "number", "min": 1, "max": 60, "default": 10},
         {"key": "collection_delay_multiplier", "label": "BOSS 操作间隔倍率", "type": "number", "min": 1, "max": 5, "step": 0.1, "default": 1.5, "description": "同时作用于 BOSS 采集和监测的页面操作与每轮等待"},
         {"key": "delivery_cooldown_min_minutes", "label": "BOSS 采集后投递冷却最少（分钟）", "type": "number", "min": 0, "max": 240, "default": 5},
         {"key": "delivery_cooldown_max_minutes", "label": "BOSS 采集后投递冷却最多（分钟）", "type": "number", "min": 0, "max": 240, "default": 15}
@@ -88,6 +85,9 @@
         {"key": "auto_pause_on_verify", "label": "遇到验证或限制提示时自动暂停", "type": "switch", "default": true, "description": "关了不再自动暂停，只提示用户手动验证"},
         {"key": "daily_cap_enabled", "label": "每日投递上限开关", "type": "switch", "default": true},
         {"key": "daily_cap", "label": "每日投递上限", "type": "number", "min": 1, "max": 500, "default": 120},
+        {"key": "delivery_round_size", "label": "一轮投递几个岗位", "type": "number", "min": 1, "max": 100, "default": 20, "description": "每投完一轮就歇一次，歇多久看下面两项"},
+        {"key": "delivery_round_rest_min_minutes", "label": "投完一轮之后休息几分钟（最少）", "type": "number", "min": 1, "max": 60, "default": 5},
+        {"key": "delivery_round_rest_max_minutes", "label": "投完一轮之后休息几分钟（最多）", "type": "number", "min": 1, "max": 60, "default": 10},
         {"key": "interval_min", "label": "最短间隔 (秒)", "type": "number", "min": 10, "max": 600, "default": 60},
         {"key": "interval_max", "label": "最长间隔 (秒)", "type": "number", "min": 10, "max": 600, "default": 180},
         {"key": "browse_before_greet", "label": "发送前模拟浏览", "type": "switch", "default": true},

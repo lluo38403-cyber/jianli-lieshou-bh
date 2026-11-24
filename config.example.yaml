@@ -39,9 +39,6 @@ collection:
   # 以下页面额度只统计 BOSS 直聘；智联和 51job 不占用。
   daily_search_page_limit: 60     # BOSS 单日搜索页上限
   daily_detail_page_limit: 900    # BOSS 单日详情页尝试上限
-  max_consecutive_page_failures: 3
-  risk_pause_min_minutes: 5       # BOSS 风险信号后随机暂停下限
-  risk_pause_max_minutes: 10      # BOSS 风险信号后随机暂停上限
   collection_delay_multiplier: 1.5 # BOSS 采集等待时间倍数
   delivery_cooldown_min_minutes: 5   # BOSS 采集结束到 BOSS 投递的随机冷却下限
   delivery_cooldown_max_minutes: 15  # BOSS 采集结束到 BOSS 投递的随机冷却上限
@@ -86,7 +83,7 @@ platforms:
 
 scoring:
   threshold: 70
-  max_candidates: 20
+  auto_deliver_ready: false  # 开启后打分完成后直接投递分数达到阈值的岗位
 
 throttle:
   daily_limit: 30
@@ -114,6 +111,10 @@ throttle:
   captcha_wait_timeout_minutes: 120
   # 熔断：一个平台连续失败这么多次，当天挂起
   breaker_max_consecutive_failures: 3
+  # 投递轮休：每投完一轮就歇一次，时长在下面两项之间随机
+  delivery_round_size: 20
+  delivery_round_rest_min_minutes: 5
+  delivery_round_rest_max_minutes: 10
   send_windows:
     - "09:00-17:00"
   day_off_probability: 0.05

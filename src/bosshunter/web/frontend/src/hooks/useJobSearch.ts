@@ -21,6 +21,33 @@ export interface JobSearchOptions {
   pollIntervalMs?: number
 }
 
+/** 列表与“选中全部岗位”共用同一套筛选参数拼法：ID 接口不带 limit/offset。 */
+export function buildJobSearchParams(
+  filters: JobFilters,
+  sortBy: JobSortKey = 'created_at',
+  sortOrder: JobSortOrder = 'desc',
+  options: JobSearchOptions & { query?: string; limit?: number; offset?: number } = {},
+): URLSearchParams {
+  const params = new URLSearchParams()
+  if (options.limit !== undefined) params.set('limit', String(options.limit))
+  if (options.offset !== undefined) params.set('offset', String(options.offset))
+  const query = (options.query ?? filters.query ?? '').trim()
+  if (query) params.set('q', query)
+  if (filters.minScore) params.set('min_score', filters.minScore)
+  if (filters.salaryMin) params.set('salary_min', filters.salaryMin)
+  if (filters.salaryMax) params.set('salary_max', filters.salaryMax)
+  filters.status.forEach(value => params.append('status', value))
+  if (filters.createdWithin) params.set('created_within', filters.createdWithin)
+  filters.sourcePlatform.forEach(value => params.append('source_platform', value))
+  filters.city.forEach(value => params.append('city', value))
+  filters.education.forEach(value => params.append('education', value))
+  filters.recruitmentType.forEach(value => params.append('recruitment_type', value))
+  params.set('sort_by', sortBy)
+  params.set('sort_order', sortOrder)
+  if (options.appliedOnly) params.set('applied_only', '1')
+  return params
+}
+
 export function useJobSearch(
   filters: JobFilters,
   page: number,
@@ -50,23 +77,12 @@ export function useJobSearch(
       return
     }
 
-    const params = new URLSearchParams({
-      limit: String(pageSize),
-      offset: String(page * pageSize),
+    const params = buildJobSearchParams(filters, sortBy, sortOrder, {
+      query: debouncedQuery,
+      limit: pageSize,
+      offset: page * pageSize,
+      appliedOnly,
     })
-    if (debouncedQuery.trim()) params.set('q', debouncedQuery.trim())
-    if (filters.minScore) params.set('min_score', filters.minScore)
-    if (filters.salaryMin) params.set('salary_min', filters.salaryMin)
-    if (filters.salaryMax) params.set('salary_max', filters.salaryMax)
-    filters.status.forEach(value => params.append('status', value))
-    if (filters.createdWithin) params.set('created_within', filters.createdWithin)
-    filters.sourcePlatform.forEach(value => params.append('source_platform', value))
-    filters.city.forEach(value => params.append('city', value))
-    filters.education.forEach(value => params.append('education', value))
-    filters.recruitmentType.forEach(value => params.append('recruitment_type', value))
-    params.set('sort_by', sortBy)
-    params.set('sort_order', sortOrder)
-    if (appliedOnly) params.set('applied_only', '1')
 
     let disposed = false
     let activeController: AbortController | null = null

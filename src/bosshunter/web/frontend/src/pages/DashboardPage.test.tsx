@@ -743,7 +743,7 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
     expect(button.closest('button')?.getAttribute('title')).toBe('先勾选要打分的岗位')
   })
 
-  it('这页全选：点一下选中当前页全部岗位，计数跟着变', async () => {
+  it('这页全选：点一下选中当前页全部岗位，再点一下变回“这页都不选”取消', async () => {
     const jobs = [
       { id: 'job-a', company: '甲公司', title: '岗位A', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
       { id: 'job-b', company: '乙公司', title: '岗位B', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
@@ -760,19 +760,22 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
     expect((selectAll.closest('button') as HTMLButtonElement | null)?.disabled).toBe(false)
     fireEvent.click(selectAll)
     expect(await screen.findByText('已选 3 个')).toBeTruthy()
-    // 全选后这页全选变灰、这页都不选可用（两颗独立按钮，不再是切换按钮变文案）。
-    expect((screen.getByText('这页全选').closest('button') as HTMLButtonElement | null)?.disabled).toBe(true)
-    expect((screen.getByText('这页都不选').closest('button') as HTMLButtonElement | null)?.disabled).toBe(false)
+    // v48：同一颗按钮切换文案——全选后变成“这页都不选”，再点回到 0。
     expect(screen.getByText('这页都不选')).toBeTruthy()
+    expect(screen.queryByText('这页全选')).toBeNull()
+    fireEvent.click(screen.getByText('这页都不选'))
+    expect(await screen.findByText('已选 0 个')).toBeTruthy()
+    expect(screen.getByText('这页全选')).toBeTruthy()
     // 取消选择后计数归零（徽标常显，0 也显示）。
+    fireEvent.click(screen.getByText('这页全选'))
+    expect(await screen.findByText('已选 3 个')).toBeTruthy()
     fireEvent.click(screen.getByText('取消选择'))
     expect(screen.getByText('已选 0 个')).toBeTruthy()
   })
 
-  it('这页全选 / 这页都不选：三种状态下互补，绝不同时出现两个“选当前页”', async () => {
-    // v45 回归：v44 留下“选上这页”和“这页全选”两个干同一件事的按钮。
-    // 修完只剩一对互补按钮：都没选 / 选了一部分 / 全选了，三种状态下
-    // 文案与 disabled 都对得上，且任何时候都没有“选上这页”。
+  it('这页全选 / 这页都不选：同一颗按钮切换文案，三种状态都对得上', async () => {
+    // v48 回归：v45 的两颗独立按钮改回单按钮切换——都没选 / 选了一部分 /
+    // 全选了，三种状态下文案与计数都对得上。
     const jobs = [
       { id: 'job-a', company: '甲公司', title: '岗位A', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
       { id: 'job-b', company: '乙公司', title: '岗位B', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
@@ -785,28 +788,68 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
       return fetchFn(input, init)
     }))
     render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
-    const isDisabled = (text: string) => (screen.getByText(text).closest('button') as HTMLButtonElement | null)?.disabled
-    // 1）都没选：这页全选可用、这页都不选灰掉。
+    // 1）都没选：按钮是“这页全选”。
     await screen.findByText('这页全选')
-    expect(isDisabled('这页全选')).toBe(false)
-    expect(isDisabled('这页都不选')).toBe(true)
+    expect(screen.queryByText('这页都不选')).toBeNull()
     expect(screen.queryByText('选上这页')).toBeNull()
-    // 2）只选一个：两个都可用。
+    // 2）只选一个：按钮还是“这页全选”（本页没全选）。
     fireEvent.click(await screen.findByRole('checkbox', { name: '选这个 甲公司 岗位A' }))
     expect(await screen.findByText('已选 1 个')).toBeTruthy()
-    expect(isDisabled('这页全选')).toBe(false)
-    expect(isDisabled('这页都不选')).toBe(false)
-    expect(screen.queryByText('选上这页')).toBeNull()
-    // 3）全选了：这页全选灰掉、这页都不选可用；点“这页都不选”回到 0。
+    expect(screen.getByText('这页全选')).toBeTruthy()
+    expect(screen.queryByText('这页都不选')).toBeNull()
+    // 3）全选了：按钮变成“这页都不选”；点它回到 0，文案变回来。
     fireEvent.click(screen.getByText('这页全选'))
     expect(await screen.findByText('已选 3 个')).toBeTruthy()
-    expect(isDisabled('这页全选')).toBe(true)
-    expect(isDisabled('这页都不选')).toBe(false)
-    expect(screen.queryByText('选上这页')).toBeNull()
+    expect(screen.getByText('这页都不选')).toBeTruthy()
+    expect(screen.queryByText('这页全选')).toBeNull()
     fireEvent.click(screen.getByText('这页都不选'))
     expect(await screen.findByText('已选 0 个')).toBeTruthy()
-    expect(isDisabled('这页全选')).toBe(false)
-    expect(isDisabled('这页都不选')).toBe(true)
+    expect(screen.getByText('这页全选')).toBeTruthy()
+  })
+
+  it('选中全部岗位：跨页全选拿全量 ID，取消后计数归零', async () => {
+    const jobs = [
+      { id: 'job-a', company: '甲公司', title: '岗位A', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
+      { id: 'job-b', company: '乙公司', title: '岗位B', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
+    ]
+    const fetchFn = stubDashboardFetch()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/jobs/search/ids')) return jsonResponse({ ids: ['job-a', 'job-b', 'job-c', 'job-d', 'job-e'], total: 5 })
+      if (url.startsWith('/api/jobs/search')) return jsonResponse({ items: jobs, total: 5, all_total: 5 })
+      return fetchFn(input, init)
+    }))
+    render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
+    await screen.findByText('选中全部岗位')
+    fireEvent.click(screen.getByText('选中全部岗位'))
+    // 本页只显示 2 个，但全选拿的是全量 5 个 ID。
+    expect(await screen.findByText('已选 5 个')).toBeTruthy()
+    expect(screen.getByText('取消选中全部岗位')).toBeTruthy()
+    fireEvent.click(screen.getByText('取消选中全部岗位'))
+    expect(await screen.findByText('已选 0 个')).toBeTruthy()
+    expect(screen.getByText('选中全部岗位')).toBeTruthy()
+  })
+
+  it('本页切换与全选互不干扰：全选后切掉本页，全选态没了、其余页的勾选还在', async () => {
+    const jobs = [
+      { id: 'job-a', company: '甲公司', title: '岗位A', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
+      { id: 'job-b', company: '乙公司', title: '岗位B', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' },
+    ]
+    const fetchFn = stubDashboardFetch()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/jobs/search/ids')) return jsonResponse({ ids: ['job-a', 'job-b', 'job-c', 'job-d', 'job-e'], total: 5 })
+      if (url.startsWith('/api/jobs/search')) return jsonResponse({ items: jobs, total: 5, all_total: 5 })
+      return fetchFn(input, init)
+    }))
+    render(<UpdateProvider><DashboardPage view="jobs" /></UpdateProvider>)
+    fireEvent.click(await screen.findByText('选中全部岗位'))
+    expect(await screen.findByText('已选 5 个')).toBeTruthy()
+    // 本页切换只动本页的 2 个：剩下 3 个（其他页）还在勾着，全选态没了。
+    fireEvent.click(screen.getByText('这页都不选'))
+    expect(await screen.findByText('已选 3 个')).toBeTruthy()
+    expect(screen.getByText('选中全部岗位')).toBeTruthy()
+    expect(screen.queryByText('取消选中全部岗位')).toBeNull()
   })
 })
 

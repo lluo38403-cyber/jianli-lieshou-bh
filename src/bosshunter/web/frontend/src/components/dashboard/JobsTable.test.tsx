@@ -44,7 +44,7 @@ const secondJob: Job = {
   employment_review: '',
 }
 
-function renderTable(jobs: Job[] = [job], loading = false, onSortChange = vi.fn()) {
+function renderTable(jobs: Job[] = [job], loading = false, onSortChange = vi.fn(), threshold?: number) {
   return {
     ...render(
       <JobsTable
@@ -63,11 +63,50 @@ function renderTable(jobs: Job[] = [job], loading = false, onSortChange = vi.fn(
         sortOrder="desc"
         onSortChange={onSortChange}
         loading={loading}
+        threshold={threshold}
       />,
     ),
     onSortChange,
   }
 }
+
+describe('JobsTable 分数发光（v48）', () => {
+  it('分数达到阈值就发光：阈值 55 时 55 分亮、54 分不亮', () => {
+    const { container, rerender } = renderTable([{ ...job, score: 55 }], false, vi.fn(), 55)
+    const cell = container.querySelector('tbody tr td:nth-child(5) span')
+    expect(cell?.textContent).toBe('55')
+    expect(cell?.className).toContain('text-primary')
+    rerender(
+      <JobsTable
+        jobs={[{ ...job, score: 54 }]}
+        page={0}
+        pageSize={10}
+        total={1}
+        onPageChange={vi.fn()}
+        selectedIds={[]}
+        onToggleSelected={vi.fn()}
+        onSoftDelete={vi.fn()}
+        onMarkManuallySent={vi.fn()}
+        onStatusChange={vi.fn()}
+        onBlockCompany={vi.fn()}
+        sortBy="score"
+        sortOrder="desc"
+        onSortChange={vi.fn()}
+        threshold={55}
+      />,
+    )
+    const dimCell = container.querySelector('tbody tr td:nth-child(5) span')
+    expect(dimCell?.textContent).toBe('54')
+    expect(dimCell?.className).toContain('text-muted')
+    expect(dimCell?.className).not.toContain('text-primary')
+  })
+
+  it('80 分以上亮一档（绿），低于阈值不发光', () => {
+    const { container } = renderTable([{ ...job, score: 85 }], false, vi.fn(), 55)
+    const cell = container.querySelector('tbody tr td:nth-child(5) span')
+    expect(cell?.className).toContain('text-success')
+  })
+})
 
 describe('JobsTable 瘦身布局（v38）', () => {
   it('表格没有最小宽、没有横向滚动容器，宽度自适应内容区', () => {

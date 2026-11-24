@@ -240,6 +240,8 @@ export default function ConfigPage() {
   const bossTheoreticalExceedsLimit = bossTheoreticalPages > bossDailySearchLimit
   const guidePlatform = (['boss', 'zhilian', '51job', 'liepin'] as PlatformId[])
     .find(platform => config.platforms?.[platform]?.enabled ?? platform === 'boss')
+  // 跟进总开关（v48）：关了整个“没回消息怎么办”块变灰、子项改不了。
+  const followUpEnabled = config.follow_up?.enabled ?? false
 
   return (
     <div className="page-sections h-full overflow-y-auto space-y-4 pb-20 pr-4">
@@ -537,9 +539,13 @@ export default function ConfigPage() {
             <Field label={`多少分以上才投： ${config.scoring?.threshold ?? 60}`}>
               <Slider value={config.scoring?.threshold ?? 60} onChange={v => updateConfig('scoring.threshold', v)} min={0} max={100} />
             </Field>
-            <Field label="一次最多看多少个">
-              <ValidatedNumberInput label="一次最多看多少个" value={config.scoring?.max_candidates ?? 20} onChange={value => updateConfig('scoring.max_candidates', value)} min={1} max={100} />
-            </Field>
+            <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
+              <div>
+                <label className="text-xs text-foreground">符合评分标准的直接投递</label>
+                <p className="mt-1 text-xs text-muted">打开后，打完分直接投递分数达到阈值的岗位；关了只打分、不投。</p>
+              </div>
+              <Switch checked={config.scoring?.auto_deliver_ready ?? false} onChange={v => updateConfig('scoring.auto_deliver_ready', v)} aria-label="符合评分标准的直接投递" />
+            </div>
           </div>
         </SectionCard>
 
@@ -558,15 +564,16 @@ export default function ConfigPage() {
                 <ValidatedNumberInput label="每天最多打开多少个岗位" value={config.collection?.daily_detail_page_limit ?? 900} onChange={value => updateConfig('collection.daily_detail_page_limit', value)} min={1} max={1000} />
                 <p className="mt-1 text-xs text-muted">只算真正打开岗位详情的次数；列表里跳过的重复、筛掉的岗位不算。打开详情也算进下面的总数里。</p>
               </Field>
-              <Field label="BOSS 页面连续打不开几次就停">
-                <ValidatedNumberInput label="BOSS 页面连续打不开几次就停" value={config.collection?.max_consecutive_page_failures ?? 3} onChange={value => updateConfig('collection.max_consecutive_page_failures', value)} min={1} max={10} />
+              <Field label="一轮投递几个岗位">
+                <ValidatedNumberInput label="一轮投递几个岗位" value={config.throttle?.delivery_round_size ?? 20} onChange={value => updateConfig('throttle.delivery_round_size', value)} min={1} max={100} />
+                <p className="mt-1 text-xs text-muted">每投完一轮就歇一次，再继续投下一轮。</p>
               </Field>
               <NumberRangeField
-                label="出问题先歇几分钟"
-                minValue={config.collection?.risk_pause_min_minutes ?? 5}
-                maxValue={config.collection?.risk_pause_max_minutes ?? 10}
-                onMinChange={value => updateConfig('collection.risk_pause_min_minutes', value)}
-                onMaxChange={value => updateConfig('collection.risk_pause_max_minutes', value)}
+                label="投完一轮之后休息几分钟再继续投递"
+                minValue={config.throttle?.delivery_round_rest_min_minutes ?? 5}
+                maxValue={config.throttle?.delivery_round_rest_max_minutes ?? 10}
+                onMinChange={value => updateConfig('throttle.delivery_round_rest_min_minutes', value)}
+                onMaxChange={value => updateConfig('throttle.delivery_round_rest_max_minutes', value)}
                 min={1}
                 max={60}
               />
@@ -595,13 +602,6 @@ export default function ConfigPage() {
                 <p className="mt-1 text-xs text-muted">打开后先像真人一样滚动看一会儿再投；关了就直接投。</p>
               </div>
               <Switch checked={config.throttle?.browse_before_greet ?? true} onChange={v => updateConfig('throttle.browse_before_greet', v)} aria-label="发送前模拟浏览" />
-            </div>
-            <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
-              <div>
-                <label className="text-xs text-foreground">安静投递（不发打招呼）</label>
-                <p className="mt-1 text-xs text-muted">打开后，在 BOSS 上只打开聊天窗口，不发打招呼的话；其他三个平台照常投。</p>
-              </div>
-              <Switch checked={config.throttle?.silent_mode ?? false} onChange={v => updateConfig('throttle.silent_mode', v)} aria-label="静默模式" />
             </div>
             <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
               <div>
@@ -741,14 +741,17 @@ export default function ConfigPage() {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <label className="text-xs text-foreground">HR 不回就自动问一次</label>
-              <Switch checked={config.follow_up?.enabled ?? false} onChange={v => updateConfig('follow_up.enabled', v)} />
+              <Switch checked={followUpEnabled} onChange={v => updateConfig('follow_up.enabled', v)} aria-label="HR 不回就自动问一次" />
             </div>
-            <Field label="过几小时没回就问一次">
-              <ValidatedNumberInput label="过几小时没回就问一次" value={config.follow_up?.interval_hours ?? 48} onChange={value => updateConfig('follow_up.interval_hours', value)} min={12} max={168} />
-            </Field>
-            <div className="flex items-center justify-between">
-              <label className="text-xs text-foreground">周末节假日不打扰</label>
-              <Switch checked={config.follow_up?.skip_weekends ?? true} onChange={v => updateConfig('follow_up.skip_weekends', v)} />
+            {/* 总开关关了：整个块变灰，子项显示为关、改不了；只有总开关开了才能改。 */}
+            <div className={followUpEnabled ? 'space-y-4' : 'pointer-events-none space-y-4 opacity-50'} aria-disabled={!followUpEnabled}>
+              <Field label="过几小时没回就问一次">
+                <ValidatedNumberInput label="过几小时没回就问一次" value={config.follow_up?.interval_hours ?? 48} onChange={value => updateConfig('follow_up.interval_hours', value)} min={12} max={168} disabled={!followUpEnabled} />
+              </Field>
+              <div className="flex items-center justify-between">
+                <label className="text-xs text-foreground">周末节假日不打扰</label>
+                <Switch checked={followUpEnabled ? (config.follow_up?.skip_weekends ?? true) : false} onChange={v => updateConfig('follow_up.skip_weekends', v)} disabled={!followUpEnabled} aria-label="周末节假日不打扰" />
+              </div>
             </div>
           </div>
         </SectionCard>

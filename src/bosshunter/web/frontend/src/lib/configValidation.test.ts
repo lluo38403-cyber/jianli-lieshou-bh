@@ -25,19 +25,19 @@ describe('validateConfigNumbers（保存前集中校验，H-6）', () => {
   it('空值写成的 0 与 NaN 存成的 null 都拦住', () => {
     const errors = validateConfigNumbers({
       platforms: { boss: { search: { max_pages: 0 } } },
-      scoring: { max_candidates: null },
+      collection: { daily_search_page_limit: null },
     })
     expect(errors.map(error => error.path)).toContain('platforms.boss.search.max_pages')
-    expect(errors.map(error => error.path)).toContain('scoring.max_candidates')
+    expect(errors.map(error => error.path)).toContain('collection.daily_search_page_limit')
   })
 
   it('最小值大于最大值拦住（薪资、歇几分钟两组）', () => {
     const errors = validateConfigNumbers({
       profile: { salary_min: 10, salary_max: 5 },
-      collection: { risk_pause_min_minutes: 20, risk_pause_max_minutes: 5 },
+      throttle: { delivery_round_rest_min_minutes: 20, delivery_round_rest_max_minutes: 5 },
     })
     expect(errors.map(error => error.message)).toContain('我想要的工资：最少不能比最多大')
-    expect(errors.map(error => error.message)).toContain('出问题先歇几分钟：最少不能比最多大')
+    expect(errors.map(error => error.message)).toContain('投完一轮之后休息几分钟：最少不能比最多大')
   })
 
   it('缺失字段按默认处理、不报错；合法配置通过', () => {
@@ -46,7 +46,7 @@ describe('validateConfigNumbers（保存前集中校验，H-6）', () => {
     expect(validateConfigNumbers({ profile: { salary_min: 5, salary_max: 0 } })).toEqual([])
     expect(validateConfigNumbers({
       platforms: { boss: { search: { max_pages: 3 } }, zhilian: { search: { max_pages: 1 } } },
-      scoring: { max_candidates: 20, threshold: 60 },
+      scoring: { threshold: 60 },
       collection: { daily_search_page_limit: 60, collection_delay_multiplier: 1.5 },
       profile: { salary_min: 0, salary_max: 0 },
       monitor: { interval: 30 },
