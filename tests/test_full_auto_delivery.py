@@ -94,6 +94,39 @@ class RuleScoreFallbackTests(unittest.TestCase):
         )
         self.assertLess(jd_only, 60, "仅 JD 命中且城市/学历不符合时不过线")
 
+    def test_rule_score_unlimited_education_counts_as_match(self):
+        """学历不限的岗位：任何学历都符合，给 5 分（v47：以前白白扣 5 分）。
+
+        复现：岗位“学历不限”，用户学历本科，旧代码两边都对不上得 0 分；
+        仓库管理员那例就是 40 + 关键词 10 + 薪资 10 + 城市 5 + 学历 0 = 65，
+        修好后应为 70 分。
+        """
+        from bosshunter.ai.prefilter import rule_score
+
+        config = {
+            "profile": {
+                "target_roles": [],
+                "target_cities": ["潮州"],
+                "education": "本科",
+                "salary_min": 3,
+                "salary_max": 7,
+            },
+            "search": {"keywords": ["仓库"]},
+            "ai": {},
+        }
+        job = dict(BASE_JOB, title="服装仓库管理员", company="广东佳人服饰有限公司",
+                   jd="负责服装仓库管理，要求会 p 图。",
+                   salary="5-7K", city="潮州", education="学历不限")
+        score, reason = rule_score(job, config)
+        self.assertIn("学历5分（符合）", reason)
+        self.assertEqual(score, 70)
+        # “不限”两个字也算。
+        _, reason2 = rule_score(dict(job, education="不限"), config)
+        self.assertIn("学历5分（符合）", reason2)
+        # 真不匹配的还是 0 分，不动。
+        _, reason3 = rule_score(dict(job, education="硕士"), config)
+        self.assertIn("学历0分（没对上）", reason3)
+
     def test_rule_score_reason_lists_each_factor_points(self):
         """打分原因要让用户对得上分数：每项写清加了几分，封顶也要写出来（图1）。"""
         from bosshunter.ai.prefilter import rule_score

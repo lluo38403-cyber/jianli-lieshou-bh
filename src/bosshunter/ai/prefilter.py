@@ -153,7 +153,11 @@ def rule_score(job: dict, config: dict) -> tuple[int, str]:
     education_points = 0
     wanted_edu = str(profile.get("education") or "").strip()
     job_edu = str(job.get("education") or "").strip()
-    if wanted_edu and job_edu and (wanted_edu in job_edu or job_edu in wanted_edu):
+    if "不限" in job_edu:
+        # 岗位明确写了学历不限：任何学历都符合，给满分（v47：以前
+        # “学历不限”两边都对不上，白白扣了 5 分）。
+        education_points = 5
+    elif wanted_edu and job_edu and (wanted_edu in job_edu or job_edu in wanted_edu):
         education_points = 5
 
     raw_total = 40 + keyword_points + salary_points + city_points + education_points

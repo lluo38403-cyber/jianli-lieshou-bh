@@ -19,6 +19,7 @@ from bosshunter.antibot import (
     platform_daily_limits,
     platform_display_name,
     resolve_risk_profile,
+    sample_batch_size,
     sample_rest_delay,
     sample_stagger_delay,
     should_stage_rest,
@@ -1358,6 +1359,12 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
     backoff = ProgressiveBackoff()
     breaker = CircuitBreaker(db, throttle_config.get("breaker_max_consecutive_failures", 3))
     sent_count = 0
+    # v47：按批投递——每批投 3–5 个（每批重新抽），批与批之间按档位歇
+    # 一会（稳妥 3–5 分钟、标准 1–3 分钟、极速半分钟–1 分钟）；第一批
+    # 直接开始投，等待只发生在批次之间。单步的防检测手段（3–8 秒微
+    # 停顿、60–180 秒投递间隔、错峰等）都保留，批次休息是额外暂停。
+    batch_target = sample_batch_size()
+    batch_sent = 0
     workbench_log = config.get("_workbench_log")
 
     # 错峰：投递队列按平台分组（采集顺序），组与组之间插一段随机停顿，
@@ -1491,6 +1498,7 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     update_job_last_error(db, job["id"], "")
                     add_history(db, job["id"], "sent", greeting[:50])
                     sent_count += 1
+                    batch_sent += 1
                     send_report["sent_count"] = sent_count
                     backoff.record_success()
                     breaker.record_success(platform)
@@ -1554,23 +1562,31 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                             send_report["stop_reason"] = "stopped"
                             break
 
-                # 阶段性自动休息（v22 风控保护）：连投满一档的数量、后面还有
-                # 岗位时歇一次；开关关了就不歇。停下请求优先，随时能停。
+                # 批次休息（v22 风控保护，v47 改成按批）：这批投满随机抽的
+                # 3–5 个、后面还有岗位时歇一次；开关关了就不歇。第一批直接
+                # 开始投，等待只发生在批次之间。停下请求优先，随时能停。
                 if (
                     result_data.get("success")
                     and risk_profile["stage_rest"]
                     and should_stage_rest(
-                        sent_count, risk_profile["rest_every"], index + 1 < len(ordered_jobs)
+                        batch_sent, batch_target, index + 1 < len(ordered_jobs)
                     )
                 ):
                     rest_s = sample_rest_delay(risk_profile["rest_min"], risk_profile["rest_max"])
+                    # 下一批投几个现在就抽好，写进日志让用户看得见节奏。
+                    next_batch = sample_batch_size()
+                    rest_text = f"{rest_s / 60:g} 分钟" if rest_s >= 60 else f"{int(rest_s)} 秒"
                     if callable(workbench_log):
-                        workbench_log(f"连投了 {sent_count} 个，先歇 {int(rest_s)} 秒再继续")
+                        workbench_log(
+                            f"这批投了 {batch_sent} 个，先歇 {rest_text}再继续，下一批投 {next_batch} 个"
+                        )
                     progress.update(task, description="歇一会再继续...")
                     if _sleep_or_stop(rest_s, stop_event):
                         console.print("[yellow]已请求停止，结束发送[/yellow]")
                         send_report["stop_reason"] = "stopped"
                         break
+                    batch_target = next_batch
+                    batch_sent = 0
 
                 progress.update(task, advance=1)
 

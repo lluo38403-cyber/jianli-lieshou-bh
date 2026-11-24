@@ -631,14 +631,14 @@ export default function ConfigPage() {
         <SectionCard title="风控保护">
           <div className="space-y-4">
             <Field label="风控档位">
-              <Select value={config.throttle?.risk_tier || 'steady'} onChange={e => updateConfig('throttle.risk_tier', e.target.value)}>
+              <Select value={config.throttle?.risk_tier || 'standard'} onChange={e => updateConfig('throttle.risk_tier', e.target.value)}>
                 <option value="steady">稳妥模式</option>
                 <option value="standard">标准模式</option>
                 <option value="fast">极速模式</option>
               </Select>
-              <p className="mt-1 text-xs text-muted">稳妥模式：操作间隔更舒缓、随机停顿更自然、阶段休息更频繁、投递节奏更克制，适合长期稳妥使用。标准模式兼顾效率与节奏控制。极速模式节奏更快、间隔更短，适合快速浏览或时间紧的场景。</p>
-              {(config.throttle?.risk_tier || 'steady') === 'fast' && (
-                <p className="mt-1 text-xs text-warning">节奏较快时更容易触发平台频率限制，遇到验证提示请及时处理。</p>
+              <p className="mt-1 text-xs text-muted">每批投 3–5 个，批与批之间歇一会：稳妥 3–5 分钟、标准 1–3 分钟、极速半分钟–1 分钟。稳妥模式节奏最克制，适合长期稳妥使用；标准模式兼顾效率与节奏控制；极速模式节奏更快、间隔更短。</p>
+              {(config.throttle?.risk_tier || 'standard') === 'fast' && (
+                <p className="mt-1 text-xs text-warning">投得太快可能被平台判刷得快，遇到验证提示请及时处理。</p>
               )}
             </Field>
             <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
@@ -651,7 +651,7 @@ export default function ConfigPage() {
             <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
               <div>
                 <label className="text-xs text-foreground">阶段性自动休息</label>
-                <p className="mt-1 text-xs text-muted">连投满一档的数量就歇一次再继续；关了就不休息。</p>
+                <p className="mt-1 text-xs text-muted">每批投 3–5 个就歇一次再继续；关了就不休息。</p>
               </div>
               <Switch checked={config.throttle?.stage_rest ?? true} onChange={v => updateConfig('throttle.stage_rest', v)} aria-label="阶段性自动休息" />
             </div>

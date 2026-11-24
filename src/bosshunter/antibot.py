@@ -83,6 +83,12 @@ def platform_display_name(platform: str) -> str:
 # 30–120 秒错峰、60–180 秒投递间隔）；稳妥拉长间隔与休息，极速缩短间隔。
 # 开关（random_interval / stage_rest / auto_pause_on_verify / daily_cap）
 # 逐项控制这些参数是否生效，见 resolve_risk_profile()。
+# v47：批次休息按 lucky 定的三档走——每批投 3–5 个（每批重新抽），
+# 批与批之间歇一会：稳妥 3–5 分钟、标准 1–3 分钟、极速半分钟–1 分钟。
+# rest_every（固定每 N 个歇一次）已退役，改由每批随机抽 3–5 个。
+BATCH_SIZE_MIN = 3
+BATCH_SIZE_MAX = 5
+
 RISK_TIERS: dict[str, dict[str, Any]] = {
     "steady": {
         "micro_delay": (5.0, 12.0),
@@ -90,8 +96,7 @@ RISK_TIERS: dict[str, dict[str, Any]] = {
         "detail_browse": (8.0, 16.0),
         "stagger": (60.0, 180.0),
         "interval": (120.0, 300.0),
-        "rest_every": 5,
-        "rest": (60.0, 120.0),
+        "rest": (180.0, 300.0),
     },
     "standard": {
         "micro_delay": (3.0, 8.0),
@@ -99,8 +104,7 @@ RISK_TIERS: dict[str, dict[str, Any]] = {
         "detail_browse": (6.0, 12.0),
         "stagger": (30.0, 120.0),
         "interval": (60.0, 180.0),
-        "rest_every": 10,
-        "rest": (30.0, 60.0),
+        "rest": (60.0, 180.0),
     },
     "fast": {
         "micro_delay": (1.0, 3.0),
@@ -108,12 +112,11 @@ RISK_TIERS: dict[str, dict[str, Any]] = {
         "detail_browse": (3.0, 6.0),
         "stagger": (10.0, 45.0),
         "interval": (30.0, 90.0),
-        "rest_every": 15,
-        "rest": (15.0, 30.0),
+        "rest": (30.0, 60.0),
     },
 }
 
-RISK_TIER_DEFAULT = "steady"
+RISK_TIER_DEFAULT = "standard"
 
 
 def resolve_risk_profile(throttle_config: dict) -> dict[str, Any]:
@@ -137,7 +140,7 @@ def resolve_risk_profile(throttle_config: dict) -> dict[str, Any]:
     detail_low, detail_high = table["detail_browse"]
     stagger_low, stagger_high = table["stagger"]
     interval_low, interval_high = table["interval"]
-    rest_every, (rest_low, rest_high) = table["rest_every"], table["rest"]
+    rest_low, rest_high = table["rest"]
     if "daily_cap" in cfg:
         raw_cap = cfg.get("daily_cap")
     elif "daily_limit" in cfg:
@@ -160,7 +163,10 @@ def resolve_risk_profile(throttle_config: dict) -> dict[str, Any]:
         "platform_stagger_max": float(stagger_high),
         "interval_min": float(interval_low),
         "interval_max": float(interval_high),
-        "rest_every": int(rest_every),
+        # v47：每批投几个不按档位固定，每批重新抽 3–5 个；批次间的歇
+        # 息时长按档位表走（稳妥 3–5 分钟、标准 1–3 分钟、极速半分钟–1 分钟）。
+        "batch_size_min": BATCH_SIZE_MIN,
+        "batch_size_max": BATCH_SIZE_MAX,
         "rest_min": float(rest_low),
         "rest_max": float(rest_high),
         "random_interval": bool(random_interval),
@@ -169,6 +175,17 @@ def resolve_risk_profile(throttle_config: dict) -> dict[str, Any]:
         "daily_cap_enabled": cfg.get("daily_cap_enabled", True) is not False,
         "daily_cap": daily_cap,
     }
+
+
+def sample_batch_size(
+    rng: random.Random | None = None,
+) -> int:
+    """Draw one delivery batch size: 3, 4 or 5 jobs, re-drawn every batch.
+
+    v47：每批投几个不固定，每批开始前重新抽一次，真随机。
+    """
+    source = rng or random
+    return source.randint(BATCH_SIZE_MIN, BATCH_SIZE_MAX)
 
 
 def sample_rest_delay(

@@ -139,7 +139,7 @@ it('shows risk protection in full mode and syncs it to /api/config immediately',
   // 改档位马上保存：同一组配置键、同一条保存链路，和“我的设置”是一份。
   fireEvent.change(screen.getByDisplayValue('稳妥模式'), { target: { value: 'fast' } })
   await waitFor(() => expect(savedConfig?.throttle?.risk_tier).toBe('fast'))
-  expect(screen.getByText(/节奏较快时更容易触发平台频率限制/)).toBeTruthy()
+  expect(screen.getByText(/投得太快可能被平台判刷得快/)).toBeTruthy()
   fireEvent.click(screen.getByRole('switch', { name: '随机操作间隔' }))
   await waitFor(() => expect(savedConfig?.throttle?.random_interval).toBe(false))
   await waitFor(() => expect(screen.getByText(/已保存，和“我的设置”里是一样的。/)).toBeTruthy())

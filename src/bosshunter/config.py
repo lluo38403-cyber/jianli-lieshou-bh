@@ -241,10 +241,10 @@ DEFAULTS: dict[str, Any] = {
         # 分平台日上限：单平台一天最多投这么多（Boss 建议 80），全局 daily_limit 仍是总天花板。
         "daily_limit_per_platform": {"boss": 80, "zhilian": 80, "51job": 80, "liepin": 80},
         # 风控保护（v22 可视化）：档位决定节奏参数表（见 antibot.RISK_TIERS），
-        # 开关逐项控制底层保护是否生效；默认稳妥模式。daily_cap 是新的每日
+        # 开关逐项控制底层保护是否生效；默认标准模式（v47 lucky 定）。daily_cap 是新的每日
         # 上限（默认 120），daily_limit 只留作老配置文件的兜底（见 load_config
         # 里的迁移：老文件只有 daily_limit 时抄一份给 daily_cap）。
-        "risk_tier": "steady",
+        "risk_tier": "standard",
         "random_interval": True,
         "stage_rest": True,
         "auto_pause_on_verify": True,
@@ -417,10 +417,10 @@ def save_config(config: dict[str, Any], config_path: Path | None = None) -> None
     browser_cfg = public_config.get("browser")
     if isinstance(browser_cfg, dict) and browser_cfg.get("browser_choice") not in BROWSER_CHOICES:
         browser_cfg["browser_choice"] = "auto"
-    # 落盘前同样归一化 risk_tier：写错了回稳妥模式。
+    # 落盘前同样归一化 risk_tier：写错了回标准模式（v47 默认档位）。
     throttle_cfg = public_config.get("throttle")
-    if isinstance(throttle_cfg, dict) and throttle_cfg.get("risk_tier", "steady") not in RISK_TIER_CHOICES:
-        throttle_cfg["risk_tier"] = "steady"
+    if isinstance(throttle_cfg, dict) and throttle_cfg.get("risk_tier", "standard") not in RISK_TIER_CHOICES:
+        throttle_cfg["risk_tier"] = "standard"
     ai_cfg = public_config.get("ai")
     credentials: dict[str, Any] = {}
     if isinstance(ai_cfg, dict):
@@ -729,11 +729,11 @@ def _normalize_config_sections(config: dict[str, Any]) -> dict[str, Any]:
         if choice not in BROWSER_CHOICES:
             browser_cfg["browser_choice"] = "auto"
 
-    # risk_tier 只认 steady / standard / fast，写错了回稳妥模式。
+    # risk_tier 只认 steady / standard / fast，写错了回标准模式（v47 默认档位）。
     throttle_cfg = config.get("throttle")
     if isinstance(throttle_cfg, dict):
-        if throttle_cfg.get("risk_tier", "steady") not in RISK_TIER_CHOICES:
-            throttle_cfg["risk_tier"] = "steady"
+        if throttle_cfg.get("risk_tier", "standard") not in RISK_TIER_CHOICES:
+            throttle_cfg["risk_tier"] = "standard"
 
     return remove_retired_collection_settings(config)
 

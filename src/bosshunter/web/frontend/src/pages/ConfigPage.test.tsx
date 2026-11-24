@@ -290,7 +290,7 @@ it('lets the user pick a browser and fill the manual path from the detected list
   expect((screen.getByPlaceholderText(/例如 C:/) as HTMLInputElement).value).toBe('C:/Edge/msedge.exe')
 })
 
-it('shows the risk protection section, defaults to steady, and saves tier and switches', async () => {
+it('shows the risk protection section, defaults to standard, and saves tier and switches', async () => {
   let saved: Record<string, any> = { throttle: {} }
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     let body: unknown = {}
@@ -306,14 +306,14 @@ it('shows the risk protection section, defaults to steady, and saves tier and sw
   expect(await screen.findByText('风控保护')).toBeTruthy()
   // 旧的硬编码 120 提示已经删了（守卫逻辑还在后端，不在这里展示）。
   expect(screen.queryByText(/每天最多自动投 120 个/)).toBeNull()
-  expect((screen.getByDisplayValue('稳妥模式') as HTMLSelectElement).value).toBe('steady')
+  expect((screen.getByDisplayValue('标准模式') as HTMLSelectElement).value).toBe('standard')
   expect(screen.getByRole('switch', { name: '随机操作间隔' }).getAttribute('aria-checked')).toBe('true')
   expect(screen.getByRole('switch', { name: '阶段性自动休息' }).getAttribute('aria-checked')).toBe('true')
   expect(screen.getByRole('switch', { name: '遇到验证或限制提示时自动暂停' }).getAttribute('aria-checked')).toBe('true')
   expect((screen.getByLabelText('每日投递上限') as HTMLInputElement).value).toBe('120')
   // 换成极速档位：温和提示出现。
-  fireEvent.change(screen.getByDisplayValue('稳妥模式'), { target: { value: 'fast' } })
-  expect(screen.getByText(/节奏较快时更容易触发平台频率限制/)).toBeTruthy()
+  fireEvent.change(screen.getByDisplayValue('标准模式'), { target: { value: 'fast' } })
+  expect(screen.getByText(/投得太快可能被平台判刷得快/)).toBeTruthy()
   // 关掉随机间隔、每日上限改成 50，保存后同一组键写进配置。
   fireEvent.click(screen.getByRole('switch', { name: '随机操作间隔' }))
   fireEvent.change(screen.getByLabelText('每日投递上限'), { target: { value: '50' } })

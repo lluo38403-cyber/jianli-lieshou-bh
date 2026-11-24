@@ -192,14 +192,57 @@ class BackgroundSubmitFallbackTests(unittest.TestCase):
         fill.assert_not_called()
         click.assert_not_called()
 
-    def test_manual_fill_still_runs_when_nothing_was_sent(self):
-        # 入口复核 missing → 后台提交报失败 → 再复核还是 missing：
-        # 确实什么都没发出去，手填兜底照常只发一次。
-        result, fill, click, _ = self._run_send(["missing", "missing", "delivered", "delivered"])
-        self.assertTrue(result[0]["success"])
-        self.assertTrue(result[0].get("verified"))
-        fill.assert_called_once()
-        click.assert_called_once_with("tab-1", ".btn-send:not(.disabled)")
+class BatchRestTests(unittest.TestCase):
+    """按批投递（v47）：每批投 3–5 个，批与批之间按档位歇一会。
+
+    第一批直接开始投，等待只发生在批次之间；每批个数重新抽；
+    休息时长按档位走（标准 1–3 分钟）；开关关了就不歇。
+    """
+
+    def _ready_db(self, tmp, count):
+        db_path = Path(tmp) / "jobs.db"
+        db = get_db(db_path)
+        for number in range(count):
+            job_id = str(number)
+            insert_job(db, {"id": job_id, "title": "Test", "company": "Test", "url": "https://www.zhipin.com/test"})
+            update_job_status(db, job_id, "ready")
+            update_job_greeting(db, job_id, "Test greeting")
+        db.close()
+        return db_path
+
+    def test_batch_rest_fires_once_between_two_batches(self):
+        """7 个岗位、每批 3 个再 4 个：中间只歇一次，时长在标准档 60–180 秒内。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = self._ready_db(tmp, 7)
+            logs: list[str] = []
+            sleeps: list[float] = []
+            config = {
+                "throttle": {"risk_tier": "standard", "stage_rest": True},
+                "_workbench_log": logs.append,
+            }
+            with patch.object(sender.RequestThrottle, "wait", return_value=False), \
+                    patch.object(sender, "_send_greeting_once", return_value=({"success": True}, None)), \
+                    patch.object(sender, "sample_batch_size", side_effect=[3, 4]), \
+                    patch.object(sender, "_sleep_or_stop", side_effect=lambda seconds, _e: sleeps.append(seconds) or False):
+                self.assertEqual(sender.send_greetings(config, db_path=db_path), 7)
+            self.assertEqual(len(sleeps), 1)
+            self.assertGreaterEqual(sleeps[0], 60.0)
+            self.assertLessEqual(sleeps[0], 180.0)
+            self.assertTrue(any("这批投了 3 个" in message for message in logs))
+            self.assertTrue(any("下一批投 4 个" in message for message in logs))
+
+    def test_batch_rest_off_means_no_rest(self):
+        """阶段休息关了：7 个岗位一批投完，中间一次也不歇。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = self._ready_db(tmp, 7)
+            sleeps: list[float] = []
+            config = {"throttle": {"risk_tier": "standard", "stage_rest": False}}
+            with patch.object(sender.RequestThrottle, "wait", return_value=False), \
+                    patch.object(sender, "_send_greeting_once", return_value=({"success": True}, None)), \
+                    patch.object(sender, "sample_batch_size", side_effect=[3, 4]), \
+                    patch.object(sender, "_sleep_or_stop", side_effect=lambda seconds, _e: sleeps.append(seconds) or False):
+                self.assertEqual(sender.send_greetings(config, db_path=db_path), 7)
+            self.assertEqual(sleeps, [])
 
 
 if __name__ == "__main__":

@@ -2400,20 +2400,20 @@ def api_workbench():
 			"funnel": get_funnel_stats(db),
 			"funnel_today": get_funnel_stats(db, today=True),
 			"pending_confirmation": [
-				_serialize_job(job) for job in get_jobs_pending_confirmation(db)
+				_serialize_job(job, config=config) for job in get_jobs_pending_confirmation(db)
 				if int(job.get("score") or 0) >= threshold
 				and platform_supports(str(job.get("source_platform") or "boss"), "deliver")
 			],
 			"pending_greetings": [
-				_serialize_job(job) for job in get_jobs_ready_to_send(db, include_pending_review=True)
+				_serialize_job(job, config=config) for job in get_jobs_ready_to_send(db, include_pending_review=True)
 				if platform_supports(str(job.get("source_platform") or "boss"), "deliver")
 			],
 			"send_errors": [
-				_serialize_job(job) for job in get_jobs_with_send_errors(db)
+				_serialize_job(job, config=config) for job in get_jobs_with_send_errors(db)
 				if platform_supports(str(job.get("source_platform") or "boss"), "deliver")
 			],
 			"needs_resume": [
-				_serialize_job(job) for job in get_jobs_needing_resume(db)
+				_serialize_job(job, config=config) for job in get_jobs_needing_resume(db)
 				if platform_supports(str(job.get("source_platform") or "boss"), "deliver")
 			],
 			"send_quota": {
@@ -2434,7 +2434,7 @@ def api_workbench():
 			# 每个岗位投得怎么样：库里最近走过投递流程的岗位 + 最近一次投递动作，
 			# 任务重启/进程重启后还在，补快照只在内存里的缺口。
 			"delivery_jobs": [
-				_serialize_job(job) for job in get_recent_delivery_jobs(db)
+				_serialize_job(job, config=config) for job in get_recent_delivery_jobs(db)
 			],
 			# 四平台登录态（DB 持久化，无记录时 unknown）与最近一次
 			# preflight 结果（服务端内存），供首页持久展示。

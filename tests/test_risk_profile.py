@@ -8,19 +8,24 @@ import unittest
 from unittest.mock import Mock, patch
 
 from bosshunter import antibot
-from bosshunter.antibot import resolve_risk_profile, should_stage_rest, sample_rest_delay
+from bosshunter.antibot import (
+    resolve_risk_profile,
+    sample_batch_size,
+    sample_rest_delay,
+    should_stage_rest,
+)
 
 
 class ResolveRiskProfileTests(unittest.TestCase):
-    def test_default_tier_is_steady(self):
+    def test_default_tier_is_standard(self):
         profile = resolve_risk_profile({})
-        self.assertEqual(profile["risk_tier"], "steady")
-        self.assertEqual((profile["micro_delay_min"], profile["micro_delay_max"]), (5.0, 12.0))
+        self.assertEqual(profile["risk_tier"], "standard")
+        self.assertEqual((profile["micro_delay_min"], profile["micro_delay_max"]), (3.0, 8.0))
 
-    def test_unknown_tier_falls_back_to_steady(self):
+    def test_unknown_tier_falls_back_to_standard(self):
         profile = resolve_risk_profile({"risk_tier": "turbo"})
-        self.assertEqual(profile["risk_tier"], "steady")
-        self.assertEqual((profile["micro_delay_min"], profile["micro_delay_max"]), (5.0, 12.0))
+        self.assertEqual(profile["risk_tier"], "standard")
+        self.assertEqual((profile["micro_delay_min"], profile["micro_delay_max"]), (3.0, 8.0))
 
     def test_tier_switch_changes_the_table(self):
         # 档位切换时参数表确实换挡：同一组键，三档三个值。
@@ -36,10 +41,22 @@ class ResolveRiskProfileTests(unittest.TestCase):
         # 稳妥拉长、极速缩短：微停顿、浏览、错峰、间隔、休息都按档位走。
         self.assertGreater(steady["micro_delay_min"], standard["micro_delay_min"])
         self.assertGreater(standard["micro_delay_max"], fast["micro_delay_max"])
-        self.assertLess(steady["rest_every"], standard["rest_every"])
-        self.assertLess(standard["rest_every"], fast["rest_every"])
+        # v47：批次间的休息按 lucky 定的三档——稳妥 3–5 分钟、
+        # 标准 1–3 分钟、极速半分钟–1 分钟。
+        self.assertEqual((steady["rest_min"], steady["rest_max"]), (180.0, 300.0))
+        self.assertEqual((standard["rest_min"], standard["rest_max"]), (60.0, 180.0))
+        self.assertEqual((fast["rest_min"], fast["rest_max"]), (30.0, 60.0))
         self.assertGreater(steady["rest_min"], standard["rest_min"])
         self.assertGreater(standard["rest_min"], fast["rest_min"])
+        # 每批投几个三档一样，都是 3–5 个。
+        for profile in (steady, standard, fast):
+            self.assertEqual((profile["batch_size_min"], profile["batch_size_max"]), (3, 5))
+
+    def test_batch_size_is_redrawn_between_three_and_five(self):
+        # 每批个数真随机：抽 50 次都在 3–5 之间，且不全是一个值。
+        seen = {sample_batch_size() for _ in range(50)}
+        self.assertTrue(seen <= {3, 4, 5})
+        self.assertGreater(len(seen), 1)
 
     def test_random_interval_off_really_stops_random_pauses(self):
         # 同一开关开/关，微停顿确实不同：关了就是 0，不再随机停顿。
@@ -151,7 +168,7 @@ class DailyCapMigrationTests(unittest.TestCase):
         self.assertEqual(cfg["throttle"]["daily_cap"], 50)
         self.assertEqual(cfg["throttle"]["daily_limit"], 50)
 
-    def test_risk_tier_is_normalized_to_steady_when_invalid(self):
+    def test_risk_tier_is_normalized_to_standard_when_invalid(self):
         import tempfile
         from pathlib import Path
 
@@ -161,10 +178,10 @@ class DailyCapMigrationTests(unittest.TestCase):
             config_path = Path(tmp) / "config.yaml"
             config_path.write_text("throttle:\n  risk_tier: turbo\n", encoding="utf-8")
             cfg = load_config(config_path)
-            self.assertEqual(cfg["throttle"]["risk_tier"], "steady")
+            self.assertEqual(cfg["throttle"]["risk_tier"], "standard")
             cfg["throttle"]["risk_tier"] = "nope"
             save_config(cfg, config_path)
-            self.assertEqual(load_config(config_path)["throttle"]["risk_tier"], "steady")
+            self.assertEqual(load_config(config_path)["throttle"]["risk_tier"], "standard")
 
 
 if __name__ == "__main__":

@@ -235,6 +235,48 @@ class WebApiRouteTests(unittest.TestCase):
             self.assertEqual(by_id["wb-error"]["status"], "error")
             self.assertEqual(by_id["wb-error"]["last_error"], "对方暂时不接受新消息")
 
+    def test_workbench_loads_config_once_not_once_per_job(self):
+        # v47：切页卡顿的根因——/api/workbench 以前每个岗位都重读两次
+        # 配置文件（_serialize_job 里 internship_rejection 与
+        # effective_greeting 各读一次），950 个岗位要 950ms；现在函数
+        # 顶部读好一次传下去，450 个岗位只要 12ms。切页重挂载后每次
+        # 都要全量重拉，这个线性开销就是五秒骨架屏的大头。
+        from bosshunter.config import load_config as real_load_config
+
+        calls = []
+        def counting_load_config(path):
+            calls.append(path)
+            return real_load_config(path)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for i in range(20):
+                    jid = f"wb-many-{i}"
+                    insert_job(db, {**_job(jid), "company": f"公司{i}"})
+                    update_job_score(db, jid, 70, "测试评分")
+                    update_job_greeting(db, jid, "您好，简历已附上，谢谢！")
+                    update_job_status(db, jid, "ready")
+                for i in range(5):
+                    jid = f"wb-sent-{i}"
+                    insert_job(db, {**_job(jid), "company": f"已投{i}"})
+                    update_job_status(db, jid, "sent")
+                    add_history(db, jid, "sent", "招呼语")
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+            with patch.object(server, "load_config", counting_load_config):
+                status, _, body = self._request("/api/workbench")
+            self.assertTrue(status.startswith("200"), body)
+            payload = json.loads(body)
+            self.assertEqual(len(payload["pending_greetings"]), 20)
+            self.assertEqual(len(payload["delivery_jobs"]), 5)
+            # 一次请求只读两次配置：_get_web_db 读一次（外包规则重算），
+            # api_workbench 顶部读一次；序列化不再按岗位重复读。
+            # 旧代码这里是 2 + 2×25 = 52 次。
+            self.assertEqual(len(calls), 2)
+
     def test_outsourcing_and_greeting_metadata_coexist_across_review_apis(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)

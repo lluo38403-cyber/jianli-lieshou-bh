@@ -114,7 +114,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   /** 风控保护（和“我的设置”同一组配置键、同一条保存链路）：打开弹窗时
    * 从 /api/config 读，改了就整个配置 POST 回 /api/config 立即保存。 */
   const [fullConfig, setFullConfig] = useState<Record<string, any> | null>(null)
-  const [riskTier, setRiskTier] = useState('steady')
+  const [riskTier, setRiskTier] = useState('standard')
   const [randomInterval, setRandomInterval] = useState(true)
   const [riskSaving, setRiskSaving] = useState(false)
   const [riskNote, setRiskNote] = useState('')
@@ -220,7 +220,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         setOrder(mode === 'full' ? ['boss'] : (nextOrder.length ? nextOrder : ['boss']))
         setAutoScore(mode === 'full' || config?.collection?.auto_score_default === true)
         setFullConfig(config)
-        setRiskTier(config?.throttle?.risk_tier || 'steady')
+        setRiskTier(config?.throttle?.risk_tier || 'standard')
         setRandomInterval(config?.throttle?.random_interval ?? true)
       })
       .catch(() => {
@@ -499,8 +499,9 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
                 <option value="standard">标准模式</option>
                 <option value="fast">极速模式</option>
               </Select>
+              <span className="mt-1 block font-normal">每批投 3–5 个，批与批之间歇一会：稳妥 3–5 分钟、标准 1–3 分钟、极速半分钟–1 分钟。</span>
             </label>
-            {riskTier === 'fast' && <p className="text-xs text-warning">节奏较快时更容易触发平台频率限制，遇到验证提示请及时处理。</p>}
+            {riskTier === 'fast' && <p className="text-xs text-warning">投得太快可能被平台判刷得快，遇到验证提示请及时处理。</p>}
             <label className="flex items-center justify-between gap-3 text-sm font-bold">随机操作间隔<Switch aria-label="随机操作间隔" checked={randomInterval} onChange={value => { setRandomInterval(value); saveRiskSetting('throttle.random_interval', value) }} /></label>
             {riskSaving ? <p className="text-xs text-muted">正在保存…</p> : riskNote ? <p className="text-xs text-muted">{riskNote}</p> : null}
           </div>
