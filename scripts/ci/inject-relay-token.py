@@ -13,6 +13,14 @@ import os
 import re
 import sys
 
+# Windows runner 的 Python 默认用 cp1252 输出，中文打印会直接崩
+# （v49 构建失败的根因）；先把 stdout/stderr 都重配成 UTF-8。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 PLACEHOLDER_RE = re.compile(r'^(\s*relay_token:\s*)""\s*(#.*)?$')
 INJECTED_RE = re.compile(r'^\s*relay_token:\s*"[^"]+"\s*$')
 
