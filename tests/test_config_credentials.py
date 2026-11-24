@@ -8,10 +8,12 @@ import yaml
 from click.testing import CliRunner
 
 from bosshunter.config import (
+    OLD_LEAKED_RELAY_TOKEN,
     credentials_path_for,
     get_admin_password_hash,
     hash_admin_password,
     load_config,
+    migrate_leaked_relay_token,
     migrate_legacy_credentials,
     save_config,
     verify_admin_password,
@@ -169,6 +171,98 @@ class ConfigCredentialsTests(unittest.TestCase):
             self.assertNotIn(api_key, result.output)
             self.assertNotIn(api_key, config_path.read_text(encoding="utf-8"))
             self.assertTrue(private_path.exists())
+
+
+class LeakedRelayTokenMigrationTests(unittest.TestCase):
+    """v49：config.yaml 里存着已泄露旧钥匙时，启动换成随包的新钥匙。"""
+
+    def _write(self, directory, name, mapping):
+        path = Path(directory) / name
+        path.write_text(
+            yaml.safe_dump(mapping, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+        return path
+
+    def _stored_token(self, config_path):
+        return yaml.safe_load(config_path.read_text(encoding="utf-8"))["ai"]["relay_token"]
+
+    def test_old_token_is_replaced_with_bundled_new_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write(
+                tmp, "config.yaml", {"ai": {"relay_token": OLD_LEAKED_RELAY_TOKEN}}
+            )
+            self._write(
+                tmp, "config.example.yaml", {"ai": {"relay_token": "brand-new-token-from-build"}}
+            )
+            self.assertTrue(migrate_leaked_relay_token(config_path))
+            self.assertEqual(self._stored_token(config_path), "brand-new-token-from-build")
+            # 再跑一次不再换：存的已经不是旧值了。
+            self.assertFalse(migrate_leaked_relay_token(config_path))
+
+    def test_custom_token_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write(tmp, "config.yaml", {"ai": {"relay_token": "my-own-token"}})
+            self._write(
+                tmp, "config.example.yaml", {"ai": {"relay_token": "brand-new-token-from-build"}}
+            )
+            self.assertFalse(migrate_leaked_relay_token(config_path))
+            self.assertEqual(self._stored_token(config_path), "my-own-token")
+
+    def test_empty_bundled_token_does_not_migrate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write(
+                tmp, "config.yaml", {"ai": {"relay_token": OLD_LEAKED_RELAY_TOKEN}}
+            )
+            self._write(tmp, "config.example.yaml", {"ai": {"relay_token": ""}})
+            self.assertFalse(migrate_leaked_relay_token(config_path))
+            self.assertEqual(self._stored_token(config_path), OLD_LEAKED_RELAY_TOKEN)
+
+    def test_bundled_token_still_old_does_not_migrate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write(
+                tmp, "config.yaml", {"ai": {"relay_token": OLD_LEAKED_RELAY_TOKEN}}
+            )
+            self._write(
+                tmp, "config.example.yaml", {"ai": {"relay_token": OLD_LEAKED_RELAY_TOKEN}}
+            )
+            self.assertFalse(migrate_leaked_relay_token(config_path))
+            self.assertEqual(self._stored_token(config_path), OLD_LEAKED_RELAY_TOKEN)
+
+    def test_missing_token_does_not_migrate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write(tmp, "config.yaml", {"ai": {"relay_url": "http://127.0.0.1:8687"}})
+            self._write(
+                tmp, "config.example.yaml", {"ai": {"relay_token": "brand-new-token-from-build"}}
+            )
+            self.assertFalse(migrate_leaked_relay_token(config_path))
+
+    def test_cli_startup_migrates_leaked_token(self):
+        original_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            runtime_dir = workspace / "runtime"
+            runtime_dir.mkdir()
+            config_path = runtime_dir / "config.yaml"
+            config_path.write_text(
+                yaml.safe_dump(
+                    {"ai": {"relay_token": OLD_LEAKED_RELAY_TOKEN}}, sort_keys=False
+                ),
+                encoding="utf-8",
+            )
+            (runtime_dir / "config.example.yaml").write_text(
+                yaml.safe_dump(
+                    {"ai": {"relay_token": "brand-new-token-from-build"}}, sort_keys=False
+                ),
+                encoding="utf-8",
+            )
+            try:
+                os.chdir(workspace)
+                result = CliRunner().invoke(cli, ["--config", "runtime/config.yaml"])
+            finally:
+                os.chdir(original_cwd)
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertEqual(self._stored_token(config_path), "brand-new-token-from-build")
 
 
 if __name__ == "__main__":

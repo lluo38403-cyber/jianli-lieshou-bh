@@ -561,6 +561,33 @@ class MatchConversationToJobTests(unittest.TestCase):
         self.assertIsNotNone(matched)
         self.assertEqual(matched["id"], "job-b")
 
+    def test_empty_company_never_matches_by_contains(self):
+        # v49：聊天列表没解析出公司名时，"" in "任何公司" 在 Python 里是真，
+        # 旧代码会把 HR 名字相同的岗位直接认领。
+        from bosshunter.executor.monitor import _match_conversation_to_job
+
+        jobs = [
+            {"id": "job-a", "hr_name": "王经理", "company": "甲公司", "status": "sent"},
+        ]
+        conv = {"hr_name": "王经理", "company": ""}
+        self.assertIsNone(_match_conversation_to_job(conv, jobs))
+
+    def test_company_unique_checked_against_whole_db(self):
+        # v49：跟进列表里公司唯一不够——同公司在库里还有别的岗位
+        # （等着投，不在跟进状态）时也不认领，宁可漏报。
+        from bosshunter.executor.monitor import _match_conversation_to_job
+
+        jobs = [
+            {"id": "job-linge", "hr_name": "林歌招聘", "company": "潮州市林歌户外用品", "status": "sent"},
+        ]
+        conv = {"hr_name": "林歌招", "company": "潮州市林歌户外用品"}
+        self.assertIsNone(
+            _match_conversation_to_job(conv, jobs, ["潮州市林歌户外用品", "潮州市林歌户外用品"])
+        )
+        matched = _match_conversation_to_job(conv, jobs, ["潮州市林歌户外用品"])
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["id"], "job-linge")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2358,6 +2358,8 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
     setPage(0)
     // 筛选变了，之前那批全选 ID 就不再是“全部岗位”，全选态清掉。
     setSelectAllIds(null)
+    // 勾选也清掉：留着旧筛选的勾选，投递/打分/回收站会把旧岗位也算进去。
+    setSelectedIds([])
   }, [filters.query, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.city, filters.education, filters.recruitmentType])
 
   const toggleSelected = (jobId: string) => {

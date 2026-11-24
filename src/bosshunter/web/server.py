@@ -1861,7 +1861,7 @@ def api_exit():
 # 没有登录注册窗口，下载即用。授权状态存在中转服务端，客户端只
 # 认服务端返回的剩余秒数，本地倒计时走单调时钟（改系统时间也
 # 改不动它）。中转连不上时用上次同步的缓存顶 24 小时。
-# 详见 bosshunter/auth/client.py；中转接口约定见改动清单。
+# 详见 bosshunter/auth/client.py；中转接口约定见中转服务端 relay.py。
 
 AUTH_EXPIRED_MESSAGE = "授权已到期，请输入天卡或周卡继续使用"
 

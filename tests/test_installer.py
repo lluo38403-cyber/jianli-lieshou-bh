@@ -2,7 +2,7 @@
 
 只测 src/bosshunter/installer.py 里的纯函数：默认路径、用户改目录、
 安全谓词、卸载清理清单、停进程脚本、残留上报。Windows 真机行为
-（向导、注册表、实际删除）不在 Linux CI 的覆盖范围，见改动清单。
+（向导、注册表、实际删除）不在 Linux CI 的覆盖范围，需真机验证。
 """
 
 import tempfile

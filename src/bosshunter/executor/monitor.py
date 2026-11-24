@@ -1241,6 +1241,13 @@ def _check_boss_replies(config: dict, tracked_jobs: list[dict] | None = None) ->
 
     console.print(f"[bold]监测 {len(all_tracked_jobs)} 个对话的回复情况...[/bold]")
 
+    # 兜底认领的“公司唯一”按全库算：跟进列表外的岗位也要算进来。
+    # 查不到就传 None，匹配退回只按跟进列表算的老行为，绝不挡监测。
+    try:
+        all_job_companies = [row[0] for row in db.execute("SELECT company FROM jobs").fetchall()]
+    except Exception:
+        all_job_companies = None
+
     # Open chat page
     target_id, reused_chat_target = _get_monitor_chat_target(chat_url, config)
     if not target_id:
@@ -1328,7 +1335,7 @@ def _check_boss_replies(config: dict, tracked_jobs: list[dict] | None = None) ->
     for conv in conversations:
         if stop_requested(config):
             break
-        matched_job = _match_conversation_to_job(conv, all_tracked_jobs)
+        matched_job = _match_conversation_to_job(conv, all_tracked_jobs, all_job_companies)
         if matched_job:
             is_outbound = (
                 conv.get("last_direction") == "me"
@@ -1419,8 +1426,15 @@ def check_replies(config: dict) -> list[dict]:
     return boss_results
 
 
-def _match_conversation_to_job(conv: dict, jobs: list[dict]) -> dict | None:
-    """Match a chat conversation to a job record."""
+def _match_conversation_to_job(
+    conv: dict, jobs: list[dict], all_job_companies: list[str] | None = None
+) -> dict | None:
+    """Match a chat conversation to a job record.
+
+    ``all_job_companies`` 是全库所有岗位的公司名（不限跟进状态）：
+    兜底认领时“公司唯一”按全库算，传了才做全库校验，不传时只按
+    ``jobs`` 列表算（老调用方与单测保持兼容）。
+    """
     conv_hr = conv.get("hr_name", "").strip()
     conv_company = conv.get("company", "").strip()
 
@@ -1435,10 +1449,12 @@ def _match_conversation_to_job(conv: dict, jobs: list[dict]) -> dict | None:
             return job
 
     # Fuzzy match by hr_name + partial company
+    # 公司名为空时不做包含比对："" in "任何公司" 在 Python 里是真，
+    # 空公司名会把 HR 名字相同的岗位全认领了。
     for job in jobs:
         job_hr = (job.get("hr_name") or "").strip()
         job_company = (job.get("company") or "").strip()
-        if conv_hr == job_hr and job_company and (
+        if conv_hr == job_hr and conv_company and job_company and (
             conv_company in job_company or job_company in conv_company
         ):
             return job
@@ -1447,7 +1463,7 @@ def _match_conversation_to_job(conv: dict, jobs: list[dict]) -> dict | None:
     for job in jobs:
         job_hr = (job.get("hr_name") or "").strip()
         job_company = (job.get("company") or "").strip()
-        if not job_hr and job_company and (
+        if not job_hr and conv_company and job_company and (
             conv_company == job_company
             or conv_company in job_company
             or job_company in conv_company
@@ -1463,6 +1479,7 @@ def _match_conversation_to_job(conv: dict, jobs: list[dict]) -> dict | None:
         job
         for job in jobs
         if (job.get("company") or "").strip()
+        and conv_company
         and (
             conv_company == (job.get("company") or "").strip()
             or conv_company in (job.get("company") or "").strip()
@@ -1470,6 +1487,23 @@ def _match_conversation_to_job(conv: dict, jobs: list[dict]) -> dict | None:
         )
     ]
     if len(company_matches) == 1:
+        if all_job_companies is not None:
+            # “公司唯一”按全库算，不只按跟进列表算：同公司在库里还有
+            # 别的岗位（哪怕是等着投/已过滤，不在跟进状态），也不认领——
+            # 宁可漏报也不错认。候选岗位自己也在全库里，唯一时计数正好是 1。
+            candidate_company = (company_matches[0].get("company") or "").strip()
+            whole_db_matches = [
+                name
+                for name in all_job_companies
+                if (name or "").strip()
+                and (
+                    candidate_company == (name or "").strip()
+                    or candidate_company in (name or "").strip()
+                    or (name or "").strip() in candidate_company
+                )
+            ]
+            if len(whole_db_matches) != 1:
+                return None
         return company_matches[0]
 
     return None

@@ -39,6 +39,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install .
           pip install pyinstaller
+      - name: 注入中转钥匙
+        # v49：仓库里不再放真钥匙。打包时把 GitHub secret RELAY_APP_TOKEN
+        # 注入 config.example.yaml 的空占位，随包发出去；secret 不存在
+        # 时注入脚本直接报错停下，绝不打出没钥匙的包。
+        env:
+          RELAY_APP_TOKEN: ${{ secrets.RELAY_APP_TOKEN }}
+        run: python scripts/ci/inject-relay-token.py
       - name: 打包
         run: pyinstaller jianli-lieshou-bh.spec
       - name: 烟测 exe 版本

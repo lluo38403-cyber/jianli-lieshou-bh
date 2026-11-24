@@ -60,7 +60,7 @@ from pathlib import Path
 
 APP_NAME = "简历猎手"
 APP_EXE_NAME = "简历猎手.exe"
-APP_VERSION = "1.1.34"
+APP_VERSION = "1.1.35"
 INSTALL_SUBDIR = "简历猎手"
 DESKTOP_SHORTCUT_NAME = "简历猎手.lnk"  # 与 updater._DESKTOP_SHORTCUT_NAME 同名
 # 安装时用户不勾选“创建桌面快捷方式”，安装程序写这个 marker；
@@ -540,7 +540,7 @@ def format_leftover_notice(leftovers: list[str], log_path: str | Path) -> str:
 
 # ─── Windows 真机界限（Linux CI 测不了的部分） ──────────────────────────
 # 以下行为只在 Windows 真机上发生，本模块与单元测试覆盖不到，
-# 留给 lucky 在无影云电脑上实测（见改动清单 XLIV「未验证」）：
+# 留给 lucky 在无影云电脑上实测：
 # - Inno 安装向导：默认路径是不是 {src}\\简历猎手、向导说明
 #   文案是否清晰无乱码、改目录后不再追加子文件夹、注册表卸载项与
 #   开始菜单/桌面快捷方式、装完启动；

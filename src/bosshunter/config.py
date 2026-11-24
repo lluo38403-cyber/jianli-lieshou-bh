@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -679,6 +680,70 @@ def migrate_legacy_credentials(config_path: Path | None = None) -> bool:
 
     _write_yaml_atomic(config_path, public_config)
     return True
+
+
+# v49：2026-11-24 仓库改公开后泄露的中转钥匙。config.example.yaml 里
+# 曾经直接写着服务端正在用的 relay_token（app_token），已泄露，启动时
+# 自动迁移——存的值恰好是这个旧值时，用随包示例里的新值覆盖；别的自定
+# 义值一律不动；随包示例里的值是空或占位时不换。
+OLD_LEAKED_RELAY_TOKEN = "d2118d4f9923e2eee55928cce5a44c4f"
+
+
+def _bundled_example_path(config_path: Path) -> Path | None:
+    """Locate the bundled config.example.yaml next to this install."""
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        # 打包后的 exe：示例在 _MEIPASS（即 _internal/）里，不在 exe 旁边
+        # （找法与 launcher._ensure_config 一致）。
+        candidates.append(Path(meipass) / "config.example.yaml")
+    candidates.append(Path(config_path).parent / "config.example.yaml")
+    candidates.append(Path(__file__).resolve().parents[2] / "config.example.yaml")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    lowered = value.lower()
+    return any(
+        marker in lowered
+        for marker in ("占位", "placeholder", "your_token", "your-token", "changeme", "待填")
+    )
+
+
+def migrate_leaked_relay_token(config_path: Path | None = None) -> bool:
+    """Replace a leaked relay_token in config.yaml with the bundled new one.
+
+    只在存的值恰好等于已泄露的旧值时才换；别的自定义值不动；随包示例
+    里没有新值（空、占位、还是旧值）时不换。任何一步出错都返回 False，
+    绝不挡启动——旧值在服务端双钥匙过渡期内仍可用，下次启动再试。
+    """
+    try:
+        config_path = Path(config_path or "config.yaml")
+        public_config = _load_yaml_mapping(config_path)
+        ai_cfg = public_config.get("ai")
+        if not isinstance(ai_cfg, dict):
+            return False
+        stored = str(ai_cfg.get("relay_token") or "").strip()
+        if stored != OLD_LEAKED_RELAY_TOKEN:
+            return False
+        example_path = _bundled_example_path(config_path)
+        if example_path is None:
+            return False
+        example_config = _load_yaml_mapping(example_path)
+        example_ai = example_config.get("ai")
+        new_token = ""
+        if isinstance(example_ai, dict):
+            new_token = str(example_ai.get("relay_token") or "").strip()
+        if not new_token or new_token == OLD_LEAKED_RELAY_TOKEN or _looks_like_placeholder(new_token):
+            return False
+        ai_cfg["relay_token"] = new_token
+        _write_yaml_atomic(config_path, public_config)
+        return True
+    except Exception:
+        return False
 
 
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:

@@ -7,7 +7,7 @@ import click
 from rich.console import Console
 
 from bosshunter import __version__
-from bosshunter.config import load_config, migrate_legacy_credentials
+from bosshunter.config import load_config, migrate_leaked_relay_token, migrate_legacy_credentials
 
 console = Console()
 GITHUB_URL = "https://github.com/powerycy/BossHunter"
@@ -102,6 +102,8 @@ def cli(ctx: click.Context, config_path: str | None) -> None:
     os.chdir(base_dir)
     if path is not None:
         migrate_legacy_credentials(path)
+        # v49：存着已泄露旧钥匙的 config.yaml，启动时换成随包的新钥匙。
+        migrate_leaked_relay_token(path)
     ctx.obj["config"] = load_config(path)
     from bosshunter.browser import configure
     configure(ctx.obj["config"])

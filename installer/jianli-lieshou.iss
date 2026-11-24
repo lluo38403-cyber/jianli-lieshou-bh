@@ -39,7 +39,7 @@
 ;   InitializeUninstall 的注释），所以改问 SuppressibleMsgBox 对话框。
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.34"
+  #define MyAppVersion "1.1.35"
 #endif
 
 [Setup]
