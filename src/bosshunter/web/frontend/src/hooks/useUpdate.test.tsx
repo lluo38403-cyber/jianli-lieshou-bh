@@ -476,6 +476,9 @@ describe('UpdateProvider keeps one download state across pages', () => {
 
   const statusCallCount = () => fetchMock.mock.calls.filter(([input]) => String(input) === '/api/update/status').length
 
+  // v50：这测要走好几轮 1 秒轮询 + 两次换页渲染，在慢机器上实测要
+  // 5 秒出头，超过 vitest 默认的 5 秒单测超时——不是产品变慢，只给
+  // 这一个测试放宽到 10 秒，断言本身一个字没动。
   it('shares one download between pages and keeps polling after navigation', async () => {
     const { rerender } = render(
       <UpdateProvider>
@@ -504,7 +507,7 @@ describe('UpdateProvider keeps one download state across pages', () => {
     )
     expect(screen.getByTestId('a-phase').textContent).toBe('downloading')
     expect(screen.getByTestId('a-progress').textContent).toBe('25')
-  })
+  }, 10000)
 
   it('resumes a download already running on the server after a fresh mount', async () => {
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {

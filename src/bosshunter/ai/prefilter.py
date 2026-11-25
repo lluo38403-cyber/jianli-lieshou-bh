@@ -97,6 +97,39 @@ def _posted_days_block_reason(job: dict, profile: dict) -> str | None:
     return None
 
 
+# 学历等级（从低到高）：高学历满足低要求（v50）。
+# 同一级：高中/中专/中技/职高；硕士/研究生；大专/专科。
+# 顺序从高到低排，逐个按子串匹配。
+_EDU_LEVEL_KEYWORDS: tuple[tuple[str, int], ...] = (
+    ("博士", 6),
+    ("硕士", 5),
+    ("研究生", 5),
+    ("本科", 4),
+    ("大专", 3),
+    ("专科", 3),
+    ("高中", 2),
+    ("中专", 2),
+    ("中技", 2),
+    ("职高", 2),
+    ("初中", 1),
+)
+
+
+def _parse_edu_level(edu: str) -> int | None:
+    """从学历文本里解析等级；解析不出返回 None。
+
+    能从「高中·社招」「大专及以上」「初中及以下」这类带后缀的写法里
+    抽出等级；后缀不改变比较（用户等级 >= 解析出的等级即符合）。
+    """
+    text = (edu or "").strip()
+    if not text:
+        return None
+    for keyword, level in _EDU_LEVEL_KEYWORDS:
+        if keyword in text:
+            return level
+    return None
+
+
 def rule_score(job: dict, config: dict) -> tuple[int, str]:
     """本地规则评分（无 AI Key 时的兜底）：0-100 分。
 
@@ -157,8 +190,17 @@ def rule_score(job: dict, config: dict) -> tuple[int, str]:
         # 岗位明确写了学历不限：任何学历都符合，给满分（v47：以前
         # “学历不限”两边都对不上，白白扣了 5 分）。
         education_points = 5
-    elif wanted_edu and job_edu and (wanted_edu in job_edu or job_edu in wanted_edu):
-        education_points = 5
+    elif wanted_edu and job_edu:
+        # v50：学历按等级算，高学历满足低要求（大专 >= 初中/高中）。
+        # 旧的子串比对把“大专”和“初中及以下”/“高中·社招”判成没对上。
+        wanted_level = _parse_edu_level(wanted_edu)
+        job_level = _parse_edu_level(job_edu)
+        if wanted_level is not None and job_level is not None:
+            if wanted_level >= job_level:
+                education_points = 5
+        elif wanted_edu in job_edu or job_edu in wanted_edu:
+            # 等级解析不出的奇怪写法，按老的子串比对兜底。
+            education_points = 5
 
     raw_total = 40 + keyword_points + salary_points + city_points + education_points
     score = raw_total

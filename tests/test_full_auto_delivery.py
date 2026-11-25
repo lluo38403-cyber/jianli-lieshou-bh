@@ -89,7 +89,7 @@ class RuleScoreFallbackTests(unittest.TestCase):
 
         jd_only, _ = rule_score(
             dict(BASE_JOB, title="销售代表", jd="负责 Python 后端开发，要求熟悉 FastAPI。",
-                 salary="15-25K", city="北京", education="大专"),
+                 salary="15-25K", city="北京", education="硕士"),
             NO_KEY_CONFIG,
         )
         self.assertLess(jd_only, 60, "仅 JD 命中且城市/学历不符合时不过线")
@@ -126,6 +126,112 @@ class RuleScoreFallbackTests(unittest.TestCase):
         # 真不匹配的还是 0 分，不动。
         _, reason3 = rule_score(dict(job, education="硕士"), config)
         self.assertIn("学历0分（没对上）", reason3)
+
+    def test_rule_score_education_level_comparison(self):
+        """学历按等级算：高学历满足低要求（v50）。
+
+        何铜浩反馈：他是大专，岗位要求“初中及以下”或“高中·社招”时
+        学历都是 0 分（“大专打不过高中和初中”）。旧逻辑只按子串比对，
+        “大专”和“初中及以下”/“高中·社招”互相不包含，所以 0 分。
+        等级（从低到高）：初中 → 高中/中专/中技/职高 → 大专 → 本科
+        → 硕士/研究生 → 博士；用户等级 >= 岗位等级就给 5 分。
+        下面用标题命中关键词的固定搭配（基础 40 + 关键词 10 + 薪资 10
+        + 城市 5 + 学历 5/0），学历符合时 70 分、不符合时 65 分。
+        """
+        from bosshunter.ai.prefilter import rule_score
+
+        def score_for(user_edu, job_edu):
+            config = {
+                "profile": {
+                    "target_roles": [],
+                    "target_cities": ["潮州"],
+                    "education": user_edu,
+                    "salary_min": 3,
+                    "salary_max": 7,
+                },
+                "search": {"keywords": ["仓库"]},
+                "ai": {},
+            }
+            job = {
+                "title": "服装仓库管理员",
+                "company": "示例公司",
+                "salary": "5-7K",
+                "city": "潮州",
+                "education": job_edu,
+                "jd": "负责服装仓库管理。",
+            }
+            return rule_score(job, config)
+
+        cases = [
+            # (用户学历, 岗位学历, 期望总分, 学历分文案)
+            ("大专", "初中及以下", 70, "学历5分（符合）"),
+            ("大专", "高中·社招", 70, "学历5分（符合）"),
+            ("初中", "本科", 65, "学历0分（没对上）"),
+            ("大专", "大专及以上", 70, "学历5分（符合）"),
+            ("本科", "大专", 70, "学历5分（符合）"),
+            ("大专", "本科", 65, "学历0分（没对上）"),
+            ("中专", "高中", 70, "学历5分（符合）"),
+            ("本科", "学历不限", 70, "学历5分（符合）"),
+            ("", "本科", 65, "学历0分（没对上）"),
+            ("大专", "", 65, "学历0分（没对上）"),
+        ]
+        for user_edu, job_edu, expected_score, expected_note in cases:
+            with self.subTest(user_edu=user_edu, job_edu=job_edu):
+                score, reason = score_for(user_edu, job_edu)
+                self.assertEqual(score, expected_score)
+                self.assertIn(expected_note, reason)
+
+    def test_rule_score_education_level_he_tonghao_screenshots(self):
+        """何铜浩两张截图的原样复现（无关键词命中）。
+
+        截图 1：大专 vs 初中及以下，薪资/城市符合。学历分 0→5，
+        原始分 55→60；但无关键词命中时总分封顶 55，所以面板最终分
+        仍是 55——“55 变 60”说的是原始分，不是最终分。
+        截图 2：大专 vs 高中·社招，薪资 3 分、城市 5 分。学历分 0→5，
+        原始分 48→53，未触顶，最终分 53。
+        """
+        from bosshunter.ai.prefilter import rule_score
+
+        config = {
+            "profile": {
+                "target_roles": [],
+                "target_cities": ["潮州"],
+                "education": "大专",
+                "salary_min": 3,
+                "salary_max": 7,
+            },
+            "search": {"keywords": ["仓库"]},
+            "ai": {},
+        }
+        job1 = {
+            "title": "仓储库维,快递打包",
+            "company": "我能云仓",
+            "salary": "4-6K",
+            "city": "潮州",
+            "education": "初中及以下",
+            "jd": "库维岗：负责日常收货上架，库位维护，打包岗：负责日常订单打包，"
+                  "核实订单信息。装卸：负责常来货，发货，装卸工作。"
+                  "做过仓储云仓优先上班时间：9:30-21:30左右公司包吃住",
+        }
+        score1, reason1 = rule_score(job1, config)
+        self.assertIn("学历5分（符合）", reason1)
+        self.assertIn("= 60分", reason1)
+        self.assertIn("封顶55分", reason1)
+        self.assertEqual(score1, 55)
+
+        job2 = {
+            "title": "仓储物流经理",
+            "company": "爱丽斯",
+            "salary": "8-14K",
+            "city": "潮州",
+            "education": "高中·社招",
+            "jd": "职责：仓位编制管理进出库执行管理进出库台账管理物流周期管理"
+                  "与进度跟踪技能需求：精通Excel作数据统计应用具备WMS、"
+                  "ERP等信息化系统的操作经验",
+        }
+        score2, reason2 = rule_score(job2, config)
+        self.assertIn("学历5分（符合）", reason2)
+        self.assertEqual(score2, 53)
 
     def test_rule_score_reason_lists_each_factor_points(self):
         """打分原因要让用户对得上分数：每项写清加了几分，封顶也要写出来（图1）。"""

@@ -1114,6 +1114,27 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
             "skip_backoff": True,
         }, target_id
 
+    # v50：第三条路——BOSS 的预设文案可能在 _handle_greet_popup 的视线之外
+    # 已经进了会话（点“立即沟通”时 BOSS 自己发出，或聊天页没打开时那次真实
+    # 点击兜底点到了后来才弹出的预设弹窗的确定按钮）。上面只认“我们的打招呼
+    # 在不在”，预设文案不在它眼里，于是照常发了我们的那条，同一 HR 一次收
+    # 到两条（第一条是 BOSS 预设文案，第二条才是我们的固定打招呼）。发之前
+    # 再认一次“会话里有没有我发出去的任何消息”：有已送达的就不发，直接记
+    # 成功；有发送中的也不发，请人工检查；之前那条失败了或什么都没有，才正
+    # 常发我们的。只认当前这个 HR 的会话（到这里已经在 _wait_for_chat_page
+    # 里用 _chat_target_matches_job 核对过会话归属）。
+    any_state = _message_delivery_state(target_id, None)
+    if any_state == "delivered":
+        close_tab(target_id)
+        return {"success": True, "already_present": True, "verified": True}, None
+    if any_state == "pending":
+        return {
+            "success": False,
+            "error": "existing_message_pending",
+            "history_detail": "会话中已有发送中的消息，请人工检查",
+            "skip_backoff": True,
+        }, target_id
+
     submit_result = _submit_chat_message_background(target_id, greeting)
     if not submit_result.get("success"):
         # 后台提交报失败不等于没发出去：evaluate 本身超时/解析失败时，
