@@ -91,3 +91,29 @@ describe('ScoreJobsDialog progress polling', () => {
   })
 
 })
+
+describe('ScoreJobsDialog Escape', () => {
+  const stubFetch = () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input) === '/api/scoring/runs' ? [] : { eligible_jobs: 0 },
+    ), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+  }
+
+  it('closes on Escape like the collect dialog and the tour', async () => {
+    // v51 回归：之前按 Esc 没反应，只能点「关闭」/「取消」。
+    stubFetch()
+    const onClose = vi.fn()
+    render(<ScoreJobsDialog open selectedJobIds={[]} onClose={onClose} onStart={vi.fn()} />)
+    await screen.findByText('单独打分')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not close on Escape when the dialog is not open', () => {
+    stubFetch()
+    const onClose = vi.fn()
+    render(<ScoreJobsDialog open={false} selectedJobIds={[]} onClose={onClose} onStart={vi.fn()} />)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+  })
+})

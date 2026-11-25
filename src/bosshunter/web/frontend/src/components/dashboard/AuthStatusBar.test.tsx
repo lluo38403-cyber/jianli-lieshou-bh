@@ -180,4 +180,43 @@ describe('AuthStatusBar', () => {
     expect(writeText).toHaveBeenCalledWith('a1b2c3d4e5f6')
     expect(await screen.findByText('已复制')).toBeTruthy()
   })
+
+  it('中转连不上时显示后端的大白话错误和再试一次，不是一直转圈', async () => {
+    // v51 回归：之前只渲染 formatRemaining，unknown 一直显示
+    // “正在看授权状态…”，snapshot.error 从没地方显示。
+    const refresh = vi.fn(async () => {})
+    const auth = fakeAuth({
+      snapshot: {
+        machineIdShort: 'a1b2c3d4e5f6',
+        status: 'unknown',
+        remainingSeconds: 0,
+        offline: false,
+        error: '连不上，再检查一下网络。',
+      },
+      remainingSeconds: 0,
+      refresh,
+    })
+    render(<AuthStatusBar auth={auth} />)
+    expect(screen.getByText('连不上，再检查一下网络。')).toBeTruthy()
+    expect(screen.queryByText('正在看授权状态…')).toBeNull()
+    fireEvent.click(screen.getByTestId('auth-retry'))
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText('再试一次')).toBeTruthy()
+  })
+
+  it('没拿到错误时 unknown 还是显示正在看授权状态，不出重试', () => {
+    const auth = fakeAuth({
+      snapshot: {
+        machineIdShort: '',
+        status: 'unknown',
+        remainingSeconds: 0,
+        offline: false,
+        error: '',
+      },
+      remainingSeconds: 0,
+    })
+    render(<AuthStatusBar auth={auth} />)
+    expect(screen.getByText('正在看授权状态…')).toBeTruthy()
+    expect(screen.queryByTestId('auth-retry')).toBeNull()
+  })
 })

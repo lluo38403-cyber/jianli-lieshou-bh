@@ -608,7 +608,9 @@ export default function ConfigPage() {
                 <label className="text-xs text-foreground">智能定制打招呼（结合岗位与简历优化）</label>
                 <p className="mt-1 text-xs text-muted">默认关闭；开启后结合岗位与简历定制打招呼，生成失败时用固定文案继续投。</p>
               </div>
-              <Switch checked={config.profile?.ai_greeting_enabled ?? false} onChange={v => updateConfig('profile.ai_greeting_enabled', v)} aria-label="智能定制打招呼（结合岗位与简历优化）" />
+              <span data-tour="greeting-ai" className="shrink-0">
+                <Switch checked={config.profile?.ai_greeting_enabled ?? false} onChange={v => updateConfig('profile.ai_greeting_enabled', v)} aria-label="智能定制打招呼（结合岗位与简历优化）" />
+              </span>
             </div>
             <div>
               <label className="text-xs text-foreground" htmlFor="fixed-greeting">自定义固定打招呼文案</label>

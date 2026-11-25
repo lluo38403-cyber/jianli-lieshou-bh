@@ -900,6 +900,29 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         self.assertNotIn("https://portfolio.example", ordinary_prompt)
         self.assertIn("https://portfolio.example", design_prompt)
 
+    def test_example_highlight_placeholder_never_reaches_the_prompt(self):
+        # v51：配置示例里的占位亮点不是真亮点，不能进提示词。
+        config = {
+            "profile": {
+                "extra_highlights": ["你的核心竞争力描述", "", "  ", "三年仓库管理经验"],
+            }
+        }
+        with patch("bosshunter.ai.greeter._call_claude", return_value="生成结果") as call_ai:
+            greeter._generate_greeting_once(_job("ordinary"), "匿名简历摘要", config)
+            prompt = call_ai.call_args.args[0]
+
+        self.assertNotIn("你的核心竞争力描述", prompt)
+        self.assertIn("- 三年仓库管理经验", prompt)
+
+    def test_placeholder_only_highlights_fall_back_to_no_highlights(self):
+        config = {"profile": {"extra_highlights": ["你的核心竞争力描述"]}}
+        with patch("bosshunter.ai.greeter._call_claude", return_value="生成结果") as call_ai:
+            greeter._generate_greeting_once(_job("ordinary"), "匿名简历摘要", config)
+            prompt = call_ai.call_args.args[0]
+
+        self.assertNotIn("你的核心竞争力描述", prompt)
+        self.assertIn("（无额外亮点配置）", prompt)
+
     def test_greeting_prompt_forbids_unprovided_urls(self):
         with patch("bosshunter.ai.greeter._call_claude", return_value="普通招呼语") as call_ai:
             greeter._generate_greeting_once(_job("no-url-prompt"), "不含网址的简历", {})

@@ -258,7 +258,7 @@ const modes: Array<{ mode: WorkbenchMode; title: string; description: string }> 
 const statItems = [
   { key: '采集总数', todayLabel: '今天新找到的岗位', totalLabel: '一共找到的岗位' },
   { key: '初筛通过', todayLabel: '今天筛出来的好岗位', totalLabel: '一共筛出来的好岗位', highlight: true },
-  { key: 'AI评分', todayLabel: '今天打过分的岗位', totalLabel: '一共打过分的岗位' },
+  { key: 'AI评分', todayLabel: '今天新增且已打分的岗位', totalLabel: '一共打过分的岗位' },
   { key: 'pending', todayLabel: '等着投的岗位', totalLabel: '等着投的岗位', highlight: true, current: true },
   { key: '发送', todayLabel: '今天已投出的简历', totalLabel: '一共已投出的简历', highlight: true },
 ]
@@ -2806,13 +2806,13 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         <span className="rounded-full bg-secondary px-3 py-2 font-bold text-primary">已选 {selectedIds.length} 个</span>
         {selectedIds.length > 0 && <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>取消选择</Button>}
         <Button variant="destructive" size="sm" disabled={!selectedIds.length} onClick={() => void softDelete(selectedIds)}>扔进回收站</Button>
-        <Button size="sm" disabled={!selectedIds.length} onClick={() => void deliverSelectedJobs()}>
+        <Button size="sm" disabled={!selectedIds.length} onClick={() => void deliverSelectedJobs()} data-tour="deliver-selected">
           <Send className="mr-1 h-4 w-4" />把选中的都投了
         </Button>
         <Button size="sm" onClick={() => void startQuickScoring()} disabled={quickScoring || !total || !selectedIds.length} title={selectedIds.length ? undefined : '先勾选要打分的岗位'}>
           {quickScoring ? '正在开始打分…' : '给选中的岗位打分'}
         </Button>
-        <Button variant="secondary" size="sm" onClick={() => setShowScoreDialog(true)}>打分设置</Button>
+        <Button variant="secondary" size="sm" onClick={() => setShowScoreDialog(true)} data-tour="score-open">打分设置</Button>
         <ExportMenu onExport={exportJobs} hasSelection={selectedIds.length > 0} hasFiltered={total > 0} />
       </div>
       {notice && <div className="mb-4 rounded-xl bg-secondary px-4 py-3 text-sm text-primary">{notice}</div>}

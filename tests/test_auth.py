@@ -551,6 +551,8 @@ class AuthRouteTests(unittest.TestCase):
         self.assertGreaterEqual(data["remaining_seconds"], 7190)
         self.assertLessEqual(data["remaining_seconds"], 7200)
         self.assertEqual(data["machine_id_short"], TEST_MACHINE[:12])
+        # v51：完整 64 位机器码不再返回给前端，只有 12 位短码。
+        self.assertNotIn("machine_id", data)
 
     def test_activate_route_adds_day_card(self):
         client = self._client()
@@ -564,6 +566,8 @@ class AuthRouteTests(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertGreaterEqual(data["remaining_seconds"], 7200 + DAY - 10)
         self.assertLessEqual(data["remaining_seconds"], 7200 + DAY)
+        # v51：激活接口同样只回短码，不吐完整机器码。
+        self.assertNotIn("machine_id", data)
 
     def test_activate_route_rejects_bad_card_with_plain_message(self):
         client = self._client()

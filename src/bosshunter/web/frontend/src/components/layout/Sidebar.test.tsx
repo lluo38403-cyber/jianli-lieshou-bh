@@ -68,3 +68,23 @@ describe('Sidebar version display', () => {
     }
   })
 })
+
+describe('Sidebar onboarding entry', () => {
+  it('has a permanent 新手教程 entry that reopens the tour', async () => {
+    // v51：唯一入口原来在首页“第一次用”区，一有岗位就消失；侧栏常驻。
+    stubFetch('1.1.37')
+    const onStart = vi.fn()
+    window.addEventListener('jianli-lieshou:start-onboarding', onStart)
+    try {
+      render(
+        <MemoryRouter>
+          <Sidebar />
+        </MemoryRouter>,
+      )
+      fireEvent.click(screen.getByTestId('sidebar-tour'))
+      expect(onStart).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener('jianli-lieshou:start-onboarding', onStart)
+    }
+  })
+})

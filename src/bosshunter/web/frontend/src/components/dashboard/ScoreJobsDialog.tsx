@@ -141,6 +141,19 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
     }
   }, [open])
 
+  // Esc 关闭：和采集弹窗、新手引导一致（v51 之前按 Esc 没反应，
+  // 只能点「关闭」/「取消」）。onClose 用 ref 存，免得每次渲染都重绑。
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  useEffect(() => {
+    if (!open) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCloseRef.current()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open])
+
   if (!open) return null
 
   const start = async () => {

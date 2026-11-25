@@ -24,6 +24,10 @@ from bosshunter.db import (
 
 console = Console()
 
+# 配置示例里的占位亮点：老用户 config.yaml 里可能还留着它，绝不能当成
+# 真亮点塞进提示词——没填亮点时“可用亮点”那行只显示“无额外亮点配置”。
+EXAMPLE_HIGHLIGHT_PLACEHOLDER = "你的核心竞争力描述"
+
 GREETING_PROMPT = """以求职者身份，写一条在{platform}发给HR的简短私信。
 
 ## 我的背景（完整简历；通读后按岗位核心任务选择一项最相关的真实经历，不按出现顺序选取）
@@ -455,8 +459,13 @@ def _generate_greeting_once(
     critique_section = f"\n## 补充改进要求\n- {critique}\n" if critique else ""
 
     # Build extra highlights from config (portfolio URL, personal strengths, etc.)
+    # 空的和示例占位都不算亮点：没填就整行不出现，别把占位文案当真亮点。
     profile_cfg = config.get("profile", {})
-    highlights = profile_cfg.get("extra_highlights", [])
+    highlights = [
+        str(h).strip()
+        for h in profile_cfg.get("extra_highlights", [])
+        if str(h).strip() and str(h).strip() != EXAMPLE_HIGHLIGHT_PLACEHOLDER
+    ]
     portfolio_url = profile_cfg.get("portfolio_url", "")
     highlight_lines = [f"- {h}" for h in highlights]
     portfolio_context = f"{job.get('title', '')} {job.get('jd', '')}".lower()

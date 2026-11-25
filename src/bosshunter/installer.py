@@ -60,7 +60,7 @@ from pathlib import Path
 
 APP_NAME = "简历猎手"
 APP_EXE_NAME = "简历猎手.exe"
-APP_VERSION = "1.1.36"
+APP_VERSION = "1.1.37"
 INSTALL_SUBDIR = "简历猎手"
 DESKTOP_SHORTCUT_NAME = "简历猎手.lnk"  # 与 updater._DESKTOP_SHORTCUT_NAME 同名
 # 安装时用户不勾选“创建桌面快捷方式”，安装程序写这个 marker；

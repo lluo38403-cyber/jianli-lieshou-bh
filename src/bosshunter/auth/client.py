@@ -177,10 +177,15 @@ class AuthClient:
         return remaining is not None and remaining <= 0
 
     def snapshot(self) -> dict[str, Any]:
-        """JSON-safe state for the frontend (machine id is shortened)."""
+        """JSON-safe state for the frontend (only the 12-char short id).
+
+        The full 64-char machine id never leaves this process: it is
+        only used to sign requests to the relay (sign_request) and to
+        verify the relay's responses. The frontend shows and copies
+        only machine_id_short.
+        """
         remaining = self.remaining_seconds()
         return {
-            "machine_id": self.machine_id,
             "machine_id_short": self.machine_id[:12],
             "status": self.status if remaining is not None else "unknown",
             "remaining_seconds": remaining if remaining is not None else 0,

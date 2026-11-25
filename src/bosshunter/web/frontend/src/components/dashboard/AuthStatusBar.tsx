@@ -19,9 +19,15 @@ export function AuthStatusBar({ auth }: AuthStatusBarProps) {
   const [serviceOpen, setServiceOpen] = useState(false)
   const [qrFailed, setQrFailed] = useState(false)
   const [copied, setCopied] = useState<'machine' | 'wechat' | null>(null)
+  const [retrying, setRetrying] = useState(false)
 
   const status = snapshot?.status ?? 'unknown'
   const statusText = formatRemaining(remainingSeconds, status)
+  // 中转连不上时状态一直是 unknown，只显示“正在看授权状态…”会让人干等：
+  // 后端 sync 失败会把大白话原因写进 snapshot.error，这里直接显示出来，
+  // 再给一个重试入口（走 POST /api/auth/refresh 立刻重连一次）。
+  const authError = snapshot?.error || ''
+  const showAuthError = status === 'unknown' && authError !== ''
   const dotClass =
     status === 'expired'
       ? 'bg-danger-solid'
@@ -66,6 +72,15 @@ export function AuthStatusBar({ auth }: AuthStatusBarProps) {
     if (display.buyUrl) window.open(display.buyUrl, '_blank', 'noopener,noreferrer')
   }
 
+  const handleRetryAuth = async () => {
+    setRetrying(true)
+    try {
+      await auth.refresh()
+    } finally {
+      setRetrying(false)
+    }
+  }
+
   // 注意：弹窗必须和带入场动画（transform）的状态栏平级，不能嵌在
   // 动画 div 里面——否则 fixed 会以状态栏为参照，弹窗跑偏、被截断。
   // 更进一步：整页外层还有个 animate-page-in 动画容器（也带 transform），
@@ -79,8 +94,19 @@ export function AuthStatusBar({ auth }: AuthStatusBarProps) {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <span className="inline-flex items-center gap-2 text-base font-semibold text-foreground">
           <span className={cn('h-2 w-2 animate-pulse rounded-full', dotClass)} />
-          {statusText}
+          {showAuthError ? authError : statusText}
         </span>
+        {showAuthError ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            data-testid="auth-retry"
+            onClick={() => void handleRetryAuth()}
+            disabled={retrying}
+          >
+            {retrying ? '正在重试…' : '再试一次'}
+          </Button>
+        ) : null}
         {snapshot?.offline ? (
           <span className="text-xs text-muted">网络断了，先用上次的状态顶着</span>
         ) : null}
@@ -121,7 +147,7 @@ export function AuthStatusBar({ auth }: AuthStatusBarProps) {
           className="min-w-52 flex-1"
           maxLength={24}
         />
-        <Button data-testid="auth-activate" onClick={() => void handleActivate()} disabled={activating}>
+        <Button data-testid="auth-activate" data-tour="auth-activate" onClick={() => void handleActivate()} disabled={activating}>
           {activating ? '正在激活…' : '激活'}
         </Button>
         {display.buyUrl ? (

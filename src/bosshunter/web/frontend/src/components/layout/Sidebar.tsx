@@ -1,9 +1,10 @@
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Briefcase, Home, Radar, Settings } from 'lucide-react'
+import { Briefcase, GraduationCap, Home, Radar, Settings } from 'lucide-react'
 import { useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { requestManualUpdateCheck } from '@/lib/updateEvents'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
+import { START_ONBOARDING_EVENT } from '@/components/onboarding/OnboardingTour'
 
 const navItems = [
   { to: '/', icon: Home, label: '首页' },
@@ -116,6 +117,7 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
               <button
                 type="button"
                 data-testid="sidebar-version"
+                data-tour="update-check"
                 onClick={requestManualUpdateCheck}
                 title="点一下检查有没有新版本"
                 className="mt-0.5 rounded px-1 py-0.5 text-left text-[11px] text-white/60 transition-colors hover:bg-white/10 hover:text-white"
@@ -133,7 +135,7 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
             key={item.to}
             to={item.to}
             onClick={event => handleNavClick(event, item.to)}
-            data-tour={item.to === '/config' ? 'nav-config' : item.to === '/' ? 'nav-workbench' : undefined}
+            data-tour={item.to === '/config' ? 'nav-config' : item.to === '/' ? 'nav-workbench' : item.to === '/jobs' ? 'nav-jobs' : item.to === '/monitor' ? 'nav-monitor' : undefined}
             className={({ isActive }) =>
               `relative flex items-center justify-center gap-3 rounded-xl px-1 py-3 text-[10px] transition-all duration-200 hover:-translate-y-px md:justify-between md:px-3 md:text-sm ${
                 isActive
@@ -152,6 +154,22 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
           </NavLink>
         ))}
       </nav>
+
+      {/* 常驻入口：首页“第一次用”区一有岗位就消失，新手教程要随时能重开。 */}
+      <div className="px-1.5 pb-2 md:px-3">
+        <button
+          type="button"
+          data-testid="sidebar-tour"
+          onClick={() => window.dispatchEvent(new Event(START_ONBOARDING_EVENT))}
+          title="重开新手引导"
+          className="relative flex w-full items-center justify-center gap-3 rounded-xl px-1 py-3 text-[10px] text-white/70 transition-all duration-200 hover:-translate-y-px hover:bg-white/10 hover:text-white md:justify-between md:px-3 md:text-sm"
+        >
+          <span className="flex flex-col items-center gap-1 md:flex-row md:gap-3">
+            <GraduationCap className="h-4 w-4" />
+            新手教程
+          </span>
+        </button>
+      </div>
 
       {pendingReplies > 0 && (
         <div className="space-y-3 border-t border-white/10 px-2 py-4 md:px-4">
