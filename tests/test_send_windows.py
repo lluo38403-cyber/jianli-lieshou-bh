@@ -5,10 +5,11 @@ SendWindowChecker 类本身保留（兼容旧配置文件的校验），但发�
 """
 
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from unittest.mock import patch
 
 import yaml
@@ -392,6 +393,113 @@ class RoundRestTests(unittest.TestCase):
             self.assertEqual(len(round_rests), 1)
             self.assertEqual(len(batch_rests), 2)
             self.assertTrue(any("这轮投了 5 个" in message for message in logs))
+
+
+class PauseRefreshTests(unittest.TestCase):
+    """暂停后改设置（v52）：恢复时按新档位走，不再用任务启动时的快照。
+
+    任务以稳妥档位启动，投出第 1 个后暂停；暂停期间把已保存的配置
+    改成标准档位，恢复后下一批休息落在标准档 60–180 秒内（不是稳妥
+    档的 180–300 秒）；7 个岗位全部投完，进度不丢。
+    """
+
+    def _ready_db(self, tmp, count):
+        db_path = Path(tmp) / "jobs.db"
+        db = get_db(db_path)
+        for number in range(count):
+            job_id = str(number)
+            insert_job(db, {"id": job_id, "title": "Test", "company": "Test", "url": "https://www.zhipin.com/test"})
+            update_job_status(db, job_id, "ready")
+            update_job_greeting(db, job_id, "Test greeting")
+        db.close()
+        return db_path
+
+    @staticmethod
+    def _write_throttle_config(path, tier):
+        path.write_text(
+            "throttle:\n"
+            f"  risk_tier: {tier}\n"
+            "  stage_rest: true\n"
+            "  delivery_round_size: 20\n",
+            encoding="utf-8",
+        )
+
+    def test_pause_then_change_tier_resume_uses_new_tier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = self._ready_db(tmp, 7)
+            config_path = Path(tmp) / "config.yaml"
+            self._write_throttle_config(config_path, "steady")
+            logs: list[str] = []
+            sleeps: list[float] = []
+            pause_event = Event()
+            send_started = Event()
+            release_first_send = Event()
+            send_calls: list[str] = []
+
+            def fake_send(job, greeting, throttle_config):
+                send_calls.append(job["id"])
+                if len(send_calls) == 1:
+                    send_started.set()
+                    # 等主线程把暂停挂上、把配置改掉，再放行第一条。
+                    self.assertTrue(release_first_send.wait(timeout=10))
+                return {"success": True}, None
+
+            config = {
+                "throttle": {"risk_tier": "steady", "stage_rest": True},
+                "_workbench_log": logs.append,
+                "_workbench_pause_event": pause_event,
+                "_workbench_config_path": str(config_path),
+            }
+            result: dict[str, int] = {}
+
+            def run_send():
+                with patch.object(sender.RequestThrottle, "wait", return_value=False), \
+                        patch.object(sender, "_send_greeting_once", side_effect=fake_send), \
+                        patch.object(sender, "sample_batch_size", side_effect=[3, 4]), \
+                        patch.object(sender, "_sleep_or_stop", side_effect=lambda seconds, _e: sleeps.append(seconds) or False):
+                    result["sent"] = sender.send_greetings(config, db_path=db_path)
+
+            worker = Thread(target=run_send, daemon=True)
+            worker.start()
+            self.assertTrue(send_started.wait(timeout=10))
+            pause_event.set()
+            self._write_throttle_config(config_path, "standard")
+            release_first_send.set()
+            # 等投递循环真的进暂停（日志“已暂停”就是信号），再点继续。
+            deadline = time.monotonic() + 10
+            while not any("已暂停" in message for message in logs):
+                self.assertLess(time.monotonic(), deadline, "投递循环没有进暂停")
+                time.sleep(0.05)
+            pause_event.clear()
+            worker.join(timeout=10)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result.get("sent"), 7)
+            self.assertEqual(len(sleeps), 1)
+            self.assertGreaterEqual(sleeps[0], 60.0)
+            self.assertLessEqual(sleeps[0], 180.0)
+            self.assertTrue(any("这轮已投" in message for message in logs))
+
+    def test_refresh_with_missing_config_file_keeps_old_settings(self):
+        """配置文件不在了：重读失败不改参数、不打断投递。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "throttle": {"risk_tier": "steady", "stage_rest": True},
+                "_workbench_config_path": str(Path(tmp) / "no-such.yaml"),
+            }
+            throttle_config = dict(config["throttle"])
+            self.assertEqual(sender.refresh_throttle_settings(config, throttle_config), {})
+            self.assertEqual(throttle_config["risk_tier"], "steady")
+
+    def test_update_delay_range_keeps_last_request_time(self):
+        """换等待区间不动上次发送时间：下一条照样扣掉已过去的时间。"""
+        from bosshunter.throttle import RequestThrottle
+
+        throttle = RequestThrottle(delay_min=120.0, delay_max=300.0)
+        throttle.mark()
+        before = throttle._last_request_time
+        throttle.update_delay_range(60.0, 180.0)
+        self.assertEqual(throttle._last_request_time, before)
+        self.assertEqual((throttle._delay_min, throttle._delay_max), (60.0, 180.0))
 
 
 if __name__ == "__main__":

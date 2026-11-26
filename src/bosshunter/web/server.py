@@ -602,6 +602,8 @@ def _preflight_messages(mode: str, config: dict, options: dict | None = None) ->
 def _task_config(extra: dict | None = None) -> dict:
 	config = load_config(CONFIG_PATH)
 	config["_workbench_live_greeting_settings"] = True
+	# v52：任务内暂停恢复时重读风控档位，靠这个找到已保存的配置文件。
+	config["_workbench_config_path"] = str(CONFIG_PATH)
 	if extra:
 		config.update(extra)
 	return config
@@ -1203,7 +1205,7 @@ def _refresh_greeting_settings(config: dict) -> dict:
 
 def _execute_deliver_batch(task: WorkbenchTask, config: dict) -> None:
 	from bosshunter.ai.greeter import generate_greetings
-	from bosshunter.executor.sender import send_greetings
+	from bosshunter.executor.sender import refresh_throttle_settings, send_greetings
 
 	config = _refresh_greeting_settings(config)
 	config["_workbench_stop_event"] = task.stop_requested
@@ -1233,6 +1235,9 @@ def _execute_deliver_batch(task: WorkbenchTask, config: dict) -> None:
 	# 暂停关卡：生成完了、发之前再等一次，免得一批刚生成完就暂停不住。
 	if wait_while_paused(task.pause_requested, task.stop_requested, lambda message: _log(task, message)):
 		return
+	# v52：发之前如果暂停过、设置可能改了——先按最新风控档位与轮次
+	# 参数发；任务内每次暂停恢复时，投递循环里还会再读一次。
+	refresh_throttle_settings(config)
 	# 投递时间窗口与随机休息日已取消：任何时间都可投递。
 	# ``force`` remains an explicit CLI-only override and is never implied by a
 	# browser button click. Both generation and delivery pin the runtime database

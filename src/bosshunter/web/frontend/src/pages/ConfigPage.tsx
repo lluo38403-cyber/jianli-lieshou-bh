@@ -566,7 +566,7 @@ export default function ConfigPage() {
               </Field>
               <Field label="一轮投递几个岗位">
                 <ValidatedNumberInput label="一轮投递几个岗位" value={config.throttle?.delivery_round_size ?? 20} onChange={value => updateConfig('throttle.delivery_round_size', value)} min={1} max={100} />
-                <p className="mt-1 text-xs text-muted">每投完一轮就歇一次，再继续投下一轮。</p>
+                <p className="mt-1 text-xs text-muted">一轮就是这里填的个数，一轮里分批投，每批 3–5 个；投完一轮歇一次，再继续投下一轮。</p>
               </Field>
               <NumberRangeField
                 label="投完一轮之后休息几分钟再继续投递"
@@ -638,7 +638,7 @@ export default function ConfigPage() {
                 <option value="standard">标准模式</option>
                 <option value="fast">极速模式</option>
               </Select>
-              <p className="mt-1 text-xs text-muted">每批投 3–5 个，批与批之间歇一会：稳妥 3–5 分钟、标准 1–3 分钟、极速半分钟–1 分钟。稳妥模式节奏最克制，适合长期稳妥使用；标准模式兼顾效率与节奏控制；极速模式节奏更快、间隔更短。</p>
+              <p className="mt-1 text-xs text-muted">一轮是上面“一轮投递几个岗位”里填的个数（默认 20 个），一轮里分批投，每批 3–5 个，批与批之间歇一会：稳妥 3–5 分钟、标准 1–3 分钟、极速半分钟–1 分钟。稳妥模式节奏最克制，适合长期稳妥使用；标准模式兼顾效率与节奏控制；极速模式节奏更快、间隔更短。暂停后改了这里，点继续就按改完的走。</p>
               {(config.throttle?.risk_tier || 'standard') === 'fast' && (
                 <p className="mt-1 text-xs text-warning">投得太快可能被平台判刷得快，遇到验证提示请及时处理。</p>
               )}

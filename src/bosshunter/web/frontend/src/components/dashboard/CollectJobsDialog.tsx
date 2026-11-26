@@ -499,7 +499,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
                 <option value="standard">标准模式</option>
                 <option value="fast">极速模式</option>
               </Select>
-              <span className="mt-1 block font-normal">每批投 3–5 个，批与批之间歇一会：稳妥 3–5 分钟、标准 1–3 分钟、极速半分钟–1 分钟。</span>
+              <span className="mt-1 block font-normal">一轮是“我的设置”里“一轮投递几个岗位”填的个数（默认 20 个），一轮里分批投，每批投 3–5 个，批与批之间歇一会：稳妥 3–5 分钟、标准 1–3 分钟、极速半分钟–1 分钟。</span>
             </label>
             {riskTier === 'fast' && <p className="text-xs text-warning">投得太快可能被平台判刷得快，遇到验证提示请及时处理。</p>}
             <label className="flex items-center justify-between gap-3 text-sm font-bold">随机操作间隔<Switch aria-label="随机操作间隔" checked={randomInterval} onChange={value => { setRandomInterval(value); saveRiskSetting('throttle.random_interval', value) }} /></label>

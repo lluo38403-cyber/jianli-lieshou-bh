@@ -38,6 +38,15 @@ class RequestThrottle:
                 time.sleep(total)
         return bool(stop_event and stop_event.is_set())
 
+    def update_delay_range(self, delay_min: float, delay_max: float) -> None:
+        """换一套等待区间（暂停后恢复、按新档位走时用）。
+
+        只换区间，不动上次发送时间与近期记录——下一条的等待照样扣掉
+        已经过去的时间，不会因为换档位就多等或少等一整段。
+        """
+        self._delay_min = float(delay_min)
+        self._delay_max = float(delay_max)
+
     def mark(self) -> None:
         """Record that a request was just sent."""
         now = time.time()

@@ -4,10 +4,13 @@ import time
 from bosshunter.employment import internship_rejection
 from contextlib import nullcontext
 import json
+from pathlib import Path
 from threading import Event
 from urllib.parse import urljoin
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+
+from bosshunter.config import load_config
 
 from bosshunter.antibot import (
     DEFAULT_PLATFORM_ORDER,
@@ -1238,6 +1241,55 @@ def _dispatch_send(job: dict, greeting: str, throttle_config: dict) -> tuple[dic
     return deliver_job(job, throttle_config)
 
 
+def _parse_round_settings(throttle_config: dict) -> tuple[int, int, int]:
+    """读一轮投几个、轮休几分钟（默认值：20 个、歇 5–10 分钟）。
+
+    启动时和暂停恢复时共用同一份解析，免得两处各写一套、改了一处
+    漏另一处；写错了回默认值，不让脏值打断投递。
+    """
+    try:
+        round_size = max(int(throttle_config.get("delivery_round_size", 20)), 1)
+    except (TypeError, ValueError):
+        round_size = 20
+    try:
+        round_rest_min = max(int(throttle_config.get("delivery_round_rest_min_minutes", 5)), 1)
+    except (TypeError, ValueError):
+        round_rest_min = 5
+    try:
+        round_rest_max = max(int(throttle_config.get("delivery_round_rest_max_minutes", 10)), round_rest_min)
+    except (TypeError, ValueError):
+        round_rest_max = 10
+    return round_size, round_rest_min, round_rest_max
+
+
+def refresh_throttle_settings(config: dict, throttle_config: dict | None = None) -> dict:
+    """暂停后恢复时，从已保存的配置里重读风控档位与轮次参数。
+
+    任务启动时 config 是快照，设置页保存只写文件、不改它——所以这里
+    直接读盘（走 config 里带的 _workbench_config_path，没带就读默认
+    config.yaml）。读不到、文件不在、读坏了都返回空字典，调用方当没
+    改过、继续用旧参数，绝不因为重读失败打断投递。throttle_config
+    给了就原地更新（带 _ 开头的运行期键不动）。
+    """
+    try:
+        path = config.get("_workbench_config_path")
+        config_path = Path(path) if path else Path("config.yaml")
+        if not config_path.is_file():
+            return {}
+        latest = load_config(config_path)
+    except Exception:
+        return {}
+    fresh = latest.get("throttle", {})
+    if not isinstance(fresh, dict):
+        return {}
+    target = throttle_config if throttle_config is not None else config.get("throttle")
+    if isinstance(target, dict):
+        for key, value in fresh.items():
+            if not str(key).startswith("_"):
+                target[key] = value
+    return fresh
+
+
 def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
     """Send generated greetings. Returns count of successfully sent.
 
@@ -1376,18 +1428,7 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
     batch_sent = 0
     # v48 轮休：一轮投几个、歇多久（分钟），默认 20 个、歇 5–10 分钟；
     # 歇的时长在配置范围内随机。轮休叠加在批次节奏之上，不替代它。
-    try:
-        round_size = max(int(throttle_config.get("delivery_round_size", 20)), 1)
-    except (TypeError, ValueError):
-        round_size = 20
-    try:
-        round_rest_min = max(int(throttle_config.get("delivery_round_rest_min_minutes", 5)), 1)
-    except (TypeError, ValueError):
-        round_rest_min = 5
-    try:
-        round_rest_max = max(int(throttle_config.get("delivery_round_rest_max_minutes", 10)), round_rest_min)
-    except (TypeError, ValueError):
-        round_rest_max = 10
+    round_size, round_rest_min, round_rest_max = _parse_round_settings(throttle_config)
     round_sent = 0
     workbench_log = config.get("_workbench_log")
 
@@ -1424,10 +1465,23 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                 break
 
             # 暂停关卡：每发一条之前都等一下；暂停时不发下一条，停下随时能停。
-            if wait_while_paused(get_pause_event(config), stop_event, workbench_log):
+            # v52：暂停时改了设置，恢复后按新参数走——档位、每轮个数、
+            # 轮休时长都重读；已投进度与轮次计数不动，只换节奏。
+            pause_event = get_pause_event(config)
+            was_paused = pause_event is not None and pause_event.is_set()
+            if wait_while_paused(pause_event, stop_event, workbench_log):
                 console.print("[yellow]已请求停止，结束发送[/yellow]")
                 send_report["stop_reason"] = "stopped"
                 break
+            if was_paused and refresh_throttle_settings(config, throttle_config):
+                risk_profile = resolve_risk_profile(throttle_config)
+                throttle_config.update(risk_profile)
+                throttle.update_delay_range(
+                    throttle_config.get("interval_min", 60),
+                    throttle_config.get("interval_max", 180),
+                )
+                round_size, round_rest_min, round_rest_max = _parse_round_settings(throttle_config)
+                stagger_low, stagger_high = _stagger_range(throttle_config)
 
             if index in group_starts and index > 0:
                 stagger_s = sample_stagger_delay(stagger_low, stagger_high)
@@ -1626,7 +1680,7 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     rest_text = f"{rest_s / 60:g} 分钟" if rest_s >= 60 else f"{int(rest_s)} 秒"
                     if callable(workbench_log):
                         workbench_log(
-                            f"这批投了 {batch_sent} 个，先歇 {rest_text}再继续，下一批投 {next_batch} 个"
+                            f"这批投了 {batch_sent} 个（这轮已投 {round_sent}/{round_size} 个），先歇 {rest_text}再继续，下一批投 {next_batch} 个"
                         )
                     progress.update(task, description="歇一会再继续...")
                     if _sleep_or_stop(rest_s, stop_event):
