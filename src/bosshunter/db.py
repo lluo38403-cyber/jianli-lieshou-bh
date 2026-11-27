@@ -1958,6 +1958,24 @@ def get_recent_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+# “最近动态”算数的动作：投递、HR 回复、跟进。打分、改状态、改招呼语
+# 这些动作只会刷 jobs.updated_at，不算动态——它们不是投递也不是回复。
+# plain 'rejected'（用户自己在列表里点了“不要了”）也不算，那不是 HR 的动作。
+ACTIVITY_HISTORY_ACTIONS = frozenset(
+    {
+        "sent",
+        "manual_sent",
+        "replied",
+        "hr_reply_detected",
+        "auto_replied",
+        "follow_up_sent",
+        "resume_sent",
+        "needs_resume",
+        "hr_rejected",
+    }
+)
+
+
 def get_recent_monitor_replies(conn: sqlite3.Connection) -> list[dict]:
     """Get retained reply rounds and the resume-request context they need."""
     rows = conn.execute(
@@ -1968,7 +1986,7 @@ def get_recent_monitor_replies(conn: sqlite3.Connection) -> list[dict]:
         JOIN jobs j ON h.job_id = j.id
         WHERE (
             (
-                h.action IN ('replied', 'auto_replied', 'resume_sent')
+                h.action IN ('replied', 'auto_replied', 'resume_sent', 'hr_rejected')
                 AND h.created_at >= datetime('now', '-7 days')
             ) OR (
                 h.action = 'needs_resume'

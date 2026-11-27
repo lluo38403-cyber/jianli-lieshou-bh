@@ -1189,6 +1189,47 @@ class WebApiRouteTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             self.assertEqual(payload["items"], [])
 
+    def test_job_search_sorts_by_last_activity_not_updated_at(self):
+        # v53：最近动态按 history 里投递/回复/跟进的最近时间排，不是按
+        # updated_at——打分、改状态都会刷 updated_at，拿它排就排错了。
+        # job-a 最近才改过状态（updated_at 最新），但最后一次投递是旧的；
+        # job-b 状态很久没动，但最近才投出去：跟进页应该先看到 job-b。
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("job-a"))
+                update_job_status(db, "job-a", "sent")
+                insert_job(db, _job("job-b"))
+                update_job_status(db, "job-b", "sent")
+                db.execute(
+                    "INSERT INTO history (job_id, action, detail, created_at) VALUES (?, 'sent', ?, ?)",
+                    ("job-a", "greeting", "2026-11-20 10:00:00"),
+                )
+                db.execute(
+                    "INSERT INTO history (job_id, action, detail, created_at) VALUES (?, 'sent', ?, ?)",
+                    ("job-b", "greeting", "2026-11-27 10:00:00"),
+                )
+                db.execute(
+                    "UPDATE jobs SET created_at = '2026-11-19 09:00:00', updated_at = '2026-11-27 12:00:00' WHERE id = 'job-a'"
+                )
+                db.execute(
+                    "UPDATE jobs SET created_at = '2026-11-26 09:00:00', updated_at = '2026-11-20 09:00:00' WHERE id = 'job-b'"
+                )
+                db.commit()
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request(
+                "/api/jobs/search?applied_only=1&sort_by=updated_at&sort_order=desc&limit=15&offset=0"
+            )
+            payload = json.loads(body)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual([job["id"] for job in payload["items"]], ["job-b", "job-a"])
+            self.assertEqual(payload["items"][0]["last_activity_at"], "2026-11-27 10:00:00")
+            self.assertEqual(payload["items"][1]["last_activity_at"], "2026-11-20 10:00:00")
+
     def test_job_search_moves_job_when_status_flips_to_sent(self):
         # 过渡态：确认投递时状态是 approved，还留在找工作页；真正投出
         # （状态变 sent）那一刻才从找工作页消失、同时进入跟进页的池子。

@@ -55,7 +55,7 @@ export function AppliedJobsPanel({ onCheckReplies }: { onCheckReplies?: () => Pr
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [checkNotice, setCheckNotice] = useState('')
   const [checkingReplies, setCheckingReplies] = useState(false)
-  // 按最近一次状态变化排（投递 / 回复 / 跟进的最近动作在最前），2 秒一轮：
+  // 按最近一次动态（投递 / 回复 / 跟进的最近动作）排，2 秒一轮：
   // 刚投出的岗位从找工作页消失后，最多 2 秒就会出现在这里。
   const { items, total, allTotal, cityOptions, loading, error, refresh } = useJobSearch(
     filters, page, pageSize, 'updated_at', 'desc',
@@ -140,7 +140,7 @@ export function AppliedJobsPanel({ onCheckReplies }: { onCheckReplies?: () => Pr
                   </span>
                   <span className="mt-1 block text-xs text-muted">
                     {[job.salary, job.score ? `打分 ${job.score}` : '', job.city].filter(Boolean).join(' · ')}
-                    {` · 最近动态 ${shortTime(job.updated_at || job.created_at)}`}
+                    {` · 最近动态 ${shortTime(job.last_activity_at || job.updated_at || job.created_at)}`}
                   </span>
                 </button>
                 <div className="flex shrink-0 flex-wrap gap-1.5">
@@ -169,7 +169,7 @@ export function AppliedJobsPanel({ onCheckReplies }: { onCheckReplies?: () => Pr
                   <div className="rounded-2xl border border-card-border bg-surface p-3">
                     <p className="mb-1 text-xs font-black text-primary">为什么给这个分</p>
                     <p className="line-clamp-6 whitespace-pre-wrap leading-6 text-muted">{job.score_reason || '无'}</p>
-                    <p className="mt-2 text-xs text-muted">找到时间 {shortTime(job.created_at)} · 最近动态 {shortTime(job.updated_at || job.created_at)}</p>
+                    <p className="mt-2 text-xs text-muted">找到时间 {shortTime(job.created_at)} · 最近动态 {shortTime(job.last_activity_at || job.updated_at || job.created_at)}</p>
                   </div>
                 </div>
               )}

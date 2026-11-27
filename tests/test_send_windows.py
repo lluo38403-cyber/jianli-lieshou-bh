@@ -15,7 +15,7 @@ from unittest.mock import patch
 import yaml
 
 from bosshunter.config import load_config, save_config
-from bosshunter.db import get_db, insert_job, update_job_greeting, update_job_status
+from bosshunter.db import get_db, get_platform_login_state, insert_job, update_job_greeting, update_job_status
 from bosshunter.executor import monitor, sender
 from bosshunter.throttle import SendWindowChecker
 from bosshunter.web.tasks import WorkbenchTaskRunner
@@ -273,8 +273,10 @@ class BatchRestTests(unittest.TestCase):
             self.assertEqual(len(sleeps), 1)
             self.assertGreaterEqual(sleeps[0], 60.0)
             self.assertLessEqual(sleeps[0], 180.0)
-            self.assertTrue(any("这批投了 3 个" in message for message in logs))
-            self.assertTrue(any("下一批投 4 个" in message for message in logs))
+            # v53：批次等待文案只说正在风控等待，不带个数、不带分钟、不带下一批个数。
+            self.assertTrue(any("正在风控等待中，稍后继续投递" in message for message in logs))
+            self.assertFalse(any("下一批投" in message for message in logs))
+            self.assertFalse(any("分钟" in message for message in logs))
 
     def test_batch_rest_off_means_no_rest(self):
         """阶段休息关了：7 个岗位一批投完，中间一次也不歇。"""
@@ -288,6 +290,35 @@ class BatchRestTests(unittest.TestCase):
                     patch.object(sender, "_sleep_or_stop", side_effect=lambda seconds, _e: sleeps.append(seconds) or False):
                 self.assertEqual(sender.send_greetings(config, db_path=db_path), 7)
             self.assertEqual(sleeps, [])
+
+
+class SendSuccessRefreshesLoginStateTests(unittest.TestCase):
+    """投递成功就刷新登录态（v53）：投递在跑时巡检跳过，首页登录态
+    会一直停在旧值；但只要成功投出一个，就说明平台现在是登录着的，
+    登录态必须当场写新鲜，而不是等巡检。"""
+
+    def test_successful_send_marks_platform_logged_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "jobs.db"
+            db = get_db(db_path)
+            insert_job(db, {"id": "0", "title": "Test", "company": "Test", "url": "https://www.zhipin.com/test"})
+            update_job_status(db, "0", "ready")
+            update_job_greeting(db, "0", "Test greeting")
+            self.assertEqual(get_platform_login_state(db, "boss")["status"], "unknown")
+            db.close()
+            config = {"throttle": {"risk_tier": "standard", "stage_rest": False}}
+            with patch.object(sender.RequestThrottle, "wait", return_value=False), \
+                    patch.object(sender, "_send_greeting_once", return_value=({"success": True}, None)), \
+                    patch.object(sender, "_sleep_or_stop", return_value=False):
+                self.assertEqual(sender.send_greetings(config, db_path=db_path), 1)
+            db = get_db(db_path)
+            try:
+                state = get_platform_login_state(db, "boss")
+            finally:
+                db.close()
+            self.assertEqual(state["status"], "logged_in")
+            self.assertTrue(state["checked_at"])
+            self.assertIn("投递成功", state["detail"] or "")
 
 
 class RoundRestTests(unittest.TestCase):
@@ -335,7 +366,7 @@ class RoundRestTests(unittest.TestCase):
             for rest_s in sleeps:
                 self.assertGreaterEqual(rest_s, 300.0)
                 self.assertLessEqual(rest_s, 600.0)
-            self.assertEqual(sum("这轮投了 5 个" in message for message in logs), 4)
+            self.assertEqual(sum("已连续投递 5 个，当前正在风控等待中" in message for message in logs), 4)
 
     def test_incomplete_round_does_not_rest(self):
         """4 个岗位、一轮 5 个：没满一轮，一次也不歇。"""
@@ -392,7 +423,7 @@ class RoundRestTests(unittest.TestCase):
             batch_rests = [rest for rest in sleeps if 60.0 <= rest <= 180.0]
             self.assertEqual(len(round_rests), 1)
             self.assertEqual(len(batch_rests), 2)
-            self.assertTrue(any("这轮投了 5 个" in message for message in logs))
+            self.assertTrue(any("已连续投递 5 个，当前正在风控等待中" in message for message in logs))
 
 
 class PauseRefreshTests(unittest.TestCase):
@@ -477,7 +508,8 @@ class PauseRefreshTests(unittest.TestCase):
             self.assertEqual(len(sleeps), 1)
             self.assertGreaterEqual(sleeps[0], 60.0)
             self.assertLessEqual(sleeps[0], 180.0)
-            self.assertTrue(any("这轮已投" in message for message in logs))
+            # v53：批次等待文案已精简，不再带个数和分钟。
+            self.assertTrue(any("正在风控等待中，稍后继续投递" in message for message in logs))
 
     def test_refresh_with_missing_config_file_keeps_old_settings(self):
         """配置文件不在了：重读失败不改参数、不打断投递。"""

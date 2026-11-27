@@ -1145,6 +1145,44 @@ describe('DashboardPage delivery follow-up (v33 task 1)', () => {
     expect(screen.getByText('正在排队，等着投')).toBeTruthy()
   })
 
+  it('shows HR rejections in their own tab with the HR message', async () => {
+    // v53：HR 拒绝以前在任何标签里都看不到；现在单独一个“HR 已拒绝”
+    // 标签，点进去能看到 HR 的原话。
+    workbenchPayload = baseWorkbench({ tasks: [], delivery_jobs: [] })
+    const rejectedDetail = JSON.stringify({
+      schema: 'hr_rejected.v1',
+      hr_question: '不好意思，不太合适哦',
+      ai_reply: '',
+      conversation_tail: [
+        { sender: 'me', text: '您好，我对这个岗位很感兴趣。' },
+        { sender: 'hr', text: '不好意思，不太合适哦' },
+      ],
+    })
+    const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/workbench' && (!init?.method || init.method === 'GET')) return jsonResponse(workbenchPayload)
+      if (url.startsWith('/api/history')) return jsonResponse([{
+        id: 101,
+        job_id: 'job-rejected-1',
+        action: 'hr_rejected',
+        detail: rejectedDetail,
+        created_at: '2026-11-27 15:16:00',
+        company: '测试公司',
+        title: '测试岗位',
+        source_platform: 'boss',
+      }])
+      if (url.startsWith('/api/jobs/search')) return jsonResponse({ items: [], total: 0, all_total: 0 })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fn)
+    render(<MemoryRouter><UpdateProvider><DashboardPage view="monitor" /></UpdateProvider></MemoryRouter>)
+    expect(await screen.findByText(/HR 已拒绝 1/)).toBeTruthy()
+    fireEvent.click(screen.getByText(/HR 已拒绝 1/))
+    expect(screen.getByText('测试公司｜测试岗位')).toBeTruthy()
+    expect(screen.getByText('不好意思，不太合适哦')).toBeTruthy()
+    expect(screen.getByText(/HR 回了拒绝，这单不用再跟了/)).toBeTruthy()
+  })
+
   it('points the jobs-page delivery card at the real monitor entry', async () => {
     workbenchPayload = baseWorkbench({
       task: buildTask({ id: 'task-deliver', mode: 'deliver', label: '确认投递', status: 'running', logs: ['正在投第 1 个'] }),

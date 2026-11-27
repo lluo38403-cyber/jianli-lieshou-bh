@@ -1670,7 +1670,15 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
         console.print("[dim]    HR已拒绝，标记并停止跟踪[/dim]")
         db = get_db()
         update_job_status(db, job["id"], "rejected")
-        add_history(db, job["id"], "rejected", "HR回复拒绝")
+        # 拒绝也要带着 HR 的原话进跟进记录，不然首页完全看不到这条
+        # 回复。动作单独叫 hr_rejected：用户自己在列表里点了“不要了”
+        # 的那条也叫 rejected，两者不能混在跟进里。
+        add_history(
+            db,
+            job["id"],
+            "hr_rejected",
+            _build_reply_detail(messages, "", "hr_rejected.v1", conversation=conversation),
+        )
         db.close()
         close_tab(target_id)
         return "rejected"

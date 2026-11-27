@@ -70,13 +70,21 @@ describe('DeliveryTaskList', () => {
     expect(screen.getByText(/最近没有投递任务/)).toBeTruthy()
   })
 
-  it('shows a failed task with its stop reason', () => {
+  it('hides stopped and failed tasks: a terminated task does not stay in the list', () => {
+    // v53：卡密过期停下的旧任务、失败的任务不再占着列表，新开的任务
+    // 才能一眼看到；刚投完的（completed）还留着。
     renderList(
-      [buildTask({ status: 'failed', stop_reason: '发送已安全暂停：检测到验证码', logs: ['正在投第 2 个'] })],
+      [
+        buildTask({ id: 'task-stopped', label: '已停下的投递', status: 'stopped', stop_reason: '授权已过期', logs: [] }),
+        buildTask({ id: 'task-failed', label: '失败的投递', status: 'failed', stop_reason: '发送已安全暂停', logs: [] }),
+        buildTask({ id: 'task-running', label: '新开的投递', status: 'running', logs: [] }),
+      ],
       [],
     )
-    expect(screen.getByText('失败了')).toBeTruthy()
-    expect(screen.getByText(/停下来的原因：发送已安全暂停：检测到验证码/)).toBeTruthy()
+    expect(screen.queryByText('已停下的投递')).toBeNull()
+    expect(screen.queryByText('失败的投递')).toBeNull()
+    expect(screen.queryByText('授权已过期')).toBeNull()
+    expect(screen.getByText('新开的投递')).toBeTruthy()
   })
 
   it('shows queued and failed jobs with flow steps and the persisted failure reason, and skips already-sent jobs', () => {

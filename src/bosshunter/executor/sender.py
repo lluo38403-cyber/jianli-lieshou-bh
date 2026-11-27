@@ -1575,6 +1575,15 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     update_job_status(db, job["id"], "sent")
                     update_job_last_error(db, job["id"], "")
                     add_history(db, job["id"], "sent", greeting[:50])
+                    # 投递成功说明这个平台现在是登录着的：把登录态写新鲜，
+                    # 首页就不再因为巡检跳过任务期而显示“还没查过”。
+                    # 只写登录态、不碰熔断，写失败也不影响投递。
+                    try:
+                        record_platform_login_state(
+                            db, platform, "logged_in", "投递成功，平台处于登录态"
+                        )
+                    except Exception:
+                        pass
                     sent_count += 1
                     batch_sent += 1
                     round_sent += 1
@@ -1651,10 +1660,9 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     )
                 ):
                     rest_s = sample_rest_delay(round_rest_min * 60, round_rest_max * 60)
-                    rest_text = f"{rest_s / 60:g} 分钟" if rest_s >= 60 else f"{int(rest_s)} 秒"
                     if callable(workbench_log):
                         workbench_log(
-                            f"这轮投了 {round_sent} 个，先歇 {rest_text}再继续"
+                            f"已连续投递 {round_sent} 个，当前正在风控等待中"
                         )
                     progress.update(task, description="歇一会再继续...")
                     if _sleep_or_stop(rest_s, stop_event):
@@ -1675,13 +1683,11 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     )
                 ):
                     rest_s = sample_rest_delay(risk_profile["rest_min"], risk_profile["rest_max"])
-                    # 下一批投几个现在就抽好，写进日志让用户看得见节奏。
+                    # 下一批投几个现在就抽好，下一批直接按它投；文案只说
+                    # 正在等待，不再把个数和时长写出来。
                     next_batch = sample_batch_size()
-                    rest_text = f"{rest_s / 60:g} 分钟" if rest_s >= 60 else f"{int(rest_s)} 秒"
                     if callable(workbench_log):
-                        workbench_log(
-                            f"这批投了 {batch_sent} 个（这轮已投 {round_sent}/{round_size} 个），先歇 {rest_text}再继续，下一批投 {next_batch} 个"
-                        )
+                        workbench_log("正在风控等待中，稍后继续投递")
                     progress.update(task, description="歇一会再继续...")
                     if _sleep_or_stop(rest_s, stop_event):
                         console.print("[yellow]已请求停止，结束发送[/yellow]")

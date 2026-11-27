@@ -2902,7 +2902,7 @@ function ExportMenu({
   )
 }
 
-type MonitorFilter = 'pending' | 'resume' | 'follow_up' | 'replied'
+type MonitorFilter = 'pending' | 'resume' | 'follow_up' | 'replied' | 'rejected'
 const REPLY_RESOLUTION_ACTIONS = ['reply_dismissed', 'replied', 'auto_replied']
 const DETECTION_RESOLUTION_ACTIONS = [
   ...REPLY_RESOLUTION_ACTIONS,
@@ -2911,6 +2911,7 @@ const DETECTION_RESOLUTION_ACTIONS = [
   'resume_failed',
   'resume_sent',
   'rejected',
+  'hr_rejected',
 ]
 
 function uniqueLatestByJob(items: HistoryItem[]) {
@@ -3065,6 +3066,7 @@ function MonitorExecutionView({
   )
   const followUpRecords = uniqueLatestByJob(history.filter(item => item.action === 'follow_up_sent'))
   const repliedRecords = history.filter(isOutboundReplyRecord)
+  const rejectedRecords = uniqueLatestByJob(history.filter(item => item.action === 'hr_rejected'))
   const [activeMonitorFilter, setActiveMonitorFilter] = useState<MonitorFilter>('pending')
   const visibleHistory = activeMonitorFilter === 'resume'
     ? resumeRequests
@@ -3072,7 +3074,9 @@ function MonitorExecutionView({
       ? followUpRecords
       : activeMonitorFilter === 'replied'
         ? repliedRecords
-        : pendingItems
+        : activeMonitorFilter === 'rejected'
+          ? rejectedRecords
+          : pendingItems
   const displayedHistory = activeMonitorFilter === 'pending' || activeMonitorFilter === 'resume'
     ? visibleHistory
     : visibleHistory.slice(0, 8)
@@ -3218,6 +3222,7 @@ function MonitorExecutionView({
           { key: 'resume' as const, label: 'HR 要简历', count: resumeRequests.length },
           { key: 'follow_up' as const, label: '已自动跟进', count: followUpRecords.length },
           { key: 'replied' as const, label: '已回复了', count: repliedRecords.length },
+          { key: 'rejected' as const, label: 'HR 已拒绝', count: rejectedRecords.length },
         ].map(item => {
           const active = activeMonitorFilter === item.key
           return (
@@ -3314,6 +3319,8 @@ function MonitorExecutionView({
                 )}
                 {isDetectedReply ? (
                   <p className="mt-2 text-xs text-primary">HR 刚回了新消息，正在看完整对话，马上给你建议。</p>
+                ) : item.action === 'hr_rejected' ? (
+                  <p className="mt-2 text-xs text-muted">HR 回了拒绝，这单不用再跟了。</p>
                 ) : canReply ? (
                   <p className="mt-2 text-xs text-primary">建议你看一眼再发。</p>
                 ) : item.action === 'needs_resume' ? (

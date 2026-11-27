@@ -60,6 +60,7 @@ from bosshunter.config import (
 	verify_admin_password,
 )
 from bosshunter.db import (
+	ACTIVITY_HISTORY_ACTIONS,
 	APPLIED_STATUSES,
 	GREETING_ALLOWED_STATUSES,
 	auto_approve_pending,
@@ -2149,9 +2150,18 @@ def _matching_job_rows(db, search_params: dict, blocked_companies: list) -> list
 	薪资区间过滤都在这里，改一处两边一起变，不会各筛各的。
 	非法 source_platform 抛 ValueError（调用方转 400）。
 	"""
-	query = "SELECT * FROM jobs"
+	# 最近动态 = history 里投递/回复/跟进动作的最近一次时间：updated_at
+	# 每次改状态、打分、改招呼语都会刷新，不能拿它当动态时间。
+	# 没任何动态的老数据退回 updated_at，再退回 created_at。
+	activity_values = sorted(ACTIVITY_HISTORY_ACTIONS)
+	activity_placeholders = ",".join("?" for _ in activity_values)
+	query = (
+		"SELECT jobs.*, (SELECT MAX(h.created_at) FROM history h "
+		f"WHERE h.job_id = jobs.id AND h.action IN ({activity_placeholders})) "
+		"AS last_activity_at FROM jobs"
+	)
 	conditions = ["deleted_at IS NULL"]
-	params: list = []
+	params: list = list(activity_values)
 	applied_values = sorted(APPLIED_STATUSES)
 	applied_placeholders = ",".join("?" for _ in applied_values)
 	conditions.append(f"status {'IN' if search_params['applied_only'] else 'NOT IN'} ({applied_placeholders})")
@@ -2216,9 +2226,11 @@ def _matching_job_rows(db, search_params: dict, blocked_companies: list) -> list
 		"status": "COALESCE(status, '')",
 		"hr_active": _HR_ACTIVE_RANK_SQL,
 		"created_at": "COALESCE(created_at, '')",
-		# 投递跟进页按“最近一次状态变化”排：updated_at 每次改状态都会刷新，
-		# 已投出岗位就是按投递/回复/跟进的最近动作排；老数据没有就退回 created_at。
-		"updated_at": "COALESCE(updated_at, created_at)",
+		# 投递跟进页按“最近一次动态（投递、回复、跟进）”排：history 里
+		# 最近一次投递/回复/跟进动作的时间；老数据没有就退回 updated_at、
+		# 再退回 created_at。直接拿 updated_at 排是错的——打分、改状态
+		# 也会刷它。
+		"updated_at": "COALESCE(last_activity_at, updated_at, created_at)",
 	}
 	sort_by = search_params["sort_by"]
 	sort_order = search_params["sort_order"]
@@ -2448,7 +2460,7 @@ def api_history_prepare_reply(history_id):
 				WHERE job_id = ? AND id > ?
 				  AND action IN (
 				    'reply_pending', 'needs_resume', 'resume_failed', 'resume_sent',
-				    'reply_dismissed', 'replied', 'auto_replied', 'rejected'
+				    'reply_dismissed', 'replied', 'auto_replied', 'rejected', 'hr_rejected'
 				  )
 				LIMIT 1
 				""",

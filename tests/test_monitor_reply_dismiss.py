@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bosshunter.db import add_history, get_db, get_jobs_needing_resume, insert_job, update_job_status
+from bosshunter.db import add_history, get_db, get_jobs_needing_resume, get_recent_monitor_replies, insert_job, update_job_status
 
 
 def _job(job_id: str) -> dict:
@@ -587,6 +587,86 @@ class MatchConversationToJobTests(unittest.TestCase):
         matched = _match_conversation_to_job(conv, jobs, ["潮州市林歌户外用品"])
         self.assertIsNotNone(matched)
         self.assertEqual(matched["id"], "job-linge")
+
+
+class MonitorRejectionTests(unittest.TestCase):
+    """HR 拒绝也要看得见（v53）：以前拒绝只写一条“HR回复拒绝”，不带
+    HR 原话，也不进跟进列表——平台上明明回了，程序里什么提示都没有。"""
+
+    def test_hr_rejection_is_recorded_with_hr_text_and_shown_in_monitor_feed(self):
+        from bosshunter.executor import monitor
+
+        messages = [
+            {"sender": "me", "text": "您好，我对这个岗位很感兴趣。"},
+            {"sender": "hr", "text": "不好意思，不太合适哦"},
+        ]
+        conversation = {
+            "last_direction": "hr",
+            "is_our_message": False,
+            "last_message": "不好意思，不太合适哦",
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "data" / "bosshunter.db"
+            db = get_db(db_path)
+            try:
+                insert_job(db, _job("rejected-one"))
+                update_job_status(db, "rejected-one", "sent")
+            finally:
+                db.close()
+
+            def open_db():
+                return get_db(db_path)
+
+            with patch.object(monitor, "get_db", side_effect=open_db), \
+                 patch.object(monitor, "_open_scanned_conversation", return_value=None), \
+                 patch.object(monitor, "_open_conversation", return_value="target-1"), \
+                 patch.object(monitor, "_wait_or_stop", return_value=False), \
+                 patch.object(monitor, "evaluate", return_value=json.dumps(messages, ensure_ascii=False)), \
+                 patch.object(monitor, "close_tab"):
+                action = monitor._handle_conversation(
+                    _job("rejected-one") | {"status": "sent"},
+                    {"monitor": {}},
+                    conversation,
+                )
+            self.assertEqual(action, "rejected")
+
+            verify_db = get_db(db_path)
+            try:
+                row = verify_db.execute(
+                    "SELECT status FROM jobs WHERE id = ?",
+                    ("rejected-one",),
+                ).fetchone()
+                self.assertEqual(row["status"], "rejected")
+                history_row = verify_db.execute(
+                    "SELECT action, detail FROM history WHERE job_id = ? ORDER BY id DESC LIMIT 1",
+                    ("rejected-one",),
+                ).fetchone()
+                self.assertEqual(history_row["action"], "hr_rejected")
+                detail = json.loads(history_row["detail"])
+                self.assertEqual(detail["schema"], "hr_rejected.v1")
+                self.assertIn("不太合适", detail["hr_question"])
+                feed = get_recent_monitor_replies(verify_db)
+            finally:
+                verify_db.close()
+            self.assertTrue(
+                any(item["job_id"] == "rejected-one" and item["action"] == "hr_rejected" for item in feed)
+            )
+
+    def test_user_discarded_rejected_is_not_in_monitor_feed(self):
+        # 用户自己在列表里点了“不要了”也写 rejected 动作——那不是 HR
+        # 的回复，不能混进跟进列表；投递记录本身也不进。
+        with tempfile.TemporaryDirectory() as tmp:
+            db = get_db(Path(tmp) / "bosshunter.db")
+            try:
+                insert_job(db, _job("discarded-one"))
+                update_job_status(db, "discarded-one", "rejected")
+                add_history(db, "discarded-one", "rejected", "Web Dashboard 放弃投递")
+                add_history(db, "discarded-one", "sent", "Test greeting")
+                feed = get_recent_monitor_replies(db)
+            finally:
+                db.close()
+            self.assertFalse(any(item["job_id"] == "discarded-one" for item in feed))
 
 
 if __name__ == "__main__":

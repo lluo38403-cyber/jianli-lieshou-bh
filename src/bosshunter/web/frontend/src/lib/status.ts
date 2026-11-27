@@ -35,6 +35,7 @@ export const ACTION_LABELS: Record<string, string> = {
   needs_resume: '要手动发简历',
   follow_up_sent: '问过一次了',
   rejected: '不要了',
+  hr_rejected: 'HR 拒绝了',
   error: '出问题了',
 }
 

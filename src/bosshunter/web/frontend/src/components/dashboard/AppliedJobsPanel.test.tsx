@@ -87,6 +87,16 @@ describe('AppliedJobsPanel', () => {
     expect(screen.getByText('您好，我对这个岗位很感兴趣。')).toBeTruthy()
   })
 
+  it('shows the last activity time (sent/reply/follow-up), not the last status-change time', async () => {
+    // v53：打分、改状态都会刷 updated_at，拿它当“最近动态”是错的；
+    // 后端给了 last_activity_at（投递时间），面板优先用它。
+    stubSearch([appliedJob({ last_activity_at: '2026-11-21 08:53:00', updated_at: '2026-11-21 10:00:00' })], 1)
+    render(<AppliedJobsPanel />)
+    await act(async () => {})
+    expect(screen.getByText(/最近动态 2026-11-21 08:53/)).toBeTruthy()
+    expect(screen.queryByText(/最近动态 2026-11-21 10:00/)).toBeNull()
+  })
+
   it('shows the empty state when nothing has been applied yet', async () => {
     stubSearch([], 0)
     render(<AppliedJobsPanel />)

@@ -4,8 +4,11 @@ import { PLATFORM_SHORT_LABELS } from '@/lib/platforms'
 
 /** 只展示会投递的任务：确认投递、运行全流程（包含投递阶段）、单独监测
  * （监测期间也会投新确认的岗位）。采集 / 打分 / 招呼语任务不在这儿，
- * 它们在首页的任务面板里看。 */
+ * 它们在首页的任务面板里看。
+ * 中途停下的任务（已停下、失败了）不留在这儿：它们已经结束了，占着
+ * 列表只会把新任务往下挤；正在投、暂停中、刚投完的才留着。 */
 const DELIVERY_MODES = new Set(['deliver', 'full', 'monitor'])
+const HIDDEN_TASK_STATUSES = new Set(['stopped', 'failed'])
 
 const TASK_STATUS_LABELS: Record<string, string> = {
   running: '投递中',
@@ -66,7 +69,7 @@ export function DeliveryTaskList({
   forceStopVisible?: boolean
 }) {
   const deliveryTasks = tasks
-    .filter(task => DELIVERY_MODES.has(task.mode))
+    .filter(task => DELIVERY_MODES.has(task.mode) && !HIDDEN_TASK_STATUSES.has(task.status))
     .slice(0, 5)
   const runningCount = deliveryTasks.filter(task => task.status === 'running').length
   const deliveryRunning = deliveryTasks.some(task => task.status === 'running')
@@ -80,7 +83,7 @@ export function DeliveryTaskList({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-base font-black">投递任务</h3>
-          <p className="mt-1 text-xs text-muted">正在投、刚投完的任务都在这儿；已经投出去的岗位在下面“已投出的岗位”里。</p>
+          <p className="mt-1 text-xs text-muted">正在投、刚投完的任务都在这儿；中途停下的任务已经结束，不会留在这儿。已经投出去的岗位在下面“已投出的岗位”里。</p>
         </div>
         {runningCount > 0 && (
           <span className="rounded-full bg-secondary px-3 py-1 text-xs font-black text-primary">正在投 {runningCount} 个任务</span>

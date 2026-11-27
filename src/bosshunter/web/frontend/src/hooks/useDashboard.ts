@@ -48,6 +48,8 @@ interface Job {
   url: string
   created_at: string
   updated_at?: string
+  /** 最近一次动态（投递/回复/跟进）的时间，后端从 history 里算；没有就退回 updated_at。 */
+  last_activity_at?: string | null
   deleted_at?: string | null
   deleted_reason?: string | null
   resume_path?: string
