@@ -49,6 +49,9 @@ class WorkbenchTask:
     stop_reason: str | None = None
     stop_requested: Event = field(default_factory=Event, repr=False)
     pause_requested: Event = field(default_factory=Event, repr=False)
+    # v54 图10：跳过当前等待——只置事件，不停任务；等待循环看到就提前
+    # 结束当前等待、继续投下一个岗位。
+    wait_skip_requested: Event = field(default_factory=Event, repr=False)
     metrics: dict[str, int] = field(default_factory=dict)
     progress: dict[str, Any] = field(default_factory=dict)
     context: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -197,6 +200,20 @@ class WorkbenchTaskRunner:
             if not task.logs or task.logs[-1] != "已继续投递":
                 task.logs.append("已继续投递")
             task.updated_at = datetime.now().isoformat(timespec="seconds")
+            return task.snapshot()
+
+    def skip_wait(self, task_id: str) -> dict:
+        """v54 图10：跳过当前等待——只置一个事件，不停任务。
+
+        正在风控等待/岗位间等待的发送循环看到事件就提前结束当前等待、
+        继续投下一个岗位；没在等待时置上也没事，下一轮等待开始时会
+        直接跳过那一轮（一次点击只跳一轮）。不存在的任务照样报 404。
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                raise KeyError(task_id)
+            task.wait_skip_requested.set()
             return task.snapshot()
 
     def stop(self, task_id: str, reason: str = "用户已请求停止") -> dict:

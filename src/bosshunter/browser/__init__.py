@@ -90,15 +90,23 @@ def find_liepin_tab() -> dict | None:
     return None
 
 
-def new_tab(url: str, background: bool = False) -> str | None:
+def new_tab(url: str, background: bool = True) -> str | None:
     """Open a tab and return its target ID.
 
-    用户主动点的“去登录”走这里：需要拉起浏览器时直接打开目标登录页，
-    不再先停在任何起始页（target_url 直达，兜底才是 data: 说明页）。
+    v54：默认后台打开——投递/采集/监测的标签都不该抢前台；只有用户
+    主动点的“去登录”才显式传 background=False。以前默认 False，
+    任何一个漏传的调用点都会前台建标签、闪用户一下。
     """
     if not _ready(target_url=url):
         return None
     return _client().new_tab(url, background=background)
+
+
+def minimize_tab(target_id: str) -> bool:
+    """Minimize the window holding this tab (v54: site-opened tabs)."""
+    if not _ready():
+        return False
+    return _client().minimize(target_id)
 
 
 def activate_tab(target_id: str) -> bool:
@@ -195,7 +203,9 @@ def open_platform_tab(url: str) -> dict[str, Any]:
             "message": "已经打开了，直接切过去了。",
             **_chrome_port_check(),
         }
-    target_id = _client().new_tab(url)
+    # 去登录必须前台：用户要亲眼看见登录页、亲手登录，所以这里显式
+    # 传 background=False（v54 起 new_tab 默认后台，不写就错了）。
+    target_id = _client().new_tab(url, background=False)
     if not target_id:
         return {
             "target_id": None,

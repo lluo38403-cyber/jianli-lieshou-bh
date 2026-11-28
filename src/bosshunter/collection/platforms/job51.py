@@ -650,7 +650,9 @@ class Job51Collector:
                     continue
 
         tmp_url = SEARCH_URL.format(area=code, keyword=quote(keyword))
-        host_target = self.browser.new_tab(tmp_url, background=False)
+        # v54：宿主标签只是 API 载体，不需要看得见——以前前台打开，
+        # 采集与投递并发时会新建窗口闪用户一下。
+        host_target = self.browser.new_tab(tmp_url, background=True)
         if not host_target:
             raise CollectionBlockedError("rate_limit", "无法打开 51job 页面作为 API 宿主")
         self.sleep(5)  # 等宿主页加载出 cookie

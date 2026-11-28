@@ -1047,7 +1047,9 @@ class ZhilianCollector:
                     continue
 
         tmp_url = SEARCH_URL.format(city_code=quote(code or "530"))
-        host_target = self.browser.new_tab(tmp_url, background=False)
+        # v54：宿主标签只是 API 载体，不需要看得见——以前前台打开，
+        # 采集与投递并发时会新建窗口闪用户一下。
+        host_target = self.browser.new_tab(tmp_url, background=True)
         if not host_target:
             raise CollectionBlockedError("rate_limit", "无法打开智联页面作为 API 宿主")
         # 收到停止立即中断：不等宿主页 5 秒预热，调用方随后走正常停止分支。

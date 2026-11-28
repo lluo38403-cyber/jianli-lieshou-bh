@@ -556,6 +556,29 @@ class NormalizeCollectionOptionsTests(TestCase):
                 "platforms": {"boss": {"keywords": ["AI"], "cities": ["北京"], "max_pages": "abc"}},
             })
 
+    def test_role_pick_keywords_merge_into_boss_and_fallback(self):
+        # v54 图2-6：已选方向的细分关键词并进 BOSS 搜索词，没自己写
+        # 关键词的平台回退到 BOSS 时一起带上；平台自己写了词的不动。
+        result = normalize_collection_options({
+            "search": {
+                "keywords": ["电商"],
+                "cities": ["北京"],
+                "role_picks": [{"label": "国内电商运营", "keywords": ["淘宝运营", "天猫运营"]}],
+            },
+            "collection": {"default_order": ["boss", "zhilian", "51job"]},
+            "platforms": {
+                "zhilian": {"enabled": True},
+                "51job": {"enabled": True, "search": {"keywords": ["财务"], "cities": ["北京"]}},
+            },
+        })
+        self.assertEqual(
+            result["platforms"]["boss"]["keywords"], ["电商", "淘宝运营", "天猫运营"]
+        )
+        self.assertEqual(
+            result["platforms"]["zhilian"]["keywords"], ["电商", "淘宝运营", "天猫运营"]
+        )
+        self.assertEqual(result["platforms"]["51job"]["keywords"], ["财务"])
+
 
 class SharedProcessorTests(TestCase):
     """_SharedProcessor inspect/save 逻辑。"""
@@ -594,6 +617,22 @@ class SharedProcessorTests(TestCase):
                 db_path=Path(tmp) / "test.db", registry=registry,
             ).run(_options())
         self.assertEqual(result["platforms"]["boss"]["filtered"], 1)
+
+    def test_inspect_filters_title_outside_role_picks(self):
+        # v54 图2-6：选了“国内电商运营”，“电商财务”标题不符方向，进不了库。
+        picks = [{"label": "国内电商运营", "keywords": ["淘宝运营", "天猫运营", "京东运营", "拼多多运营", "电商运营"]}]
+        registry = CollectorRegistry({"boss": lambda: _FakeCollector("boss", [], [
+            _candidate("boss", "finance", "电商财务"),
+            _candidate("boss", "design", "电商美工"),
+            _candidate("boss", "ops", "淘宝运营"),
+        ])})
+        with tempfile.TemporaryDirectory() as tmp:
+            result = CollectionOrchestrator(
+                {"search": {"role_picks": picks}},
+                db_path=Path(tmp) / "test.db", registry=registry,
+            ).run(_options())
+        self.assertEqual(result["platforms"]["boss"]["filtered"], 2)
+        self.assertEqual(result["platforms"]["boss"]["new"], 1)
 
     def test_save_filters_jd_deal_breaker(self):
         events = []
@@ -665,3 +704,31 @@ class OrchestrationFlowTests(TestCase):
                 )
         self.assertEqual(result["status"], "completed_with_errors")
         self.assertEqual(result["collected_job_ids"], ["new-1"])
+
+    def test_completed_collection_records_platform_logged_in(self):
+        """v54 图1：采集成了一轮就是登录证明——巡检任务期停了，靠这一笔写库。"""
+        from bosshunter.db import get_db, get_platform_login_state
+
+        registry = CollectorRegistry({"boss": lambda: _FakeCollector("boss", [], [_candidate("boss", "new-1")])})
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            CollectionOrchestrator({}, db_path=db_path, registry=registry).run(_options())
+            conn = get_db(db_path)
+            try:
+                self.assertEqual(get_platform_login_state(conn, "boss").get("status"), "logged_in")
+            finally:
+                conn.close()
+
+    def test_blocked_collection_does_not_claim_logged_in(self):
+        """v54 图1：被拦/失败的采集不能反写登录态——没采成什么都证明不了。"""
+        from bosshunter.db import get_db, get_platform_login_state
+
+        registry = CollectorRegistry({"boss": lambda: _BlockedCollector("boss", [], "login_required")})
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            CollectionOrchestrator({}, db_path=db_path, registry=registry).run(_options())
+            conn = get_db(db_path)
+            try:
+                self.assertNotEqual(get_platform_login_state(conn, "boss").get("status"), "logged_in")
+            finally:
+                conn.close()

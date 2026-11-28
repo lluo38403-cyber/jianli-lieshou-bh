@@ -177,6 +177,9 @@ DEFAULTS: dict[str, Any] = {
         "max_pages": 3,
         "sort": "default",
         "filters": {},
+        # v54 图2-6：岗位选择器多选的细分岗位方向 [{label, keywords}]。
+        # 空 = 不限方向；选了方向后采集与打分都按它过滤。
+        "role_picks": [],
     },
     "collection": {
         "default_order": ["boss", "zhilian", "51job", "liepin"],

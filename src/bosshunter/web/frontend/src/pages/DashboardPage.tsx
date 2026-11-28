@@ -16,7 +16,8 @@ import { START_ONBOARDING_EVENT } from '@/components/onboarding/OnboardingTour'
 import { AnimatedNumber } from '@/components/AnimatedNumber'
 import { JobsTable } from '@/components/dashboard/JobsTable'
 import { RecycleBinPanel } from '@/components/dashboard/RecycleBinPanel'
-import { TaskScoringProgress, formatScoringCurrentJob } from '@/components/dashboard/ScoringProgress'
+import { TaskPhaseProgress, formatScoringCurrentJob } from '@/components/dashboard/ScoringProgress'
+import { WaitCountdown } from '@/components/dashboard/WaitCountdown'
 import { DeliveryTaskList } from '@/components/dashboard/DeliveryTaskList'
 import { ScoreJobsDialog } from '@/components/dashboard/ScoreJobsDialog'
 import { CollectJobsDialog } from '@/components/dashboard/CollectJobsDialog'
@@ -602,6 +603,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const [forceStopping, setForceStopping] = useState(false)
   const update = useUpdateContext()
   const auth = useAuth()
+  const { config } = useConfig()
   const [updateNote, setUpdateNote] = useState('')
   /** 手动检查没查到时才 true：提示旁边出现“再试一次”按钮。 */
   const [updateCheckFailed, setUpdateCheckFailed] = useState(false)
@@ -1138,6 +1140,26 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     }
   }
 
+  /** v54 图10：跳过当前等待——只跳这一轮等待，不停任务。点完后端
+   * 清掉倒计时，下一轮等待开始后重新下发新的倒计时。 */
+  const [skipWaitBusyId, setSkipWaitBusyId] = useState<string | null>(null)
+  const skipWait = async (taskId: string) => {
+    setSkipWaitBusyId(taskId)
+    try {
+      const res = await fetch(`/api/workbench/task/${encodeURIComponent(taskId)}/skip-wait`, { method: 'POST' })
+      if (!res.ok) {
+        setNotice('跳过没发出去，等倒计时自己走完吧。')
+        return
+      }
+      setNotice('已经跳过这次等待，继续投下一个岗位。')
+      await refresh()
+    } catch {
+      setNotice('跳过没发出去，等倒计时自己走完吧。')
+    } finally {
+      setSkipWaitBusyId(current => (current === taskId ? null : current))
+    }
+  }
+
   const confirmDeliver = async (ids: string[]) => {
     if (!ids.length) return
     const count = ids.length
@@ -1330,6 +1352,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         onPauseTask={(taskId) => { void pauseDeliveryTask(taskId) }}
         onResumeTask={(taskId) => { void resumeDeliveryTask(taskId) }}
         onStopTask={(taskId) => { void stopDeliveryTask(taskId) }}
+        onSkipWaitTask={(taskId) => { void skipWait(taskId) }}
+        skipWaitBusyId={skipWaitBusyId}
         onForceStopTask={() => { void forceStopTask() }}
         forceStopVisible={forceStopVisible}
       />
@@ -1365,6 +1389,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         refreshedAt={platformLoginRefreshedAt}
         refreshError={platformLoginRefreshError || null}
         checking={browserDiagLoading || platformLoginRefreshing}
+        taskActive={activeTask != null}
       />
       </div>
       <BrowserDiagnosticsPanel diagnostics={browserDiag} onRefresh={fetchBrowserDiagnostics} />
@@ -1440,7 +1465,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                     {isActive ? <Square className="h-4 w-4 fill-current" /> : <Play className="h-5 w-5 fill-current" />}
                   </span>
                 </div>
-                <p className={`text-xs leading-5 ${isActive ? 'text-primary-foreground/85' : 'text-muted'}`}>{item.description}</p>
+                <p className={`text-xs leading-5 ${isActive ? 'text-primary-foreground/85' : 'text-muted'}`}>{item.mode === 'full' && config?.scoring?.auto_deliver_ready === false ? '找岗、打分，一气呵成（直接投递已关，打完分不自动投）' : item.description}</p>
               </button>
             )
           })}
@@ -1510,7 +1535,17 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 )}
                 {visibleTask.deadline_at && <span className="text-muted">截止 {new Date(visibleTask.deadline_at).toLocaleString('zh-CN', { hour12: false })}</span>}
               </div>
-              <TaskScoringProgress task={visibleTask} />
+              <TaskPhaseProgress task={visibleTask} />
+              {/* v54 图10：正在等待时在这里显示 MM:SS 倒计时 + 跳过等待。 */}
+              {visibleTask.progress?.wait && (
+                <div className="mt-3">
+                  <WaitCountdown
+                    wait={visibleTask.progress.wait}
+                    onSkip={() => void skipWait(visibleTask.id)}
+                    skipping={skipWaitBusyId === visibleTask.id}
+                  />
+                </div>
+              )}
               {(hasStageDetails || detailMetrics.length > 0) && (
                 <details className="group mt-2 border-t border-card-border/60 pt-2 text-xs">
                   <summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
@@ -2817,7 +2852,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
       </div>
       {notice && <div className="mb-4 rounded-xl bg-secondary px-4 py-3 text-sm text-primary">{notice}</div>}
       <div className="mb-3">
-        <TaskScoringProgress task={deliveryWorkbench.task || deliveryWorkbench.last_task} />
+        <TaskPhaseProgress task={deliveryWorkbench.task || deliveryWorkbench.last_task} />
         <p className="mt-2 text-xs text-muted">
           岗位与评分进度每 5 秒自动刷新；每完成一个岗位后更新评分计数。
           {jobsRefreshedAt && ` 岗位更新于 ${jobsRefreshedAt.toLocaleTimeString('zh-CN', { hour12: false })}`}
@@ -3027,6 +3062,8 @@ function MonitorExecutionView({
   onPauseTask,
   onResumeTask,
   onStopTask,
+  onSkipWaitTask,
+  skipWaitBusyId,
   onForceStopTask,
   forceStopVisible,
 }: {
@@ -3043,6 +3080,9 @@ function MonitorExecutionView({
   onPauseTask: (taskId: string) => void
   onResumeTask: (taskId: string) => void
   onStopTask: (taskId: string) => void
+  /** v54 图10：投递任务卡片上的跳过等待（只跳当前等待，不停任务）。 */
+  onSkipWaitTask?: (taskId: string) => void
+  skipWaitBusyId?: string | null
   onForceStopTask: () => void
   forceStopVisible: boolean
 }) {
@@ -3213,6 +3253,8 @@ function MonitorExecutionView({
         onPause={onPauseTask}
         onResume={onResumeTask}
         onStop={onStopTask}
+        onSkipWait={onSkipWaitTask}
+        skipWaitBusyId={skipWaitBusyId}
         onForceStop={onForceStopTask}
         forceStopVisible={forceStopVisible}
       />

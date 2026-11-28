@@ -458,6 +458,15 @@ const server = http.createServer(async (req, res) => {
       }
       const resp = await sendCDP('Target.createTarget', { url: targetUrl, background });
       const targetId = resp.result.targetId;
+      // v54：最小化必须紧跟建标签——以前先绑会话（新建标签可能要等
+      // 约 1 秒才能 attach）再最小化，窗口已经在前台闪过了。现在建完
+      // 立刻最小化一次，绑完会话再复核一次；任何一步失败都静默跳过，
+      // 绝不影响建标签本身。
+      if (background && knownWindows) {
+        try {
+          await minimizeWindowIfNew(targetId, knownWindows);
+        } catch {}
+      }
       // Bind the CDP session eagerly (including about:blank tabs) so a later
       // navigate cannot race against Chrome freezing the fresh background tab.
       try {
@@ -469,6 +478,18 @@ const server = http.createServer(async (req, res) => {
         } catch {}
       }
       sendJson(res, { targetId });
+    } else if (pathname === '/minimize') {
+      // v54：把指定标签所在的窗口最小化。站内自己开的新标签（比如 BOSS
+      // 点沟通按钮打开的聊天页）绕过了 /new，建标签时没人最小化它；
+      // 投递认领到这种标签后调这里补一次。失败静默，不阻塞调用方。
+      try {
+        const win = await sendCDP('Browser.getWindowForTarget', { targetId: q.target });
+        const windowId = win.result?.windowId;
+        if (windowId) {
+          await sendCDP('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+        }
+      } catch {}
+      sendJson(res, { ok: true });
     } else if (pathname === '/close') {
       const resp = await sendCDP('Target.closeTarget', { targetId: q.target });
       sessions.delete(q.target);

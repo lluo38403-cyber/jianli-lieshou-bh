@@ -133,6 +133,7 @@ from bosshunter.scoring_run_store import (
 	update_scoring_run,
 )
 from bosshunter.scoring_selection import preview_scoring, select_scoring_jobs, validate_options
+from bosshunter.throttle import sleep_with_skip
 from bosshunter.browser.diagnostics import run_browser_diagnostics
 from bosshunter.browser.runtime import runtime_targets, set_browser_config
 from bosshunter.web.greeting_activity import GreetingActivityRegistry
@@ -614,7 +615,50 @@ def _log(task: WorkbenchTask, message: str) -> None:
 	task.logs.append(message)
 
 
+def _set_task_phase(task: WorkbenchTask, phase: str) -> None:
+	"""v54 图8：主进度条按阶段切换的唯一依据。
+
+	阶段写在 task.progress["phase"] 里：collecting（找岗位）/
+	scoring（打分）/ delivering（投递）/ monitoring（等 HR 回消息）。
+	前端 5 秒一轮 poll 读到就切，不用等整阶段结束。
+	"""
+	task.progress["phase"] = phase
+
+
+def _record_send_progress(task: WorkbenchTask, state: dict) -> None:
+	"""v54 图8：投递实时进度——sender 每投完一个岗位调一次。
+
+	写 task.progress["deliver"]（sent/failed/total）供主进度条画
+	投递进度，同时把指标也同步了，免得投递阶段还显示上一轮的
+	打分数字。phase 一并置成 delivering。
+	"""
+	total = int(state.get("total") or 0)
+	sent = int(state.get("sent") or 0)
+	failed = int(state.get("failed") or 0)
+	task.progress["deliver"] = {"sent": sent, "failed": failed, "total": total}
+	task.progress["phase"] = "delivering"
+	task.metrics.update({
+		"send_requested": total,
+		"send_success": sent,
+		"send_failed": failed,
+	})
+
+
+def _record_wait_progress(task: WorkbenchTask, state: dict | None) -> None:
+	"""v54 图10：当前等待的倒计时状态，写 task.progress["wait"]。
+
+	state 是 {kind, label, ends_at（秒时间戳）, total_seconds}，前端
+	5 秒一轮 poll 读到就画 MM:SS 倒计时；等完/跳过/停止时调 state=None
+	清掉，倒计时立即停，不留旧数字。
+	"""
+	if state is None:
+		task.progress.pop("wait", None)
+	else:
+		task.progress["wait"] = dict(state)
+
+
 def _record_collect_progress(task: WorkbenchTask, state: dict) -> None:
+	task.progress["phase"] = "collecting"
 	task.metrics.update({
 		"collect_seen": int(state.get("seen") or 0),
 		"collect_new": int(state.get("new") or 0),
@@ -625,10 +669,15 @@ def _record_collect_progress(task: WorkbenchTask, state: dict) -> None:
 		"collect_search_pages": int(state.get("search_pages") or 0),
 	})
 	if isinstance(state.get("progress"), dict):
-		task.progress = deepcopy(state["progress"])
+		progress = deepcopy(state["progress"])
+		progress["phase"] = "collecting"
+		task.progress = progress
 
 
 def _record_score_progress(task: WorkbenchTask, state: dict) -> None:
+	# v54 图8：打分进行中就是 scoring 阶段——回调本身即阶段信号，
+	# 全流程里采集后自动打分也一样，不用各调用点再单独置阶段。
+	task.progress["phase"] = "scoring"
 	previous_completed = task.metrics.get("ai_completed")
 	task.metrics.update({
 		"ai_completed": int(state.get("completed") or 0),
@@ -657,6 +706,7 @@ def _record_score_progress(task: WorkbenchTask, state: dict) -> None:
 
 
 def _execute_collect(task: WorkbenchTask, config: dict) -> None:
+	_set_task_phase(task, "collecting")
 	_log(task, "开始采集岗位")
 	collect_config = dict(config)
 	collect_config["_workbench_stop_event"] = task.stop_requested
@@ -712,6 +762,7 @@ def _execute_collect(task: WorkbenchTask, config: dict) -> None:
 		task_id=task.id,
 	).run(config.get("_collection_options"))
 	task.progress = {
+		"phase": "collecting",
 		"run_id": result.get("run_id", ""),
 		"outcome": result.get("status", "completed"),
 		"platforms": result.get("platforms", {}),
@@ -757,12 +808,34 @@ def _stop_or_log_boss_collection_reason(task: WorkbenchTask, stop_reason: str) -
 def _execute_rescore(task: WorkbenchTask, config: dict) -> None:
 	from bosshunter.ai.scorer import score_jobs
 
+	_set_task_phase(task, "scoring")
 	score_config = dict(config)
 	score_config["_workbench_stop_event"] = task.stop_requested
 	score_config["_workbench_log"] = lambda message: _log(task, message)
 	score_config["_workbench_score_progress"] = lambda state: _record_score_progress(task, state)
 	_log(task, "开始重新评分")
 	score_jobs(score_config, rescore_filtered=True)
+
+
+def _auto_deliver_enabled(config: dict) -> bool:
+	"""打分后是否自动投递：以磁盘上最新保存的开关为准。
+
+	v54 图9 根因：开关只在单独打分任务（_execute_score →
+	_auto_deliver_after_scoring）里生效，全流程（_execute_full）从不
+	看它——开关关着跑全流程，打完分照样自动投递。另一处隐患是任务
+	启动时的配置快照：打分跑很久、用户中途关了开关，快照里还是开
+	着。所以判定时刻重读磁盘文件：文件里明确写了这项就以它为准；
+	文件里没有（旧配置/测试）才用任务快照。读盘失败同样回落快照，
+	绝不因为读不到配置就擅自投递或擅自拦下。
+	"""
+	try:
+		raw = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+	except Exception:
+		raw = {}
+	saved = raw.get("scoring", {}) if isinstance(raw, dict) else {}
+	if isinstance(saved, dict) and "auto_deliver_ready" in saved:
+		return bool(saved.get("auto_deliver_ready"))
+	return bool(config.get("scoring", {}).get("auto_deliver_ready"))
 
 
 def _auto_deliver_after_scoring(task: WorkbenchTask, config: dict, job_ids: list[str]) -> None:
@@ -772,7 +845,7 @@ def _auto_deliver_after_scoring(task: WorkbenchTask, config: dict, job_ids: list
 	积压；投递走现有的 _execute_deliver，每日上限、平台登录、熔断这些
 	守卫一个不少。开关关着或本轮没有达标岗位时什么都不做。
 	"""
-	if not config.get("scoring", {}).get("auto_deliver_ready"):
+	if not _auto_deliver_enabled(config):
 		return
 	db = _get_web_db()
 	try:
@@ -798,6 +871,7 @@ def _auto_deliver_after_scoring(task: WorkbenchTask, config: dict, job_ids: list
 def _execute_score(task: WorkbenchTask, config: dict) -> None:
 	from bosshunter.ai.scorer import score_jobs
 
+	_set_task_phase(task, "scoring")
 	run_id = str(config.get("_score_run_id") or "")
 	options = config.get("_score_options", {}) if isinstance(config.get("_score_options"), dict) else {}
 	db_path = DATA_DIR / "bosshunter.db"
@@ -923,6 +997,7 @@ def _execute_monitor(task: WorkbenchTask, config: dict, *, initial_cooldown: boo
 		get_effective_monitor_interval_minutes,
 		monitor_and_send_resumes,
 	)
+	_set_task_phase(task, "monitoring")
 	if _stop_for_active_platform_lock(task):
 		return
 
@@ -1010,6 +1085,13 @@ def _execute_full(task: WorkbenchTask, config: dict) -> None:
 	if task.stop_requested.is_set():
 		return
 
+	# v54 图9：开关关着时全流程只打分、不自动投递。以前这里从不看
+	# 开关——采集+打分后直接自动确认、投递、进监测，开关形同虚设。
+	# 判定用磁盘最新值（用户可能在采集打分期间改了开关）。
+	if not _auto_deliver_enabled(config):
+		_log(task, "直接投递已关闭，本轮只打分、不自动投递；想投的话在岗位列表里手动确认")
+		return
+
 	# 采集后：本轮达标岗位自动确认投递。
 	db = _get_web_db()
 	try:
@@ -1032,12 +1114,14 @@ def _execute_full(task: WorkbenchTask, config: dict) -> None:
 	# jobs. Reload immediately before delivery instead of using the task-start snapshot.
 	deliver_config = _task_config()
 	deliver_config["_workbench_job_ids"] = job_ids
+	_set_task_phase(task, "delivering")
 	_execute_deliver(task, deliver_config)
 	if task.stop_requested.is_set():
 		return
 	monitor_config = _task_config()
 	if config.get("_agent_workflow"):
 		monitor_config["_agent_workflow"] = True
+	_set_task_phase(task, "monitoring")
 	_execute_monitor(task, monitor_config, initial_cooldown=True)
 
 
@@ -1084,6 +1168,15 @@ def _take_active_delivery(task: WorkbenchTask) -> dict | None:
 
 def _execute_deliver(task: WorkbenchTask, config: dict) -> None:
 	"""Run one delivery worker and drain batches queued while it is active."""
+	_set_task_phase(task, "delivering")
+	# v54 图8：sender 每投完一个岗位就经这个回调推实时进度，主进度条
+	# 不用等整批结束才更新。
+	config["_workbench_send_progress"] = lambda state: _record_send_progress(task, state)
+	# v54 图10：等待倒计时与跳过等待的接线——sender 的风控等待/岗位间
+	# 等待经这个回调报倒计时，用户点【跳过等待】置 task 上的事件，
+	# 下一轮等待开始或当前等待里看到就提前结束当前等待（不停任务）。
+	config["_workbench_wait_progress"] = lambda state: _record_wait_progress(task, state)
+	config["_workbench_wait_skip_event"] = task.wait_skip_requested
 	if _stop_for_active_platform_lock(task):
 		return
 	# 授权门禁：先同步一次拿最新状态；已知过期直接停，未知状态不拦
@@ -1182,7 +1275,15 @@ def _wait_for_collection_delivery_cooldown(task: WorkbenchTask, config: dict) ->
 	if remaining <= 0:
 		return False
 	_log(task, f"为了账户安全，BOSS 采集结束后冷却 {remaining / 60:.1f} 分钟再开始 BOSS 投递")
-	if task.stop_requested.wait(remaining):
+	# v54 图10：采集到投递的安全冷却也带倒计时、可跳过（skip 只跳过
+	# 这次冷却，不停任务）。
+	if sleep_with_skip(
+		remaining, task.stop_requested,
+		skip_event=task.wait_skip_requested,
+		report=lambda state: _record_wait_progress(task, state),
+		kind="cooldown",
+		label="采集到投递的安全冷却",
+	):
 		_log(task, "采集到投递的安全冷却已取消")
 		return True
 	return False
@@ -2629,9 +2730,31 @@ def _browser_diagnostics_payload(config: dict, allow_launch: bool = True) -> dic
 def api_browser_diagnostics():
 	# 首页被动刷新：只做检查，不替用户拉新浏览器窗口。
 	try:
-		return _json_response(_browser_diagnostics_payload(load_config(CONFIG_PATH), allow_launch=False))
+		config = load_config(CONFIG_PATH)
+		payload = _browser_diagnostics_payload(config, allow_launch=False)
+		_persist_diagnostics_login_states(config, payload)
+		return _json_response(payload)
 	except Exception as e:
 		return _json_response({"ok": False, "error": str(e)}, 500)
+
+
+def _persist_diagnostics_login_states(config: dict, payload: dict) -> None:
+	"""v54 图1：手动刷新/挂载诊断算出的登录态也要写库，别只留前端。
+
+	以前只存在前端 override 里，刷新页面就丢了，巡检又要等 4 分钟
+	才写库。浏览器连上时才写（连不上不写库、不误标掉线，与巡检同
+	口径）；写失败不影响诊断返回。
+	"""
+	try:
+		if not payload.get("ok"):
+			return
+		db = get_db(DATA_DIR / "bosshunter.db")
+		try:
+			refresh_platform_login_states(db, config, payload.get("diagnostics") or {})
+		finally:
+			db.close()
+	except Exception:
+		pass
 
 
 @app.route("/api/browser/diagnostics", method="POST")
@@ -2646,6 +2769,7 @@ def api_browser_diagnostics_refresh():
 		payload = _browser_diagnostics_payload(config, allow_launch=False)
 		if not payload["ok"]:
 			payload = _browser_diagnostics_payload(config, allow_launch=False)
+		_persist_diagnostics_login_states(config, payload)
 		return _json_response(payload)
 	except Exception as e:
 		return _json_response({"ok": False, "error": str(e)}, 500)
@@ -3278,6 +3402,22 @@ def api_workbench_task_pause(task_id):
 def api_workbench_task_resume(task_id):
 	try:
 		return _json_response(task_runner.resume(task_id))
+	except KeyError:
+		return _json_response({"error": "任务不存在"}, 404)
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/workbench/task/<task_id>/skip-wait", method="POST")
+def api_workbench_task_skip_wait(task_id):
+	"""v54 图10：跳过当前等待——只置事件，不停任务。
+
+	正在风控等待/岗位间等待的发送循环看到事件就提前结束当前等待、
+	继续投下一个岗位；没在等待时置上也没事，下一轮等待开始时直接
+	跳过那一轮。只新增接口，不改动原有接口。
+	"""
+	try:
+		return _json_response(task_runner.skip_wait(task_id))
 	except KeyError:
 		return _json_response({"error": "任务不存在"}, 404)
 	except Exception as e:

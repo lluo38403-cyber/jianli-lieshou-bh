@@ -154,6 +154,16 @@ describe('isPlatformLoginStale / getEffectiveLoginStatus', () => {
     expect(getEffectiveLoginStatus(fresh('logged_out'), now, true)).toBe('logged_out')
     expect(getEffectiveLoginStatus(fresh('logged_in'), now, true)).toBe('logged_in')
   })
+
+  it('keeps a stale logged-in row while a task is running, but not a stale logged-out row', () => {
+    // v54 图1：巡检在任务期是停的，行过期只是“没来得及重查”，不是掉线；
+    // 任务本身就在用这个登录态，降级只会误报。掉线的行照样过期。
+    expect(getEffectiveLoginStatus(stale('logged_in'), now, false, true)).toBe('logged_in')
+    expect(getEffectiveLoginStatus(stale('logged_out'), now, false, true)).toBe('unknown')
+    expect(getEffectiveLoginStatus(stale('logged_in'), now, false, false)).toBe('unknown')
+    // 正在检查时，过期的已登录行仍先显示“正在确认”。
+    expect(getEffectiveLoginStatus(stale('logged_in'), now, true, true)).toBe('checking')
+  })
 })
 
 describe('mergePlatformLoginStates', () => {

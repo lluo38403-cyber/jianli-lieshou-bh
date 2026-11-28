@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { PLATFORM_IDS, PLATFORM_LABELS, openPlatformLogin, portMismatchNote, type PlatformId } from '@/lib/platforms'
 import { getPlatformLoginStatusLabel } from '@/lib/status'
@@ -13,7 +13,7 @@ const EFFECTIVE_LABELS: Record<EffectiveLoginStatus, string> = {
   checking: '正在确认',
 }
 
-export function PlatformStatusCard({ platformLogin, browserName = '浏览器', onRefresh, refreshing = false, refreshedAt = null, refreshError = null, checking = false }: {
+export function PlatformStatusCard({ platformLogin, browserName = '浏览器', onRefresh, refreshing = false, refreshedAt = null, refreshError = null, checking = false, taskActive = false }: {
   platformLogin?: Partial<Record<string, PlatformLoginInfo>> | null
   browserName?: string
   /** 只刷新各平台登录状态（不整页重载）；没传时按钮置灰。 */
@@ -27,6 +27,8 @@ export function PlatformStatusCard({ platformLogin, browserName = '浏览器', o
   /** 正在等一次检查结果（挂载诊断 / 手动刷新进行中）：过期/没查过的
    * 行先显示“正在确认”，新鲜结论不动，不来回闪。 */
   checking?: boolean
+  /** 有任务在跑：巡检停了，已登录的行过期也不降成“不知道”（v54 图1）。 */
+  taskActive?: boolean
 }) {
   // v27：登录按钮点一次就给明确反馈（正在打开 / 已打开 / 已切到打开的
   // 标签页 / 失败原因）。以前后端没接通会回退到 window.open，登录页
@@ -55,13 +57,43 @@ export function PlatformStatusCard({ platformLogin, browserName = '浏览器', o
     }
   }, [platformLogin, loginFeedback])
 
+  // v54 图1：点了“去登录”之后自动复查——用户在浏览器里登上了，
+  // 卡片要自己变过来，不用再手动点“刷新”。打开成功后每 6 秒调一次
+  // onRefresh（就是手动刷新那一路，后端同时写库），直到该平台显示
+  // 已登录、或 90 秒没登上就停下（不无限刷）。onRefresh 放在 ref 里：
+  // 父级每次渲染都会传一个新的箭头函数，写进依赖会让定时器每轮都
+  // 被重置、永远等不到 6 秒。
+  const [loginWatch, setLoginWatch] = useState<{ platform: PlatformId; until: number } | null>(null)
+  const onRefreshRef = useRef(onRefresh)
+  onRefreshRef.current = onRefresh
+  useEffect(() => {
+    if (!loginWatch) return
+    const info = platformLogin?.[loginWatch.platform]
+    if (info && getEffectiveLoginStatus(info, Date.now(), false, taskActive) === 'logged_in') {
+      setLoginWatch(null)
+      return
+    }
+    if (Date.now() > loginWatch.until) {
+      setLoginWatch(null)
+      return
+    }
+    const timer = window.setInterval(() => {
+      if (Date.now() > loginWatch.until) {
+        setLoginWatch(null)
+        return
+      }
+      onRefreshRef.current?.()
+    }, 6000)
+    return () => window.clearInterval(timer)
+  }, [loginWatch, platformLogin, taskActive])
+
   const nowMs = Date.now()
   const tiles = PLATFORM_IDS.map(platform => {
     const info = platformLogin?.[platform]
-    // 只有新鲜的行才配展示 detail 和“几点查的”：过期行是上次启动
-    // 留下的旧值，文案和时间都不再当成事实。
-    const freshInfo = info && !isPlatformLoginStale(info, nowMs) ? info : undefined
-    return { platform, info, freshInfo, status: getEffectiveLoginStatus(info, nowMs, checking) }
+    // 任务进行中，已登录的行过期也不算“旧值”（见 getEffectiveLoginStatus
+    // 的 taskActive 口径）：文案和时间照常展示，不先藏起来。
+    const freshInfo = info && (!isPlatformLoginStale(info, nowMs) || (taskActive && info.status === 'logged_in')) ? info : undefined
+    return { platform, info, freshInfo, status: getEffectiveLoginStatus(info, nowMs, checking, taskActive) }
   })
   const loggedOut = tiles.filter(tile => tile.status === 'logged_out')
   // 四个平台提示完全一样时（比如都没连上浏览器），只在卡片顶部显示一次。
@@ -88,10 +120,11 @@ export function PlatformStatusCard({ platformLogin, browserName = '浏览器', o
         : result.message || '浏览器没连上，再点一次试试。'
       setLoginFeedback({
         platform,
-        message: result.ok ? `${base}${portMismatchNote(result)}` : base,
+        message: result.ok ? `${base}登录完成后会自动再查一次状态。${portMismatchNote(result)}` : base,
         ok: result.ok,
         at: Date.now(),
       })
+      if (result.ok) setLoginWatch({ platform, until: Date.now() + 90_000 })
     } finally {
       setLoginBusy(null)
     }

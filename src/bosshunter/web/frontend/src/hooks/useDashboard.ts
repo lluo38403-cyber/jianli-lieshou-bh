@@ -115,6 +115,13 @@ export interface CollectionPlatformProgress {
 }
 
 export interface CollectionProgress {
+  /** v54 图8：当前阶段——主进度条按它切换（找岗位/打分/投递/等回复）。 */
+  phase?: 'collecting' | 'scoring' | 'delivering' | 'monitoring'
+  /** v54 图8：投递实时进度（每投完一个岗位更新一次）。 */
+  deliver?: { sent?: number; failed?: number; total?: number }
+  /** v54 图10：当前等待的倒计时（风控等待/岗位间随机等待/安全冷却）。
+   * 后端等完/跳过/停止时清掉，前端就不再画倒计时。 */
+  wait?: { kind: string; label?: string; ends_at: number; total_seconds: number }
   session_id?: string
   session?: { id?: string; phase: string; round: number; deadline_at: string; next_wake_at?: string | null; reason_code?: string; manual_pending_reason?: string; new?: number }
   run_id?: string

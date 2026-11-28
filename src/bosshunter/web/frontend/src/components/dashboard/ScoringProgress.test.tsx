@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
-import { ScoringProgress } from './ScoringProgress'
+import { ScoringProgress, TaskPhaseProgress } from './ScoringProgress'
 
 afterEach(cleanup)
 
@@ -77,5 +77,61 @@ describe('ScoringProgress', () => {
     />)
     expect(screen.queryByText(/正在为第/)).toBeNull()
     expect(screen.getByText(/这轮打完了/)).toBeTruthy()
+  })
+})
+
+describe('TaskPhaseProgress', () => {
+  const baseTask = {
+    id: 't-1', label: '运行全流程', logs: [], stop_requested: false,
+  } as unknown as import('@/hooks/useDashboard').WorkbenchTask
+
+  it('shows delivering progress while delivering, not the scoring bar', () => {
+    const { rerender } = render(<TaskPhaseProgress task={{
+      ...baseTask, mode: 'full', status: 'running',
+      metrics: { ai_total: 100, ai_completed: 100, send_requested: 80, send_success: 40 },
+      progress: { phase: 'delivering', deliver: { sent: 40, failed: 2, total: 80 } },
+    }} />)
+    expect(screen.getByRole('progressbar', { name: '投递进度' }).getAttribute('aria-valuenow')).toBe('50')
+    expect(screen.getByText('已投 40 / 80 个 · 50%')).toBeTruthy()
+    expect(screen.getByText('没投出去 2 个')).toBeTruthy()
+    expect(screen.queryByRole('progressbar', { name: '打分进度' })).toBeNull()
+    // 投完：100%，文案变“这轮投完了”。
+    rerender(<TaskPhaseProgress task={{
+      ...baseTask, mode: 'full', status: 'running',
+      metrics: { ai_total: 100, ai_completed: 100 },
+      progress: { phase: 'delivering', deliver: { sent: 80, failed: 0, total: 80 } },
+    }} />)
+    expect(screen.getByText('已投 80 / 80 个 · 100%')).toBeTruthy()
+    expect(screen.getByText(/这轮投完了/)).toBeTruthy()
+  })
+
+  it('shows collecting counts without a fabricated percentage', () => {
+    render(<TaskPhaseProgress task={{
+      ...baseTask, mode: 'full', status: 'running',
+      metrics: { collect_seen: 12, collect_new: 3 },
+      progress: { phase: 'collecting' },
+    }} />)
+    expect(screen.getByText('已看 12 个，新增 3 个')).toBeTruthy()
+    expect(screen.queryByRole('progressbar', { name: '打分进度' })).toBeNull()
+  })
+
+  it('shows the monitoring state without a progress bar', () => {
+    render(<TaskPhaseProgress task={{
+      ...baseTask, mode: 'full', status: 'running',
+      metrics: { ai_total: 100, ai_completed: 100, send_success: 80 },
+      progress: { phase: 'monitoring' },
+    }} />)
+    expect(screen.getByText(/正在等 HR 回消息/)).toBeTruthy()
+    expect(screen.queryByRole('progressbar')).toBeNull()
+  })
+
+  it('falls back to the scoring bar when the task has no phase yet', () => {
+    render(<TaskPhaseProgress task={{
+      ...baseTask, mode: 'full', status: 'running',
+      metrics: { ai_total: 10, ai_completed: 4, ai_passed: 3, ai_failed: 0 },
+      progress: {},
+    }} />)
+    expect(screen.getByRole('progressbar', { name: '打分进度' })).toBeTruthy()
+    expect(screen.getByText('已打 4 / 10 个 · 40%')).toBeTruthy()
   })
 })

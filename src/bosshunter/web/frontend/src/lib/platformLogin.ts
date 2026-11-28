@@ -92,15 +92,23 @@ export type EffectiveLoginStatus = 'logged_in' | 'logged_out' | 'unknown' | 'che
 
 /** 卡片上实际展示的状态：没查完（checking）时只遮住过期/没查过的行，
  * 新鲜的结论不动，避免刷新时已确认的徽标来回闪；过期行不论原来是
- * 已登录还是已掉线，一律先按“不知道”处理。 */
+ * 已登录还是已掉线，一律先按“不知道”处理。
+ * v54 图1：任务进行中不把已登录的行降成“不知道”——巡检在任务期是
+ * 停的，行过期只是“没来得及重查”，不是掉线；任务本身就在用这个
+ * 登录态，降级只会误报。掉线的行照样过期（任务也可能正因为掉线
+ * 才卡住，不能替它遮过去）。 */
 export function getEffectiveLoginStatus(
   info: PlatformLoginInfo | undefined | null,
   nowMs = Date.now(),
   checking = false,
+  taskActive = false,
 ): EffectiveLoginStatus {
   const stale = !info || isPlatformLoginStale(info, nowMs)
   if (checking && stale) return 'checking'
-  if (stale) return 'unknown'
+  if (stale) {
+    if (taskActive && info?.status === 'logged_in') return 'logged_in'
+    return 'unknown'
+  }
   if (info.status === 'logged_in' || info.status === 'logged_out') return info.status
   return 'unknown'
 }

@@ -33,7 +33,7 @@ it('shows all three states and highlights the logged-out platform with a relogin
   fireEvent.click(relogin)
   // v27：走后端 /api/browser/open 在工作浏览器里打开，成功后卡片上给反馈，
   // 不再回退到 window.open。
-  await waitFor(() => expect(screen.getByText('已在工作浏览器打开智联招聘登录页。')).toBeTruthy())
+  await waitFor(() => expect(screen.getByText(/已在工作浏览器打开智联招聘登录页。/)).toBeTruthy())
   expect(openSpy).not.toHaveBeenCalled()
 })
 
@@ -119,9 +119,9 @@ it('打开登录页的反馈 8 秒后自动消失，不一直留在错误提示�
     render(<PlatformStatusCard platformLogin={login} />)
     fireEvent.click(screen.getByRole('button', { name: '重新登录智联招聘' }))
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
-    expect(screen.getByText('工作浏览器已启动，正在打开智联招聘登录页。')).toBeTruthy()
+    expect(screen.getByText(/工作浏览器已启动，正在打开智联招聘登录页。/)).toBeTruthy()
     await act(async () => { await vi.advanceTimersByTimeAsync(8000) })
-    expect(screen.queryByText('工作浏览器已启动，正在打开智联招聘登录页。')).toBeNull()
+    expect(screen.queryByText(/工作浏览器已启动，正在打开智联招聘登录页。/)).toBeNull()
   } finally {
     vi.useRealTimers()
   }
@@ -133,11 +133,52 @@ it('该平台有了更新的检测结果，打开登录页的反馈就被取代�
   ))
   const { rerender } = render(<PlatformStatusCard platformLogin={login} />)
   fireEvent.click(screen.getByRole('button', { name: '重新登录智联招聘' }))
-  await waitFor(() => expect(screen.getByText('工作浏览器已启动，正在打开智联招聘登录页。')).toBeTruthy())
+  await waitFor(() => expect(screen.getByText(/工作浏览器已启动，正在打开智联招聘登录页。/)).toBeTruthy())
   // 巡检发现智联已登录（检查时间比点开时更新），反馈立刻消失，不用等 8 秒。
   rerender(<PlatformStatusCard platformLogin={{
     ...login,
     zhilian: { status: 'logged_in' as const, checked_at: new Date(Date.now() + 5000).toISOString(), detail: '已发现智联搜索框，未发现登录墙' },
   }} />)
-  await waitFor(() => expect(screen.queryByText('工作浏览器已启动，正在打开智联招聘登录页。')).toBeNull())
+  await waitFor(() => expect(screen.queryByText(/工作浏览器已启动，正在打开智联招聘登录页。/)).toBeNull())
+})
+
+it('任务进行中，过期的已登录行不降成“还没查过”，过期的掉线行照样过期（v54 图1）', () => {
+  render(<PlatformStatusCard platformLogin={{
+    boss: { status: 'logged_in' as const, checked_at: staleAt, detail: '采集完成，本轮已确认登录' },
+    zhilian: { status: 'logged_out' as const, checked_at: staleAt, detail: '登录过期了' },
+    '51job': { status: 'unknown' as const },
+    liepin: { status: 'logged_in' as const, checked_at: freshAt(), detail: '' },
+  }} taskActive />)
+  expect(screen.getAllByText('已登录')).toHaveLength(2)
+  expect(screen.getByText('采集完成，本轮已确认登录')).toBeTruthy()
+  expect(screen.queryByText('已掉线')).toBeNull()
+  expect(screen.getAllByText('还没查过')).toHaveLength(2)
+})
+
+it('点了“去登录”后自动复查，直到该平台显示已登录就停下（v54 图1）', async () => {
+  vi.useFakeTimers()
+  try {
+    const onRefresh = vi.fn()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, target_id: 't', browser_started: true, reused_tab: false, message: '已在工作浏览器打开。' })),
+    ))
+    const { rerender } = render(<PlatformStatusCard platformLogin={login} onRefresh={onRefresh} />)
+    fireEvent.click(screen.getByRole('button', { name: '重新登录智联招聘' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText(/登录完成后会自动再查一次状态。/)).toBeTruthy()
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+    // 还没登上：再过 6 秒还会再查一次。
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+    expect(onRefresh).toHaveBeenCalledTimes(2)
+    // 巡检发现智联已登录：复查停下，不再调 onRefresh。
+    rerender(<PlatformStatusCard platformLogin={{
+      ...login,
+      zhilian: { status: 'logged_in' as const, checked_at: freshAt(), detail: '已发现智联搜索页，未发现登录墙' },
+    }} onRefresh={onRefresh} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+    expect(onRefresh).toHaveBeenCalledTimes(2)
+  } finally {
+    vi.useRealTimers()
+  }
 })

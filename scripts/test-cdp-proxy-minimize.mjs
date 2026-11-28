@@ -111,18 +111,30 @@ try {
   await waitForProxy();
   const r1 = await createTab('url=https://example.com/job1&background=1');
   check(r1.targetId === 'tab-1', `第一个后台标签建出 tab-1（实际 ${r1.targetId}）`);
-  check(minimizeCalls().length === 1, `第一个后台标签新开窗口被最小化 1 次（实际 ${minimizeCalls().length} 次）`);
+  // v54：建完立刻最小化一次，绑完会话再复核一次——共 2 次；以前只在绑
+  // 完会话后最小化 1 次，窗口已经在前台闪过了。
+  check(minimizeCalls().length === 2, `第一个后台标签新开窗口被最小化 2 次（立即+复核，实际 ${minimizeCalls().length} 次）`);
   const first = minimizeCalls()[0];
   check(first?.params?.windowId === 2, '最小化的是新窗口 windowId 2');
   check(first?.params?.bounds?.windowState === 'minimized', '最小化用 windowState=minimized');
+  const firstMinimizeAt = calls.findIndex((c) => c.method === 'Browser.setWindowBounds');
+  const firstAttachAt = calls.findIndex((c) => c.method === 'Target.attachToTarget');
+  check(firstMinimizeAt !== -1 && firstAttachAt !== -1 && firstMinimizeAt < firstAttachAt, '第一次最小化发生在第一次绑定会话之前（建完立刻最小化，不等绑定）');
 
   const r2 = await createTab('url=https://example.com/job2&background=1');
   check(r2.targetId === 'tab-2', `第二个后台标签建出 tab-2（实际 ${r2.targetId}）`);
-  check(minimizeCalls().length === 1, `复用已有窗口时不再最小化（实际 ${minimizeCalls().length} 次）`);
+  check(minimizeCalls().length === 2, `复用已有窗口时不再最小化（实际 ${minimizeCalls().length} 次）`);
 
   const r3 = await createTab('url=https://example.com/job3');
   check(r3.targetId === 'tab-3', `前台标签建出 tab-3（实际 ${r3.targetId}）`);
-  check(minimizeCalls().length === 1, `前台标签不最小化（实际 ${minimizeCalls().length} 次）`);
+  check(minimizeCalls().length === 2, `前台标签不最小化（实际 ${minimizeCalls().length} 次）`);
+
+  // v54：/minimize 端点——站内自己开的标签认领后补最小化。
+  const minRes = await fetch(`http://127.0.0.1:${PROXY_PORT}/minimize?target=tab-2`, { signal: AbortSignal.timeout(15000) });
+  const minData = await minRes.json();
+  check(minData.ok === true, '/minimize 返回 ok');
+  check(minimizeCalls().length === 3, `/minimize 把 tab-2 所在窗口最小化 1 次（实际 ${minimizeCalls().length} 次）`);
+  check(minimizeCalls()[2]?.params?.windowId === 2, '/minimize 最小化的是 tab-2 的窗口 windowId 2');
 } catch (error) {
   console.error('proxy output:', proxyOutput);
   fail(`调用异常：${error.message}`);

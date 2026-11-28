@@ -25,7 +25,8 @@ class BrowserFacadeTests(unittest.TestCase):
 
         self.assertEqual(result, "target-1")
         ensure_runtime.assert_called_once()
-        client_cls.return_value.new_tab.assert_called_once_with("https://example.com", background=False)
+        # v54：默认后台打开，不写 background 也不该前台建标签。
+        client_cls.return_value.new_tab.assert_called_once_with("https://example.com", background=True)
 
     @patch("bosshunter.browser.RuntimeClient")
     @patch("bosshunter.browser.ensure_runtime")
@@ -219,6 +220,30 @@ class BrowserFacadeTests(unittest.TestCase):
         self.assertTrue(called_url.endswith("/activate"), called_url)
         self.assertEqual(get.call_args.kwargs["params"], {"target": "target-1"})
 
+    @patch("bosshunter.browser.client.httpx.get")
+    def test_runtime_client_minimize_hits_minimize_endpoint(self, get):
+        """v54：认领站内新开的聊天标签后，把它的窗口最小化。"""
+        from bosshunter.browser.client import RuntimeClient
+
+        get.return_value.status_code = 200
+
+        self.assertTrue(RuntimeClient({}).minimize("target-9"))
+        called_url = str(get.call_args.args[0])
+        self.assertTrue(called_url.endswith("/minimize"), called_url)
+        self.assertEqual(get.call_args.kwargs["params"], {"target": "target-9"})
+
+    @patch("bosshunter.browser.RuntimeClient")
+    @patch("bosshunter.browser.ensure_runtime")
+    def test_minimize_tab_delegates_to_runtime_client(self, ensure_runtime, client_cls):
+        """v54：minimize_tab 走代理的 /minimize，不自己拼 CDP。"""
+        import bosshunter.browser as browser
+
+        ensure_runtime.return_value = True
+        client_cls.return_value.minimize.return_value = True
+
+        self.assertTrue(browser.minimize_tab("target-9"))
+        client_cls.return_value.minimize.assert_called_once_with("target-9")
+
 
 class OpenPlatformTabTests(unittest.TestCase):
     """v27: 去登录复用已打开的对应标签页，不再每次新开一个。"""
@@ -264,7 +289,8 @@ class OpenPlatformTabTests(unittest.TestCase):
         self.assertEqual(result["target_id"], "t-new")
         self.assertFalse(result["browser_started"])
         self.assertFalse(result["reused_tab"])
-        client_cls.return_value.new_tab.assert_called_once_with(self._BOSS_LOGIN)
+        # 去登录必须前台：v54 起 new_tab 默认后台，这里要显式写 False。
+        client_cls.return_value.new_tab.assert_called_once_with(self._BOSS_LOGIN, background=False)
 
     @patch("bosshunter.browser.RuntimeClient")
     @patch("bosshunter.browser.ensure_runtime")
@@ -328,7 +354,7 @@ class OpenPlatformTabTests(unittest.TestCase):
         self.assertFalse(result["reused_tab"])
         client_cls.return_value.navigate.assert_not_called()
         client_cls.return_value.activate.assert_not_called()
-        client_cls.return_value.new_tab.assert_called_once_with(self._BOSS_LOGIN)
+        client_cls.return_value.new_tab.assert_called_once_with(self._BOSS_LOGIN, background=False)
 
     @patch("bosshunter.browser.pick_chrome_debug_port", return_value=9222)
     @patch("bosshunter.browser.runtime_health", return_value={"status": "ok", "runtime": "bosshunter", "chromePort": 9222})
@@ -376,7 +402,7 @@ class OpenPlatformTabTests(unittest.TestCase):
 
         self.assertEqual(result["target_id"], "t-new")
         self.assertFalse(result["reused_tab"])
-        client_cls.return_value.new_tab.assert_called_once_with(self._BOSS_LOGIN)
+        client_cls.return_value.new_tab.assert_called_once_with(self._BOSS_LOGIN, background=False)
 
 
 if __name__ == "__main__":

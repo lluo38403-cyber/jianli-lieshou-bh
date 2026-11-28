@@ -130,6 +130,58 @@ def _parse_edu_level(edu: str) -> int | None:
     return None
 
 
+def normalize_role_picks(config: dict) -> list[dict]:
+    """v54 图2-6：用户在岗位选择器里多选的细分岗位方向。
+
+    config["search"]["role_picks"] 是 [{label, keywords: [...]}]，label
+    是展示名（如“国内电商运营”），keywords 是该方向的细分岗位词
+    （如淘宝运营、天猫运营、京东运营、拼多多运营）。脏数据只跳过
+    不报错——配置是用户手填的，不能因为一格写错就拦住整个打分。
+    """
+    search = config.get("search", {}) if isinstance(config, dict) else {}
+    picks = search.get("role_picks") if isinstance(search, dict) else None
+    if not isinstance(picks, list):
+        return []
+    cleaned = []
+    for pick in picks:
+        if not isinstance(pick, dict):
+            continue
+        label = str(pick.get("label") or "").strip()
+        keywords = [
+            str(keyword).strip()
+            for keyword in (pick.get("keywords") or [])
+            if isinstance(keyword, (str, int, float)) and str(keyword).strip()
+        ]
+        if label and keywords:
+            cleaned.append({"label": label, "keywords": keywords})
+    return cleaned
+
+
+def role_pick_keywords(config: dict) -> list[str]:
+    """所有已选岗位方向的细分关键词，去重保序。"""
+    keywords: list[str] = []
+    for pick in normalize_role_picks(config):
+        for keyword in pick["keywords"]:
+            if keyword not in keywords:
+                keywords.append(keyword)
+    return keywords
+
+
+def title_matches_role_picks(title: str, picks: list[dict]) -> bool:
+    """标题是否落在任一已选岗位方向里：没选方向时不限；选了就必须
+    命中至少一个方向的至少一个细分关键词。只看标题——JD 里出现
+    “淘宝运营”不代表这个岗位就是干这个的（电商财务的 JD 也会写）。
+    """
+    if not picks:
+        return True
+    title_lower = (title or "").lower()
+    return any(
+        keyword.lower() in title_lower
+        for pick in picks
+        for keyword in pick["keywords"]
+    )
+
+
 def rule_score(job: dict, config: dict) -> tuple[int, str]:
     """本地规则评分（无 AI Key 时的兜底）：0-100 分。
 
@@ -148,11 +200,26 @@ def rule_score(job: dict, config: dict) -> tuple[int, str]:
     jd_lower = jd.lower()
 
     terms: list[str] = []
-    for source in (profile.get("target_roles") or [], search.get("keywords") or []):
+    picks = normalize_role_picks(config)
+    if picks:
+        # 选了方向后，宽泛的搜索词不再参与打分：只认方向里的细分词
+        # + 期望职位——否则“电商”一个词就能让“电商财务”拿到 +10、
+        # 总分 70 过线，方向选择等于白选。搜索词仍做平台搜索的种子
+        # （搜得宽、筛得严），只在打分这一步退出。
+        keyword_sources = [profile.get("target_roles") or []]
+    else:
+        keyword_sources = [profile.get("target_roles") or [], search.get("keywords") or []]
+    for source in keyword_sources:
         for term in source if isinstance(source, list) else []:
             cleaned = str(term or "").strip()
             if cleaned and cleaned not in terms:
                 terms.append(cleaned)
+    # v54 图2-6：已选岗位方向的细分关键词也进关键词打分——选了
+    # “国内电商运营”，标题含“淘宝运营”才加分；只含宽泛词“电商”
+    # 的“电商财务”拿不到关键词分，总分封顶 55，不过线。
+    for keyword in role_pick_keywords(config):
+        if keyword not in terms:
+            terms.append(keyword)
 
     keyword_points = 0
     matched: list[str] = []

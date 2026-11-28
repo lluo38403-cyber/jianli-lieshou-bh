@@ -11,6 +11,7 @@ import { Switch } from '@/components/ui/switch'
 import { Slider } from '@/components/ui/slider'
 import { TagsInput } from '@/components/ui/tags-input'
 import { CityMultiSelect, type CityOption } from '@/components/config/CityMultiSelect'
+import { RolePicker } from '@/components/config/RolePicker'
 import { ResumeUploadSection } from '@/components/config/ResumeUploadSection'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Save, RotateCcw } from 'lucide-react'
@@ -310,6 +311,13 @@ export default function ConfigPage() {
             <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
               四个平台都会自动投：BOSS 直聘是发打招呼聊一聊，智联、前程无忧、猎聘是直接点投递；HR 回了消息会统一来看。不想用的平台把勾去掉。
             </p>
+            {/* v54 图2-6：先选岗位方向（全局，四个平台通用），再填关键词。 */}
+            <Field label="想找的岗位方向" hint="输关键词，下拉里选职责明确的细分岗位，可多选；选了方向后只找这些方向里的岗位。">
+              <RolePicker
+                value={Array.isArray(config?.search?.role_picks) ? config.search.role_picks : []}
+                onChange={picks => updateConfig('search.role_picks', picks)}
+              />
+            </Field>
             <div data-tour={!guidePlatform ? 'search-city' : undefined}>
             <div data-tour={!guidePlatform ? 'search-keywords' : undefined}>
             <div className="flex gap-1 rounded-full border border-card-border bg-surface p-1" role="tablist" aria-label="选一个平台来设置">

@@ -9,6 +9,11 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from bosshunter.cities import get_city_map
+from bosshunter.ai.prefilter import (
+    normalize_role_picks,
+    role_pick_keywords,
+    title_matches_role_picks,
+)
 from bosshunter.collection.base import CollectionError, CollectorHooks
 from bosshunter.collection.models import (
     CollectionProgress,
@@ -82,6 +87,16 @@ def normalize_collection_options(config: dict[str, Any], raw_options: dict[str, 
     # 关键词与城市名可以共用；城市编码绝不跨平台——validate 时各平台
     # 用自己的城市快照解析城市名，缺码会报清晰错误。
     _fallback_keywords = boss_search.get("keywords")
+    # v54 图2-6：已选岗位方向的细分关键词并进 BOSS 搜索关键词——其余
+    # 三平台没有自己的关键词时回退到 BOSS，会跟着一起带上；某平台
+    # 自己写了关键词时仍以它自己的为准，标题门（inspect）照样按方向
+    # 过滤，不会因此漏网。
+    _pick_keywords = role_pick_keywords(config)
+    if _pick_keywords:
+        merged_keywords = _clean_strings(_fallback_keywords)
+        merged_keywords.extend(keyword for keyword in _pick_keywords if keyword not in merged_keywords)
+        boss_search = dict(boss_search, keywords=merged_keywords)
+        _fallback_keywords = merged_keywords
     _fallback_cities = (
         boss_search.get("cities")
         or (config.get("profile") or {}).get("target_cities")
@@ -366,6 +381,12 @@ class _SharedProcessor:
         if matched := matching_blocked_company(candidate.company, profile.get("blocked_companies") or []):
             self.event(message=f"公司命中屏蔽规则：{matched}", increment_filtered=True, filtered_candidate=candidate)
             return False
+        # v54 图2-6：选了岗位方向时，标题必须落在任一方向里——只搜
+        # “电商”会把“电商财务/美工”也带回来，标题门在这里拦住。
+        picks = normalize_role_picks(self.config)
+        if not title_matches_role_picks(candidate.title, picks):
+            self.event(message="职位名与所选岗位方向不符", increment_filtered=True, filtered_candidate=candidate)
+            return False
         self.event()
         return True
 
@@ -548,6 +569,19 @@ class CollectionOrchestrator:
                         f"解析失败 {processor.progress.parse_failed} 条，保存失败 {processor.progress.save_failed} 条"
                     )
                 platform_results.append(result)
+                if result.status in {"completed", "completed_with_shortage"}:
+                    # v54 图1：采集成了一轮，说明这个平台当时是登录着的——
+                    # 巡检在任务进行时是停的，靠这一笔把登录态写回库，首页
+                    # 卡片才不会在任务跑着的时候先过期成“还没查过”。
+                    # 只写登录态、不碰熔断，写失败也不影响采集。
+                    try:
+                        from bosshunter.db import record_platform_login_state
+
+                        record_platform_login_state(
+                            conn, platform, "logged_in", "采集完成，本轮已确认登录"
+                        )
+                    except Exception:
+                        pass
                 states[platform].update({
                     "status": result.status,
                     "new": len(result.new_job_ids),

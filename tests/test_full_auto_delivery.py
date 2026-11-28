@@ -394,6 +394,107 @@ class PreflightNoKeyTests(unittest.TestCase):
             self.assertFalse([c for c in checks if c["status"] == "error"])
 
 
+class TaskPhaseProgressTests(unittest.TestCase):
+    """v54 图8：主进度条按 task.progress["phase"] 切换，投递进度实时更新。"""
+
+    def _task(self):
+        from bosshunter.web.tasks import WorkbenchTask
+
+        return WorkbenchTask(id="t-1", mode="full", label="运行全流程")
+
+    def test_set_task_phase_writes_progress(self):
+        task = self._task()
+        server._set_task_phase(task, "delivering")
+        self.assertEqual(task.progress["phase"], "delivering")
+        self.assertEqual(task.snapshot()["progress"]["phase"], "delivering")
+
+    def test_record_send_progress_updates_deliver_and_metrics(self):
+        task = self._task()
+        server._record_send_progress(task, {"sent": 3, "failed": 1, "attempted": 4, "total": 10})
+        self.assertEqual(task.progress["phase"], "delivering")
+        self.assertEqual(task.progress["deliver"], {"sent": 3, "failed": 1, "total": 10})
+        self.assertEqual(task.metrics["send_success"], 3)
+        self.assertEqual(task.metrics["send_failed"], 1)
+        self.assertEqual(task.metrics["send_requested"], 10)
+
+    def test_record_score_progress_sets_scoring_phase(self):
+        task = self._task()
+        server._set_task_phase(task, "collecting")
+        server._record_score_progress(task, {"completed": 1, "total": 5, "scored": 1, "filtered": 0, "failed": 0})
+        self.assertEqual(task.progress["phase"], "scoring")
+        self.assertEqual(task.metrics["ai_completed"], 1)
+        self.assertEqual(task.metrics["ai_total"], 5)
+
+    def test_record_collect_progress_keeps_phase_across_replacement(self):
+        task = self._task()
+        server._record_collect_progress(task, {
+            "seen": 10, "new": 3, "duplicate": 1, "filtered": 0,
+            "parse_failed": 0, "save_failed": 0, "search_pages": 2,
+            "progress": {"run_id": "r-1", "outcome": "completed", "platforms": {}},
+        })
+        self.assertEqual(task.progress["phase"], "collecting")
+        self.assertEqual(task.progress["run_id"], "r-1")
+        self.assertEqual(task.metrics["collect_new"], 3)
+
+
+class TaskWaitCountdownTests(unittest.TestCase):
+    """v54 图10：倒计时写 progress["wait"]，跳过只结束等待、不停任务。"""
+
+    def _task(self):
+        from bosshunter.web.tasks import WorkbenchTask
+
+        return WorkbenchTask(id="t-1", mode="full", label="运行全流程")
+
+    def test_record_wait_progress_sets_and_clears(self):
+        task = self._task()
+        server._record_wait_progress(task, {
+            "kind": "round_rest", "label": "已连续投递 20 个",
+            "ends_at": 1790000000.0, "total_seconds": 300,
+        })
+        self.assertEqual(task.progress["wait"]["kind"], "round_rest")
+        self.assertEqual(task.snapshot()["progress"]["wait"]["total_seconds"], 300)
+        server._record_wait_progress(task, None)
+        self.assertNotIn("wait", task.progress)
+
+    def test_skip_wait_sets_event_only(self):
+        from bosshunter.web.tasks import WorkbenchTaskRunner
+
+        runner = WorkbenchTaskRunner()
+        task = self._task()
+        runner._tasks["t-1"] = task
+        snapshot = runner.skip_wait("t-1")
+        self.assertTrue(task.wait_skip_requested.is_set())
+        self.assertEqual(task.status, "running")  # 只跳等待，不停任务
+        self.assertEqual(snapshot["id"], "t-1")
+
+    def test_skip_wait_unknown_task_raises(self):
+        from bosshunter.web.tasks import WorkbenchTaskRunner
+
+        with self.assertRaises(KeyError):
+            WorkbenchTaskRunner().skip_wait("no-such-task")
+
+    def test_cooldown_skip_proceeds_without_waiting(self):
+        import time as _time
+
+        task = self._task()
+        task.context["boss_collection_completed_monotonic"] = _time.monotonic()
+        task.context["boss_delivery_cooldown_minutes"] = 10
+        task.wait_skip_requested.set()
+        started = _time.monotonic()
+        self.assertFalse(server._wait_for_collection_delivery_cooldown(task, {}))
+        self.assertLess(_time.monotonic() - started, 30)
+        self.assertNotIn("wait", task.progress)  # 跳过后倒计时已清掉
+
+    def test_cooldown_stop_cancels(self):
+        import time as _time
+
+        task = self._task()
+        task.context["boss_collection_completed_monotonic"] = _time.monotonic()
+        task.context["boss_delivery_cooldown_minutes"] = 10
+        task.stop_requested.set()
+        self.assertTrue(server._wait_for_collection_delivery_cooldown(task, {}))
+
+
 if __name__ == "__main__":
     unittest.main()
 

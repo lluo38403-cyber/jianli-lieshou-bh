@@ -817,7 +817,8 @@ class WebApiRouteTests(unittest.TestCase):
 
     def test_agent_full_auto_approves_and_delivers_without_confirmation(self):
         task = WorkbenchTask(id="safe-full", mode="full", label="test")
-        config = {"_agent_workflow": True, "scoring": {"threshold": 71}, "_collection_options": {"platform_order": ["boss"]}}
+        # v54 图9：全流程只在“直接投递”开关开着时自动投递；这条测的是开着的路径。
+        config = {"_agent_workflow": True, "scoring": {"threshold": 71, "auto_deliver_ready": True}, "_collection_options": {"platform_order": ["boss"]}}
         with patch.object(server, "_get_web_db", return_value=MagicMock()), patch.object(server, "get_jobs_ready_to_send", return_value=[{"id": "old-approved"}]), patch.object(server, "auto_approve_pending", return_value=["new-job"]), patch.object(server, "_execute_collect"), patch.object(server, "_execute_deliver") as deliver, patch.object(server, "_execute_monitor") as monitor, patch.object(server, "_wait_for_collection_delivery_cooldown", return_value=False), patch.object(server, "load_config", return_value={"monitor": {"auto_reply_hr_questions": True}}), patch.object(server, "_log"):
             server._execute_full(task, config)
         deliver.assert_called_once()
@@ -999,6 +1000,50 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["checks"], checks)
         self.assertIn("AI 服务未配置", payload["messages"][0])
+
+    def test_browser_diagnostics_refresh_writes_login_state_to_db(self):
+        """v54 图1：手动刷新算出的登录态要写库，别只留前端——刷新页面就丢了。"""
+        from bosshunter.db import get_platform_login_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            server.set_base_dir(base_dir)
+            browser_ready = {
+                "chrome": True,
+                "boss_tab": {"url": "https://www.zhipin.com/web/user/", "title": "BOSS直聘"},
+                "zhilian_tab": None,
+                "job51_tab": None,
+                "liepin_tab": None,
+                "zhilian_page": {},
+                "job51_page": {},
+                "liepin_page": {},
+            }
+            with patch("bosshunter.web.server.run_browser_diagnostics", return_value=browser_ready):
+                status, _, body = self._request("/api/browser/diagnostics", method="POST")
+            self.assertTrue(status.startswith("200"))
+            self.assertTrue(json.loads(body)["ok"])
+            db = get_db(server.DATA_DIR / "bosshunter.db")
+            try:
+                self.assertEqual(get_platform_login_state(db, "boss").get("status"), "logged_in")
+            finally:
+                db.close()
+
+    def test_browser_diagnostics_refresh_without_chrome_writes_nothing(self):
+        """v54 图1：浏览器没连上时不写库——不把“连不上”误标成掉线。"""
+        from bosshunter.db import get_platform_login_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            server.set_base_dir(base_dir)
+            with patch("bosshunter.web.server.run_browser_diagnostics", return_value={"chrome": False}):
+                status, _, _ = self._request("/api/browser/diagnostics", method="POST")
+            self.assertTrue(status.startswith("200"))
+            db = get_db(server.DATA_DIR / "bosshunter.db")
+            try:
+                self.assertNotEqual(get_platform_login_state(db, "boss").get("status"), "logged_in")
+                self.assertNotEqual(get_platform_login_state(db, "boss").get("status"), "logged_out")
+            finally:
+                db.close()
 
     def test_web_api_activity_returns_json_without_runtime_name_error(self):
         # Arrange
@@ -1942,7 +1987,8 @@ class WebApiRouteTests(unittest.TestCase):
             with patch.object(server, "_execute_collect", side_effect=fake_collect), \
                  patch.object(server, "_execute_deliver", side_effect=fake_deliver), \
                  patch.object(server, "_execute_monitor", side_effect=fake_monitor):
-                task = runner.start("full", {"throttle": {}})
+                # v54 图9：开关开着，全流程才自动投递。
+                task = runner.start("full", {"throttle": {}, "scoring": {"auto_deliver_ready": True}})
                 runner.wait(timeout=1)
                 status = runner.status()
                 last_task = status["last_task"]
@@ -2104,7 +2150,8 @@ class WebApiRouteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             server.set_base_dir(Path(tmp))
             with patch.object(server, "_execute_collect", side_effect=fake_collect):
-                task = runner.start("full", {"throttle": {"send_windows": []}})
+                # v54 图9：开关开着才会走到“没有待确认岗位”那一步；关着时在采集后就停了。
+                task = runner.start("full", {"throttle": {"send_windows": []}, "scoring": {"auto_deliver_ready": True}})
                 runner.wait(timeout=1)
                 status = runner.status()
                 last_task = status["last_task"]
@@ -2921,7 +2968,8 @@ class WebApiRouteTests(unittest.TestCase):
                  patch.object(server, "_execute_deliver", side_effect=fake_deliver), \
                  patch.object(server, "_execute_monitor", side_effect=fake_monitor), \
                  patch.object(server, "load_config", return_value={"throttle": {"daily_limit": 40}}):
-                task = runner.start("full", {"throttle": {"send_windows": []}})
+                # v54 图9：开关开着，全流程才自动投递。
+                task = runner.start("full", {"throttle": {"send_windows": []}, "scoring": {"auto_deliver_ready": True}})
                 runner.wait(timeout=1)
 
         # Assert
@@ -2953,7 +3001,8 @@ class WebApiRouteTests(unittest.TestCase):
                  ), \
                  patch.object(server, "_execute_monitor", side_effect=lambda *_, **__: calls.append("monitor")), \
                  patch.object(server, "load_config", return_value={}):
-                server._execute_full(task, {})
+                # v54 图9：开关开着，全流程才自动投递。
+                server._execute_full(task, {"scoring": {"auto_deliver_ready": True}})
 
         self.assertEqual(calls, ["collect", ("deliver", ["approved-a"]), "monitor"])
         self.assertFalse(task.context["waiting_confirmation"])
@@ -2992,7 +3041,8 @@ class WebApiRouteTests(unittest.TestCase):
                  patch.object(server, "_execute_collect", side_effect=fake_collect), \
                  patch.object(server, "_execute_monitor", side_effect=lambda *_args, **_kwargs: calls.append("monitor")), \
                  patch.object(server, "load_config", return_value={"throttle": {"daily_limit": 40}}):
-                server._execute_full(task, {})
+                # v54 图9：开关开着，全流程才自动投递。
+                server._execute_full(task, {"scoring": {"auto_deliver_ready": True}})
 
         # Assert
         self.assertEqual(calls, ["collect", ("deliver", ["deferred-ready"], None, 40), "monitor"])
@@ -3667,7 +3717,8 @@ class WebApiRouteTests(unittest.TestCase):
             with patch.object(server, "_execute_collect"), \
                  patch.object(server, "_execute_deliver") as deliver, \
                  patch.object(server, "_execute_monitor"):
-                server._execute_full(task, {"scoring": {"threshold": 71}})
+                # v54 图9：开关开着，全流程才自动投递。
+                server._execute_full(task, {"scoring": {"threshold": 71, "auto_deliver_ready": True}})
 
         deliver.assert_called_once()
         self.assertEqual(deliver.call_args.args[1]["_workbench_job_ids"], ["draft-only"])
@@ -3696,7 +3747,8 @@ class WebApiRouteTests(unittest.TestCase):
                  patch.object(server, "_wait_for_collection_delivery_cooldown") as cooldown, \
                  patch.object(server, "_execute_monitor"):
                 cooldown.return_value = False
-                server._execute_full(task, {"scoring": {"threshold": 71}})
+                # v54 图9：开关开着，全流程才自动投递。
+                server._execute_full(task, {"scoring": {"threshold": 71, "auto_deliver_ready": True}})
 
         # 积压 A（已有招呼语）与自动批准的 B 在同一次投递里一起发送
         self.assertEqual(deliver.call_count, 1)
@@ -5198,7 +5250,9 @@ class WebApiRouteTests(unittest.TestCase):
                     self.assertTrue(status.startswith("200"), body)
                 return {"success": True}, None
 
-            def during_wait(stop_event):
+            def during_wait(stop_event, **_kwargs):
+                # v54 图10：send_greetings 现在给节流等待传跳过/倒计时钩子
+                #（skip_event/report），测试替身要能接住这些关键字参数。
                 self.assertIsNone(server.greeting_activity.get("next"))
                 status, _, body = edit("next", "发送前最新确认的文字")
                 self.assertTrue(status.startswith("200"), body)

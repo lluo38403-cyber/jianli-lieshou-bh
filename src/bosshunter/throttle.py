@@ -18,8 +18,20 @@ class RequestThrottle:
         self._last_request_time = 0.0
         self._recent_times: deque[float] = deque(maxlen=12)
 
-    def wait(self, stop_event: Event | None = None) -> bool:
-        """Block until it's safe to send the next request."""
+    def wait(
+        self,
+        stop_event: Event | None = None,
+        *,
+        skip_event: Event | None = None,
+        report: object = None,
+    ) -> bool:
+        """Block until it's safe to send the next request.
+
+        v54 图10：skip_event / report 只在投递循环里传——超过 5 秒的
+        岗位间等待先报倒计时（{kind: "interval", ends_at, total_seconds}），
+        等完清掉；用户点【跳过等待】就提前结束当前等待（返回 False，
+        不停任务）。不传时行为与以前完全一致。
+        """
         elapsed = time.time() - self._last_request_time
         mean = (self._delay_min + self._delay_max) / 2
         std = (self._delay_max - self._delay_min) / 4
@@ -32,10 +44,10 @@ class RequestThrottle:
         burst = self._burst_penalty()
         total = max(0, base_sleep + burst)
         if total > 0:
-            if stop_event and stop_event.wait(total):
-                return True
-            if not stop_event:
-                time.sleep(total)
+            return sleep_with_skip(
+                total, stop_event, skip_event=skip_event, report=report,
+                kind="interval", label="",
+            )
         return bool(stop_event and stop_event.is_set())
 
     def update_delay_range(self, delay_min: float, delay_max: float) -> None:
@@ -70,6 +82,59 @@ class RequestThrottle:
         if recent_15s >= 3:
             return random.uniform(1.2, 2.8)
         return 0.0
+
+
+def sleep_with_skip(
+    seconds: float,
+    stop_event: Event | None,
+    *,
+    skip_event: Event | None = None,
+    report: object = None,
+    kind: str = "",
+    label: str = "",
+) -> bool:
+    """睡 seconds，可被 stop 中断（返回 True）或被 skip 提前结束（返回 False）。
+
+    v54 图10：投递等待的统一落点——风控等待（轮休/批次休息/换平台错峰）
+    与岗位间随机等待都走这里。report 收到 {kind, label, ends_at（秒时间戳）,
+    total_seconds} 画倒计时，等完/跳过/停止都调 report(None) 清掉；小于
+    5 秒的等待不报（倒计时还没画出来就结束了，只会闪）。跳过只结束当前
+    这一轮等待，不停任务；开始时 skip 已置上就直接跳过这一轮（一次点击
+    只跳一轮，用完就清掉）。
+    """
+    total = max(0.0, float(seconds))
+    if total <= 0:
+        return bool(stop_event and stop_event.is_set())
+    use_reporting = callable(report) and total >= 5
+    if skip_event is None and not use_reporting:
+        # 没接倒计时、没接跳过：就是老 _sleep_or_stop 的行为。
+        if stop_event:
+            return bool(stop_event.wait(total))
+        time.sleep(total)
+        return False
+    if skip_event is not None and skip_event.is_set():
+        skip_event.clear()
+        return False
+    try:
+        if use_reporting:
+            report({"kind": kind, "label": label, "ends_at": time.time() + total, "total_seconds": int(total)})
+        deadline = time.monotonic() + total
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                return True
+            if skip_event is not None and skip_event.is_set():
+                skip_event.clear()
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.5, remaining))
+    finally:
+        if use_reporting:
+            try:
+                report(None)
+            except Exception:
+                pass
 
 
 class PageThrottle:

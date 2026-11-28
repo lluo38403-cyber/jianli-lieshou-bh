@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import type { DeliveryJob, WorkbenchTask } from '@/hooks/useDashboard'
 import { PLATFORM_SHORT_LABELS } from '@/lib/platforms'
+import { WaitCountdown } from '@/components/dashboard/WaitCountdown'
 
 /** 只展示会投递的任务：确认投递、运行全流程（包含投递阶段）、单独监测
  * （监测期间也会投新确认的岗位）。采集 / 打分 / 招呼语任务不在这儿，
@@ -57,6 +58,8 @@ export function DeliveryTaskList({
   onPause,
   onResume,
   onStop,
+  onSkipWait,
+  skipWaitBusyId,
   onForceStop,
   forceStopVisible,
 }: {
@@ -65,6 +68,9 @@ export function DeliveryTaskList({
   onPause?: (taskId: string) => void
   onResume?: (taskId: string) => void
   onStop?: (taskId: string) => void
+  /** v54 图10：跳过当前等待（只跳这一轮，不停任务）。 */
+  onSkipWait?: (taskId: string) => void
+  skipWaitBusyId?: string | null
   onForceStop?: () => void
   forceStopVisible?: boolean
 }) {
@@ -167,6 +173,16 @@ export function DeliveryTaskList({
                   <p className="mt-1 text-xs text-muted">
                     共 {requested} 个 · 已投出 {success ?? 0} 个 · 没投出去 {failed ?? 0} 个 · 等下次 {deferred ?? 0} 个
                   </p>
+                )}
+                {/* v54 图10：正在等待时在这里显示 MM:SS 倒计时 + 跳过等待。 */}
+                {task.status === 'running' && task.progress?.wait && (
+                  <div className="mt-2">
+                    <WaitCountdown
+                      wait={task.progress.wait}
+                      onSkip={() => onSkipWait?.(task.id)}
+                      skipping={skipWaitBusyId === task.id}
+                    />
+                  </div>
                 )}
                 {lastLog && <p className="mt-1 text-sm leading-6">{lastLog}</p>}
                 {stopNote && <p className="mt-1 text-xs text-danger">停下来的原因：{stopNote}</p>}

@@ -29,6 +29,7 @@ from bosshunter.antibot import (
 )
 from bosshunter.browser import (
     new_tab,
+    minimize_tab,
     close_tab,
     evaluate,
     click_at,
@@ -48,7 +49,7 @@ from bosshunter.ai.greeter import effective_greeting
 from bosshunter.collection.capabilities import platform_supports
 from bosshunter.executor.platform_delivery import deliver_job
 from bosshunter.cancellation import get_pause_event, wait_while_paused
-from bosshunter.throttle import RequestThrottle, ProgressiveBackoff
+from bosshunter.throttle import RequestThrottle, ProgressiveBackoff, sleep_with_skip
 from bosshunter.platform_safety import PlatformAccessGuard, PlatformSafetyStop
 
 console = Console()
@@ -203,6 +204,23 @@ def _sleep_or_stop(seconds: float, stop_event) -> bool:
         return bool(stop_event.wait(seconds))
     time.sleep(seconds)
     return False
+
+
+def _wait_with_countdown(seconds: float, stop_event, *, config, kind: str, label: str) -> bool:
+    """v54 图10：投递等待的发送端落点。
+
+    没接倒计时/跳过（面板没连上、命令行跑）时走老 _sleep_or_stop，
+    行为与以前完全一致（测试 mock 的也是它）；接了才走
+    sleep_with_skip 报倒计时、可跳过。分两路不是为了省事：轮休
+    300–600 秒、批次休息 60–180 秒，真睡起来测试要等几分钟。
+    """
+    report = config.get("_workbench_wait_progress") if isinstance(config, dict) else None
+    skip_event = config.get("_workbench_wait_skip_event") if isinstance(config, dict) else None
+    if not callable(report) and skip_event is None:
+        return _sleep_or_stop(seconds, stop_event)
+    return sleep_with_skip(
+        seconds, stop_event, skip_event=skip_event, report=report, kind=kind, label=label,
+    )
 
 
 def _detect_greet_popup(target_id: str) -> dict:
@@ -516,6 +534,13 @@ def _adopt_chat_target(current_target_id: str, chat_ready: dict) -> str:
     next_target_id = str(chat_ready.get("target_id") or current_target_id)
     if next_target_id != current_target_id:
         close_tab(current_target_id)
+        # v54：站内自己开的聊天标签绕过了 /new 的最小化（建标签时没
+        # 人管它），认领后立刻把它的窗口最小化，不让工作浏览器闪到
+        # 前台。失败也不影响投递，静默跳过。
+        try:
+            minimize_tab(next_target_id)
+        except Exception:
+            pass
     return next_target_id
 
 
@@ -1491,7 +1516,11 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                         f"先歇 {int(stagger_s)} 秒再继续"
                     )
                 progress.update(task, description="换平台，歇一会...")
-                if _sleep_or_stop(stagger_s, stop_event):
+                # v54 图10：换平台错峰也是可跳过的等待，带倒计时。
+                if _wait_with_countdown(
+                    stagger_s, stop_event, config=config, kind="stagger",
+                    label=f"切换到{platform_display_name(group_starts[index])}",
+                ):
                     console.print("[yellow]已请求停止，结束发送[/yellow]")
                     send_report["stop_reason"] = "stopped"
                     break
@@ -1510,7 +1539,13 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                         f"招呼语进度 {index + 1}/{len(ordered_jobs)}\n等待发送：{current_job}\n{next_label}"
                     )
                 progress.update(task, description="等待间隔...")
-                if throttle.wait(stop_event):
+                # v54 图10：岗位间随机等待带倒计时、可跳过——skip 只提前
+                # 结束这次等待，不停任务。
+                if throttle.wait(
+                    stop_event,
+                    skip_event=config.get("_workbench_wait_skip_event"),
+                    report=config.get("_workbench_wait_progress"),
+                ):
                     console.print("[yellow]已请求停止，结束发送[/yellow]")
                     send_report["stop_reason"] = "stopped"
                     break
@@ -1665,7 +1700,11 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                             f"已连续投递 {round_sent} 个，当前正在风控等待中"
                         )
                     progress.update(task, description="歇一会再继续...")
-                    if _sleep_or_stop(rest_s, stop_event):
+                    # v54 图10：投完一轮后的风控等待带倒计时、可跳过。
+                    if _wait_with_countdown(
+                        rest_s, stop_event, config=config, kind="round_rest",
+                        label=f"已连续投递 {round_sent} 个",
+                    ):
                         console.print("[yellow]已请求停止，结束发送[/yellow]")
                         send_report["stop_reason"] = "stopped"
                         break
@@ -1689,12 +1728,31 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     if callable(workbench_log):
                         workbench_log("正在风控等待中，稍后继续投递")
                     progress.update(task, description="歇一会再继续...")
-                    if _sleep_or_stop(rest_s, stop_event):
+                    # v54 图10：批次之间的风控等待带倒计时、可跳过。
+                    if _wait_with_countdown(
+                        rest_s, stop_event, config=config, kind="batch_rest",
+                        label=f"已投递 {sent_count} 个",
+                    ):
                         console.print("[yellow]已请求停止，结束发送[/yellow]")
                         send_report["stop_reason"] = "stopped"
                         break
                     batch_target = next_batch
                     batch_sent = 0
+
+                # v54 图8：每投完一个就把实时进度推给面板——以前只在整批
+                # 发完后才写指标，投递阶段主进度条只能看到上一轮的打分
+                # 进度。回调失败不影响投递，静默跳过。
+                send_progress = config.get("_workbench_send_progress")
+                if callable(send_progress):
+                    try:
+                        send_progress({
+                            "sent": sent_count,
+                            "failed": send_report["failed_count"],
+                            "attempted": send_report["attempted_count"],
+                            "total": len(workbench_job_ids) if workbench_job_ids else len(jobs),
+                        })
+                    except Exception:
+                        pass
 
                 progress.update(task, advance=1)
 

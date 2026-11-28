@@ -539,6 +539,15 @@ def handle_page_risk(
             f"触发平台安全验证（{name}），投递已暂停："
             "请在浏览器中手动完成验证后点击继续"
         )
+        # v54：验证码必须人眼看见——投递全程窗口都最小化在后台，不把
+        # 这页带到前台，用户根本找不到验证页。这是唯一该置前的场景，
+        # 投递流程别处一律不置前；激活失败也不影响等验证本身。
+        try:
+            from bosshunter.browser import activate_tab as _activate_tab
+
+            _activate_tab(target_id)
+        except Exception:
+            pass
         resolved = wait_for_manual_verification(
             db, hold_id, stop_event, timeout_s=timeout_s
         )

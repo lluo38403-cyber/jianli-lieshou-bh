@@ -27,12 +27,16 @@ class RuntimeClient:
         data = self._get_json("/targets", timeout=5)
         return data if isinstance(data, list) else []
 
-    def new_tab(self, url: str, background: bool = False) -> str | None:
+    def new_tab(self, url: str, background: bool = True) -> str | None:
         params: dict[str, str] = {"url": url}
         if background:
             params["background"] = "1"
         data = self._get_json("/new", params=params, timeout=30)
         return data.get("targetId") if isinstance(data, dict) else None
+
+    def minimize(self, target_id: str) -> bool:
+        """Minimize the window holding this tab (v54: site-opened tabs)."""
+        return self._get_ok("/minimize", params={"target": target_id}, timeout=5)
 
     def close_tab(self, target_id: str) -> bool:
         return self._get_ok("/close", params={"target": target_id}, timeout=5)

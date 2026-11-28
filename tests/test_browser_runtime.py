@@ -445,6 +445,30 @@ class BrowserRuntimeSourceTests(unittest.TestCase):
         self.assertIn("ensureSession(targetId)", new_route)
         self.assertNotIn("waitForLoad", new_route)
 
+    def test_cdp_proxy_minimizes_before_binding_session(self):
+        """v54 图7：最小化必须在绑定会话之前，否则窗口已经闪过。"""
+        script = Path(__file__).parents[1] / "src" / "bosshunter" / "browser" / "runtime" / "cdp-proxy.mjs"
+        source = script.read_text(encoding="utf-8")
+        new_route = source.split("pathname === '/new'", 1)[1].split("pathname === '/close'", 1)[0]
+
+        self.assertLess(
+            new_route.index("minimizeWindowIfNew(targetId, knownWindows)"),
+            new_route.index("ensureSession(targetId)"),
+            "第一次最小化要在 ensureSession 之前",
+        )
+        self.assertIn("pathname === '/minimize'", source)
+
+    def test_host_tabs_open_in_background_and_captcha_activates(self):
+        """v54 图7：51job/智联宿主标签后台开；验证码 hold 建好后要置前。"""
+        root = Path(__file__).parents[1] / "src" / "bosshunter"
+        job51 = (root / "collection" / "platforms" / "job51.py").read_text(encoding="utf-8")
+        zhilian = (root / "collection" / "platforms" / "zhilian.py").read_text(encoding="utf-8")
+        self.assertIn("host_target = self.browser.new_tab(tmp_url, background=True)", job51)
+        self.assertIn("host_target = self.browser.new_tab(tmp_url, background=True)", zhilian)
+        antibot = (root / "antibot.py").read_text(encoding="utf-8")
+        hold_block = antibot.split("create_verification_hold(", 1)[1].split("wait_for_manual_verification(", 1)[0]
+        self.assertIn("activate_tab", hold_block)
+
     def test_check_runtime_requires_bosshunter_runtime_identity(self):
         script = Path(__file__).parents[1] / "src" / "bosshunter" / "browser" / "runtime" / "check-runtime.mjs"
         source = script.read_text(encoding="utf-8")

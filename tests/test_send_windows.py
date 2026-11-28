@@ -132,6 +132,44 @@ class NoWindowGatingTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM jobs WHERE status='sent'").fetchone()[0], 2)
             db.close()
 
+    def test_sender_reports_live_progress_after_each_send(self):
+        """v54 图8：每投完一个岗位就调一次 _workbench_send_progress，主进度条不用等整批。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "jobs.db"
+            db = get_db(db_path)
+            for number in range(2):
+                job_id = str(number)
+                insert_job(db, {"id": job_id, "title": "Test", "company": "Test", "url": "https://www.zhipin.com/test"})
+                update_job_status(db, job_id, "ready")
+                update_job_greeting(db, job_id, "Test greeting")
+            db.close()
+            seen: list[dict] = []
+            config = {"throttle": {}, "_workbench_send_progress": seen.append}
+            with patch.object(sender.RequestThrottle, "wait", return_value=False), \
+                    patch.object(sender, "_send_greeting_once", return_value=({"success": True}, None)):
+                self.assertEqual(sender.send_greetings(config, db_path=db_path), 2)
+            self.assertEqual([item["sent"] for item in seen], [1, 2])
+            self.assertTrue(all(item["total"] == 2 for item in seen))
+            self.assertTrue(all(item["failed"] == 0 for item in seen))
+
+    def test_sender_progress_callback_failure_does_not_break_sending(self):
+        """v54 图8：进度回调抛错也不能打断投递。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "jobs.db"
+            db = get_db(db_path)
+            insert_job(db, {"id": "0", "title": "Test", "company": "Test", "url": "https://www.zhipin.com/test"})
+            update_job_status(db, "0", "ready")
+            update_job_greeting(db, "0", "Test greeting")
+            db.close()
+
+            def boom(_state):
+                raise RuntimeError("progress boom")
+
+            config = {"throttle": {}, "_workbench_send_progress": boom}
+            with patch.object(sender.RequestThrottle, "wait", return_value=False), \
+                    patch.object(sender, "_send_greeting_once", return_value=({"success": True}, None)):
+                self.assertEqual(sender.send_greetings(config, db_path=db_path), 1)
+
     def test_monitor_message_send_ignores_window_config(self):
         with patch.object(monitor, "evaluate", return_value={"success": True}) as outbound:
             self.assertTrue(monitor._send_message_in_chat("test", "test", {"throttle": {"send_windows": ["09:00-16:00"]}}))
@@ -532,6 +570,35 @@ class PauseRefreshTests(unittest.TestCase):
         throttle.update_delay_range(60.0, 180.0)
         self.assertEqual(throttle._last_request_time, before)
         self.assertEqual((throttle._delay_min, throttle._delay_max), (60.0, 180.0))
+
+
+class AdoptChatTargetTests(unittest.TestCase):
+    """v54 图7：站内自己开的聊天标签认领后要最小化，不让浏览器闪前台。"""
+
+    def test_switching_to_site_opened_chat_tab_minimizes_its_window(self):
+        with patch("bosshunter.executor.sender.close_tab") as close_tab, patch(
+            "bosshunter.executor.sender.minimize_tab"
+        ) as minimize_tab:
+            result = sender._adopt_chat_target("job-tab", {"target_id": "chat-tab"})
+        self.assertEqual(result, "chat-tab")
+        close_tab.assert_called_once_with("job-tab")
+        minimize_tab.assert_called_once_with("chat-tab")
+
+    def test_staying_on_same_tab_does_not_minimize(self):
+        with patch("bosshunter.executor.sender.close_tab") as close_tab, patch(
+            "bosshunter.executor.sender.minimize_tab"
+        ) as minimize_tab:
+            result = sender._adopt_chat_target("job-tab", {"target_id": "job-tab"})
+        self.assertEqual(result, "job-tab")
+        close_tab.assert_not_called()
+        minimize_tab.assert_not_called()
+
+    def test_minimize_failure_does_not_break_adoption(self):
+        with patch("bosshunter.executor.sender.close_tab"), patch(
+            "bosshunter.executor.sender.minimize_tab", side_effect=RuntimeError("boom")
+        ):
+            result = sender._adopt_chat_target("job-tab", {"target_id": "chat-tab"})
+        self.assertEqual(result, "chat-tab")
 
 
 if __name__ == "__main__":
