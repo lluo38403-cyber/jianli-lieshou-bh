@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import { roleCategory, searchRolePicks, type JobRolePick } from '@/data/jobTaxonomy'
+import { roleCategory, searchRolePicks, type JobRolePick } from '@/lib/jobTaxonomy'
 
 /**
  * v54 图2-6：岗位方向多选器（参考招聘平台的职位选择体验）。
